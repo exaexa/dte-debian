@@ -11,7 +11,7 @@ Vcs-Git: https://gitlab.com/craigbarnes/dte.git
 Package: dte
 Architecture: any
 Depends: ${shlibs:Depends}, ${misc:Depends}
-Description: a small and easy to use console text editor
+Description: small and easy to use console text editor
  A very small console text editor that supports Unicode, multiple tabs and
  buffers, syntax highlighting, regex search and replace, encodings, ctags and
  various other features.
