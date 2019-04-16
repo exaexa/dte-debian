@@ -1,0 +1,5 @@
+version=4
+
+https://craigbarnes.gitlab.io/dte/releases.html \
+  https://craigbarnes\.gitlab\.io/.*/dte-([\d\.]+)\.tar\.gz \
+  debian uupdate
