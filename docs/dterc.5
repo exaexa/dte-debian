@@ -1,0 +1,1582 @@
+.TH DTERC 5 "November 2017"
+.nh
+.ad l
+.
+.SH NAME
+dterc \- Command and configuration language used by \fBdte\fR(1)
+.SH SYNOPSIS
+.P
+Commands:
+.br
+   \fBalias\fR \fIname\fR \fIcommand\fR
+.br
+   \fBbind\fR \fIkey\fR [\fIcommand\fR]
+.br
+   \fBbof\fR
+.br
+   \fBbol\fR
+.br
+   \fBbolsf\fR
+.br
+   \fBcase\fR [\fB\-lu\fR]
+.br
+   \fBcd\fR \fIdirectory\fR
+.br
+   \fBcenter\-view\fR
+.br
+   \fBclear\fR
+.br
+   \fBclose\fR [\fB\-fqw\fR]
+.br
+   \fBcommand\fR [\fItext\fR]
+.br
+   \fBcompile\fR [\fB\-1ps\fR] \fIerrorfmt\fR \fIcommand\fR [\fIparameters\fR]...
+.br
+   \fBcopy\fR
+.br
+   \fBcut\fR
+.br
+   \fBdelete\fR
+.br
+   \fBdelete\-eol\fR [\fB\-n\fR]
+.br
+   \fBdelete\-word\fR [\fB\-s\fR]
+.br
+   \fBdown\fR
+.br
+   \fBeof\fR
+.br
+   \fBeol\fR
+.br
+   \fBeolsf\fR
+.br
+   \fBerase\fR
+.br
+   \fBerase\-bol\fR
+.br
+   \fBerase\-word\fR [\fB\-s\fR]
+.br
+   \fBerrorfmt\fR [\fB\-i\fR] \fIcompiler\fR \fIregexp\fR [file|line|column|message]...
+.br
+   \fBfilter\fR \fIcommand\fR [\fIparameter\fR]...
+.br
+   \fBformat\-paragraph\fR [\fIwidth\fR]
+.br
+   \fBft\fR \fIfiletype\fR \fIextension\fR...
+.br
+   \fBft\fR \fB\-b\fR \fIfiletype\fR \fIbasename\fR...
+.br
+   \fBft\fR \fB\-c\fR \fIfiletype\fR \fIcontents\-regexp\fR...
+.br
+   \fBft\fR \fB\-f\fR \fIfiletype\fR \fIfilename\-regexp\fR...
+.br
+   \fBft\fR \fB\-i\fR \fIfiletype\fR \fIinterpreter\fR...
+.br
+   \fBgit\-open\fR
+.br
+   \fBhi\fR \fIname\fR [\fIfg\-color\fR [\fIbg\-color\fR]] [\fIattribute\fR]...
+.br
+   \fBinclude\fR [\fB\-b\fR] \fIfile\fR
+.br
+   \fBinsert\fR [\fB\-km\fR] \fItext\fR
+.br
+   \fBinsert\-special\fR
+.br
+   \fBjoin\fR
+.br
+   \fBleft\fR
+.br
+   \fBline\fR \fInumber\fR
+.br
+   \fBload\-syntax\fR \fIfilename\fR|\fIfiletype\fR
+.br
+   \fBmove\-tab\fR \fIN\fR|left|right
+.br
+   \fBmsg\fR [\fB\-np\fR]
+.br
+   \fBnew\-line\fR
+.br
+   \fBnext\fR
+.br
+   \fBopen\fR [\fB\-g\fR] [\fB\-e\fR \fIencoding\fR] [\fIfile\fR]...
+.br
+   \fBoption\fR \fIfiletype\fR \fIoption\fR \fIvalue\fR...
+.br
+   \fBoption\fR \fB\-r\fR \fIregexp\fR \fIoption\fR \fIvalue\fR...
+.br
+   \fBpass\-through\fR [\fB\-ms\fR] \fIcommand\fR [\fIparameter\fR]...
+.br
+   \fBpaste\fR
+.br
+   \fBpgdown\fR
+.br
+   \fBpgup\fR
+.br
+   \fBprev\fR
+.br
+   \fBquit\fR [\fB\-f\fR]
+.br
+   \fBredo\fR [\fIchoice\fR]
+.br
+   \fBrepeat\fR \fIcount\fR \fIcommand\fR [\fIparameters\fR]...
+.br
+   \fBreplace\fR [\fB\-bcgi\fR] \fIpattern\fR \fIreplacement\fR
+.br
+   \fBright\fR
+.br
+   \fBrun\fR [\fB\-ps\fR] \fIcommand\fR [\fIparameters\fR]...
+.br
+   \fBsave\fR [\fB\-dfup\fR] [\fB\-e\fR \fIencoding\fR] [\fIfilename\fR]
+.br
+   \fBscroll\-down\fR
+.br
+   \fBscroll\-pgdown\fR
+.br
+   \fBscroll\-pgup\fR
+.br
+   \fBscroll\-up\fR
+.br
+   \fBsearch\fR [\fB\-Hnprw\fR] [\fIpattern\fR]
+.br
+   \fBselect\fR [\fB\-bkl\fR]
+.br
+   \fBset\fR [\fB\-gl\fR] \fIoption\fR [\fIvalue\fR] ...
+.br
+   \fBsetenv\fR \fIname\fR \fIvalue\fR
+.br
+   \fBshift\fR \fIcount\fR
+.br
+   \fBsuspend\fR
+.br
+   \fBtag\fR [\fB\-r\fR] [\fItag\fR]
+.br
+   \fBtoggle\fR [\fB\-gv\fR] \fIoption\fR [\fIvalues\fR]...
+.br
+   \fBundo\fR
+.br
+   \fBunselect\fR
+.br
+   \fBup\fR
+.br
+   \fBview\fR \fIN\fR|last
+.br
+   \fBwclose\fR [\fB\-f\fR]
+.br
+   \fBwflip\fR
+.br
+   \fBwnext\fR
+.br
+   \fBword\-bwd\fR [\fB\-s\fR]
+.br
+   \fBword\-fwd\fR [\fB\-s\fR]
+.br
+   \fBwprev\fR
+.br
+   \fBwresize\fR [\fB\-hv\fR] [\fIN\fR|+\fIN\fR|\-\- \-\fIN\fR]
+.br
+   \fBwsplit\fR [\fB\-bhr\fR] [\fIfile\fR]...
+.br
+   \fBwswap\fR
+.br
+.P
+Global options:
+.br
+   \fBcase\-sensitive\-search\fR [true]
+.br
+   \fBdisplay\-special\fR [false]
+.br
+   \fBesc\-timeout\fR [100] 0...2000
+.br
+   \fBlock\-files\fR [true]
+.br
+   \fBnewline\fR [unix]
+.br
+   \fBscroll\-margin\fR [0]
+.br
+   \fBset\-window\-title\fR [false]
+.br
+   \fBshow\-line\-numbers\fR [false]
+.br
+   \fBstatusline\-left\fR [" %f%s%m%r%s%M"]
+.br
+   \fBstatusline\-right\fR [" %y,%X %u %E %n %t %p "]
+.br
+   \fBtab\-bar\fR [horizontal]
+.br
+   \fBtab\-bar\-max\-components\fR [0]
+.br
+   \fBtab\-bar\-width\fR [25]
+.br
+.P
+Local options:
+.br
+   \fBbrace\-indent\fR [false]
+.br
+   \fBfiletype\fR [none]
+.br
+   \fBindent\-regex\fR [""]
+.br
+.P
+Local and global options:
+.br
+   \fBauto\-indent\fR [true]
+.br
+   \fBdetect\-indent\fR [""]
+.br
+   \fBemulate\-tab\fR [false]
+.br
+   \fBexpand\-tab\fR [false]
+.br
+   \fBfile\-history\fR [true]
+.br
+   \fBindent\-width\fR [8]
+.br
+   \fBsyntax\fR [true]
+.br
+   \fBtab\-width\fR [8]
+.br
+   \fBtext\-width\fR [72]
+.br
+   \fBws\-error\fR [special]
+.br
+.SH DESCRIPTION
+dterc is the language used in \fBdte\fR(1) configuration files (\fB~/.dte/rc\fR)
+and also in the command mode of the editor (Alt+x). The syntax of the
+language is quite similar to shell, but much simpler.
+.P
+Commands are separated either by a newline or \fB;\fR character. To make a
+command span multiple lines in an rc file, escape the newline (put \fB\\\fR
+at the end of the line).
+.P
+Rc files can contain comments at the start of a line. Comments begin
+with a \fB#\fR character and can be indented, but they can't be put on the
+same line as a command.
+.P
+Commands can contain environment variables. Variables always expand into
+a single argument even if they contain whitespace. Variables inside
+single or double quotes are NOT expanded. This makes it possible to bind
+keys to commands that contain variables (inside single or double
+quotes), which will be expanded just before the command is executed.
+.P
+Example:
+.P
+.IP
+.nf
+\f[C]
+alias\ x\ "run\ chmod\ 755\ $FILE"
+\f[]
+.fi
+.PP
+\fB$FILE\fR is expanded when the alias \fIx\fR is executed. The command works even
+if \fB$FILE\fR contains whitespace.
+.P
+.SS Special variables
+These variables are always defined and override environment variables of
+the same name.
+.P
+\fB$FILE\fR
+.RS
+The filename of the current buffer (or an empty string if unsaved).
+.P
+.RE
+\fB$WORD\fR
+.RS
+The selected text or the word under the cursor.
+.P
+.RE
+.SS Single quoted strings
+Single quoted strings can't contain single quotes or escaped characters.
+.P
+.SS Double quoted strings
+Double quoted strings may contain the following escapes:
+.P
+.TP
+\fB\\a\fR, \fB\\b\fR, \fB\\t\fR, \fB\\n\fR, \fB\\v\fR, \fB\\f\fR, \fB\\r\fR, \fB\\\\\fR
+Control characters (same as in C)
+.PP
+.TP
+\fB\\x0a\fR
+Hexadecimal byte value 0x0a. Note that \fB\\x00\fR is not supported because
+strings are NUL\-terminated.
+.PP
+.TP
+\fB\\u20ac\fR
+Four hex digit Unicode code point U+20AC.
+.PP
+.TP
+\fB\\U000020ac\fR
+Eight hex digit Unicode code point U+20AC.
+.PP
+.SH COMMANDS
+\fBalias\fR \fIname\fR \fIcommand\fR
+.RS
+Create an alias \fIname\fR for \fIcommand\fR.
+.P
+Example:
+.P
+.IP
+.nf
+\f[C]
+alias\ read\ "pass\-through\ cat"
+\f[]
+.fi
+.PP
+Now you can run \fBread file.txt\fR to insert \fBfile.txt\fR into the current
+buffer.
+.P
+.RE
+\fBbind\fR \fIkey\fR [\fIcommand\fR]
+.RS
+Bind \fIcommand\fR to \fIkey\fR. If no \fIcommand\fR is given then any existing
+binding for \fIkey\fR is removed.
+.P
+Special keys:
+.P
+\(bu \fBleft\fR
+.br
+\(bu \fBright\fR
+.br
+\(bu \fBup\fR
+.br
+\(bu \fBdown\fR
+.br
+\(bu \fBinsert\fR
+.br
+\(bu \fBdelete\fR
+.br
+\(bu \fBhome\fR
+.br
+\(bu \fBend\fR
+.br
+\(bu \fBpgup\fR
+.br
+\(bu \fBpgdown\fR
+.br
+\(bu \fBenter\fR
+.br
+\(bu \fBtab\fR
+.br
+\(bu \fBspace\fR
+.br
+\(bu \fBF1\fR..\fBF12\fR
+.br
+.P
+Modifiers:
+.P
+.TP
+Ctrl:
+\fBC\-X\fR or \fB^X\fR
+.PP
+.TP
+Alt:
+\fBM\-X\fR
+.PP
+.TP
+Shift:
+\fBS\-left\fR
+.PP
+Key chains are supported. For example \fB"^X c"\fR (press \fB^X\fR and then \fBc\fR).
+Keys are separated by spaces.
+.P
+.RE
+\fBbof\fR
+.RS
+Move to beginning of file.
+.P
+.RE
+\fBbol\fR
+.RS
+Move to beginning of line.
+.P
+.RE
+\fBbolsf\fR
+.RS
+Incrementally move cursor to beginning of line, then beginning
+of screen, then beginning of file.
+.P
+.RE
+\fBcase\fR [\fB\-lu\fR]
+.RS
+Change text case. The default is to change lower case to upper case and
+vice versa.
+.P
+.TP
+\fB\-l\fR
+Lower case
+.PP
+.TP
+\fB\-u\fR
+Upper case
+.PP
+.RE
+\fBcd\fR \fIdirectory\fR
+.RS
+Change the working directory and update \fB$PWD\fR and \fB$OLDPWD\fR. Running
+\fBcd \-\fR changes to the previous directory (\fB$OLDPWD\fR).
+.P
+.RE
+\fBcenter\-view\fR
+.RS
+Center view to cursor.
+.P
+.RE
+\fBclear\fR
+.RS
+Clear current line.
+.P
+.RE
+\fBclose\fR [\fB\-fqw\fR]
+.RS
+Close file.
+.P
+.TP
+\fB\-f\fR
+Close file even if it hasn't been saved after last modification
+.PP
+.TP
+\fB\-q\fR
+Quit if closing the last open file
+.PP
+.TP
+\fB\-w\fR
+Close parent window if closing its last contained file
+.PP
+.RE
+\fBcommand\fR [\fItext\fR]
+.RS
+Enter command mode. If \fItext\fR is given then it is written to the command
+line (see the default \fB^L\fR key binding for why this is useful).
+.P
+.RE
+\fBcompile\fR [\fB\-1ps\fR] \fIerrorfmt\fR \fIcommand\fR [\fIparameters\fR]...
+.RS
+Run external \fIcommand\fR and collect error messages. This can be
+used to run \fBmake\fR(1) and \fBgrep\fR(1).
+.P
+.TP
+\fB\-1\fR
+Read error messages from stdout instead of stderr
+.PP
+.TP
+\fB\-p\fR
+Display "Press any key to continue" prompt
+.PP
+.TP
+\fB\-s\fR
+Silent. Both \fBstderr\fR and \fBstdout\fR are redirected to \fB/dev/null\fR
+.PP
+See also: \fBerrorfmt\fR and \fBmsg\fR commands.
+.P
+.RE
+\fBcopy\fR
+.RS
+Copy current line or selection.
+.P
+.RE
+\fBcut\fR
+.RS
+Cut current line or selection.
+.P
+.RE
+\fBdelete\fR
+.RS
+Delete character or selection.
+.P
+.RE
+\fBdelete\-eol\fR [\fB\-n\fR]
+.RS
+Delete to end of line.
+.P
+.TP
+\fB\-n\fR
+Delete newline if cursor is at end of line
+.PP
+.RE
+\fBdelete\-word\fR [\fB\-s\fR]
+.RS
+Delete word after cursor.
+.P
+.TP
+\fB\-s\fR
+Be more "aggressive"
+.PP
+.RE
+\fBdown\fR
+.RS
+Move cursor down.
+.P
+.RE
+\fBeof\fR
+.RS
+Move cursor to end of file.
+.P
+.RE
+\fBeol\fR
+.RS
+Move cursor to end of line.
+.P
+.RE
+\fBeolsf\fR
+.RS
+Incrementally move cursor to end of line, then end of screen, then
+end of file.
+.P
+.RE
+\fBerase\fR
+.RS
+Erase character before cursor.
+.P
+.RE
+\fBerase\-bol\fR
+.RS
+Erase to beginning of line.
+.P
+.RE
+\fBerase\-word\fR [\fB\-s\fR]
+.RS
+Erase word before cursor.
+.P
+.TP
+\fB\-s\fR
+Be more "aggressive"
+.PP
+.RE
+\fBerrorfmt\fR [\fB\-i\fR] \fIcompiler\fR \fIregexp\fR [file|line|column|message]...
+.RS
+.TP
+\fB\-i\fR
+Ignore this error
+.PP
+See \fBcompile\fR and \fBmsg\fR commands for more information.
+.P
+.RE
+\fBfilter\fR \fIcommand\fR [\fIparameter\fR]...
+.RS
+Filter selected text or whole file through external \fIcommand\fR.
+.P
+Example:
+.P
+.IP
+.nf
+\f[C]
+filter\ sort\ \-r
+\f[]
+.fi
+.PP
+.RE
+\fBformat\-paragraph\fR [\fIwidth\fR]
+.RS
+Format the current selection or paragraph under the cursor. If
+paragraph \fIwidth\fR is not given then the \fBtext\-width\fR option is
+used.
+.P
+This command merges the selection into one paragraph. To format
+multiple paragraphs use the external \fBfmt\fR(1) program with the
+\fBfilter\fR command, e.g. \fBfilter fmt \-w 60\fR.
+.P
+.RE
+\fBft\fR \fIfiletype\fR \fIextension\fR...
+.RS
+Associate filename \fIextension\fR with \fIfiletype\fR.
+.P
+Filetypes are used to determine which syntax highlighter and local
+options to use when opening files.
+.P
+Example:
+.P
+.IP
+.nf
+\f[C]
+ft\ sh\ sh\ bash\ ksh\ zsh
+\f[]
+.fi
+.PP
+See also:
+.P
+\(bu The \fBoption\fR command (below)
+.br
+\(bu The \fBfiletype\fR option (below)
+.br
+\(bu The \fBdte\-syntax\fR(5) man page
+.br
+\(bu The built\-in filetype associations
+(which can be listed by running \fBdte \-b filetype\fR)
+.br
+.P
+.RE
+\fBft\fR \fB\-b\fR \fIfiletype\fR \fIbasename\fR...
+.RS
+Associate file \fIbasename\fR with \fIfiletype\fR.
+.P
+.RE
+\fBft\fR \fB\-c\fR \fIfiletype\fR \fIcontents\-regexp\fR...
+.RS
+Detect \fIfiletype\fR by matching \fIcontents\-regexp\fR against first line of file.
+.P
+.RE
+\fBft\fR \fB\-f\fR \fIfiletype\fR \fIfilename\-regexp\fR...
+.RS
+Detect \fIfiletype\fR by matching \fIfilename\-regexp\fR against filename.
+.P
+.RE
+\fBft\fR \fB\-i\fR \fIfiletype\fR \fIinterpreter\fR...
+.RS
+Associate \fIinterpreter\fR with \fIfiletype\fR. Interpreters are parsed
+from the \fB#!\fR line in many scripts.
+.P
+.RE
+\fBgit\-open\fR
+.RS
+Interactive file opener. Lists all files in a git repository.
+.P
+Same keys work as in command mode, but with these changes:
+.P
+.TP
+\fBup\fR
+Move up in file list.
+.PP
+.TP
+\fBdown\fR
+Move down in file list.
+.PP
+.TP
+\fBenter\fR
+Open file.
+.PP
+.TP
+\fB^O\fR
+Open file but don't close git\-open.
+.PP
+.TP
+\fBM\-e\fR
+Go to end of file list.
+.PP
+.TP
+\fBM\-t\fR
+Go to top of file list.
+.PP
+.RE
+\fBhi\fR \fIname\fR [\fIfg\-color\fR [\fIbg\-color\fR]] [\fIattribute\fR]...
+.RS
+Set highlight color.
+.P
+Colors:
+.P
+\(bu \fBkeep\fR (\fB\-2\fR)
+.br
+\(bu \fBdefault\fR (\fB\-1\fR)
+.br
+\(bu \fBblack\fR (\fB0\fR)
+.br
+\(bu \fBred\fR
+.br
+\(bu \fBgreen\fR
+.br
+\(bu \fByellow\fR
+.br
+\(bu \fBblue\fR
+.br
+\(bu \fBmagenta\fR
+.br
+\(bu \fBcyan\fR
+.br
+\(bu \fBgray\fR
+.br
+\(bu \fBdarkgray\fR
+.br
+\(bu \fBlightred\fR
+.br
+\(bu \fBlightgreen\fR
+.br
+\(bu \fBlightyellow\fR
+.br
+\(bu \fBlightblue\fR
+.br
+\(bu \fBlightmagenta\fR
+.br
+\(bu \fBlightcyan\fR
+.br
+\(bu \fBwhite\fR
+.br
+.P
+Color can be given as a numeric value too (\fB\-2\fR..\fB255\fR).
+.P
+Colors \fB16\fR\-\fB255\fR are supported by modern \fBxterm\fR\-compatible terminal
+emulators. There's a 6x6x6 color cube at indexes \fB16\fR..\fB231\fR. For these
+colors it is easiest to use the R/G/B syntax where R, G and B are values
+between \fB0\fR and \fB5\fR.
+.P
+Indexes \fB232\fR..\fB255\fR contain 24 grayscale values that can be used
+to specify grayscale value more accurately than using the R/G/B
+syntax.
+.P
+Attributes:
+.P
+\(bu \fBbold\fR
+.br
+\(bu \fBlowintensity\fR
+.br
+\(bu \fBitalic\fR
+.br
+\(bu \fBunderline\fR
+.br
+\(bu \fBblink\fR
+.br
+\(bu \fBreverse\fR
+.br
+\(bu \fBinvisible\fR
+.br
+\(bu \fBkeep\fR
+.br
+.P
+The color and attribute value \fBkeep\fR is useful in selected text
+to keep \fIfg\-color\fR and attributes and change only \fIbg\-color\fR.
+.P
+NOTE: Because \fBkeep\fR is both a color and an attribute you need to
+specify both \fIfg\-color\fR and \fIbg\-color\fR if you want to set the \fBkeep\fR
+\fIattribute\fR.
+.P
+If you omit any color it is set to \fBdefault\fR (\fB\-1\fR).
+.P
+Unset fg/bg colors are inherited from highlight color \fBdefault\fR.
+If you don't set fg/bg for the highlight color \fBdefault\fR then
+terminal's default fg/bg is used.
+.P
+.RE
+\fBinclude\fR [\fB\-b\fR] \fIfile\fR
+.RS
+Read commands from \fIfile\fR.
+.P
+.TP
+\fB\-b\fR
+Read built\-in \fIfile\fR instead of reading from the filesystem
+.PP
+.RE
+\fBinsert\fR [\fB\-km\fR] \fItext\fR
+.RS
+Insert \fItext\fR into the buffer.
+.P
+.TP
+\fB\-k\fR
+Insert one character at a time as if it has been typed
+.PP
+.TP
+\fB\-m\fR
+Move after inserted text
+.PP
+.RE
+\fBinsert\-special\fR
+.RS
+Enter an input mode that allows inserting special characters or byte
+values. After running the command, type a decimal value or use one of
+the following prefixes:
+.P
+.TP
+\fBo\fR
+Insert 3\-digit octal byte value
+.PP
+.TP
+\fBx\fR
+Insert 2\-digit hexadecimal byte value
+.PP
+.TP
+\fBu\fR
+Insert 6\-digit hexadecimal Unicode value
+.PP
+.RE
+\fBjoin\fR
+.RS
+Join selection or next line to current.
+.P
+.RE
+\fBleft\fR
+.RS
+Move left.
+.P
+.RE
+\fBline\fR \fInumber\fR
+.RS
+Go to line.
+.P
+.RE
+\fBload\-syntax\fR \fIfilename\fR|\fIfiletype\fR
+.RS
+Load a \fBdte\-syntax\fR(5) file into the editor. If the argument contains a
+\fB/\fR character it's considered a filename.
+.P
+Note: this command only loads a syntax file ready for later use. To
+actually apply a syntax highlighter to the current buffer, use the
+\fBset\fR command to change the \fBfiletype\fR of the buffer instead, e.g.
+\fBset filetype html\fR.
+.P
+.RE
+\fBmove\-tab\fR \fIN\fR|left|right
+.RS
+Move current tab to position \fIN\fR or 1 position left or right.
+.P
+.RE
+\fBmsg\fR [\fB\-np\fR]
+.RS
+Show latest, next (\fB\-n\fR) or previous (\fB\-p\fR) message. If its location
+is known (compile error or tag message) then the file will be
+opened and cursor moved to the location.
+.P
+.TP
+\fB\-n\fR
+Next message
+.PP
+.TP
+\fB\-p\fR
+Previous message
+.PP
+See also \fBcompile\fR and \fBtag\fR commands.
+.P
+.RE
+\fBnew\-line\fR
+.RS
+Insert empty line under current line.
+.P
+.RE
+\fBnext\fR
+.RS
+Display next file.
+.P
+.RE
+\fBopen\fR [\fB\-g\fR] [\fB\-e\fR \fIencoding\fR] [\fIfile\fR]...
+.RS
+Open \fIfile\fR. If filename is omitted, a new file is opened.
+.P
+.TP
+\fB\-e\fR \fIencoding\fR
+Set file \fIencoding\fR. See \fBiconv \-l\fR for list of supported encodings.
+.PP
+.TP
+\fB\-g\fR
+Perform \fBglob\fR(3) expansion on \fIfile\fR.
+.PP
+.RE
+\fBoption\fR \fIfiletype\fR \fIoption\fR \fIvalue\fR...
+.RS
+Add automatic \fIoption\fR for \fIfiletype\fR (as previously registered
+with the \fBft\fR command). Automatic options are set when files are
+are opened.
+.P
+.RE
+\fBoption\fR \fB\-r\fR \fIregexp\fR \fIoption\fR \fIvalue\fR...
+.RS
+Add automatic \fIoption\fR for filenames that match \fIregexp\fR.
+.P
+.RE
+\fBpass\-through\fR [\fB\-ms\fR] \fIcommand\fR [\fIparameter\fR]...
+.RS
+Run external \fIcommand\fR and insert its output.
+.P
+.TP
+\fB\-m\fR
+Move after the inserted text
+.PP
+.TP
+\fB\-s\fR
+Strip newline from end of the command output
+.PP
+.RE
+\fBpaste\fR
+.RS
+Paste.
+.P
+.TP
+\fB\-c\fR
+Paste at the cursor position
+.PP
+.RE
+\fBpgdown\fR
+.RS
+Move cursor page down. See also \fBscroll\-pgdown\fR.
+.P
+.RE
+\fBpgup\fR
+.RS
+Move cursor page up. See also \fBscroll\-pgup\fR.
+.P
+.RE
+\fBprev\fR
+.RS
+Display previous file.
+.P
+.RE
+\fBquit\fR [\fB\-f\fR]
+.RS
+Quit.
+.P
+.TP
+\fB\-f\fR
+Force quitting even if there are unsaved files
+.PP
+.RE
+\fBredo\fR [\fIchoice\fR]
+.RS
+Redo changes done by the \fBundo\fR command. If there are multiple
+possibilities an informative message is displayed:
+.P
+.IP
+.nf
+\f[C]
+Redoing\ newest\ (2)\ of\ 2\ possible\ changes.
+\f[]
+.fi
+.PP
+If the change was not the one you wanted, just run \fBundo\fR and
+then, for example, \fBredo 1\fR.
+.P
+.RE
+\fBrepeat\fR \fIcount\fR \fIcommand\fR [\fIparameters\fR]...
+.RS
+Run \fIcommand\fR \fIcount\fR times.
+.P
+.RE
+\fBreplace\fR [\fB\-bcgi\fR] \fIpattern\fR \fIreplacement\fR
+.RS
+Replace all instances of text matching \fIpattern\fR with the \fIreplacement\fR
+text.
+.P
+The \fIpattern\fR is a POSIX extended \fBregex\fR(7).
+.P
+.TP
+\fB\-b\fR
+Use basic instead of extended regex syntax
+.PP
+.TP
+\fB\-c\fR
+Ask for confirmation before each replacement
+.PP
+.TP
+\fB\-g\fR
+Replace all matches for each line (instead of just the first)
+.PP
+.TP
+\fB\-i\fR
+Ignore case
+.PP
+.RE
+\fBright\fR
+.RS
+Move right.
+.P
+.RE
+\fBrun\fR [\fB\-ps\fR] \fIcommand\fR [\fIparameters\fR]...
+.RS
+Run external \fIcommand\fR.
+.P
+.TP
+\fB\-p\fR
+Display "Press any key to continue" prompt
+.PP
+.TP
+\fB\-s\fR
+Silent \-\- both \fBstderr\fR and \fBstdout\fR are redirected to \fB/dev/null\fR
+.PP
+.RE
+\fBsave\fR [\fB\-dfup\fR] [\fB\-e\fR \fIencoding\fR] [\fIfilename\fR]
+.RS
+Save file. By default line\-endings (LF vs CRLF) are preserved.
+.P
+.TP
+\fB\-d\fR
+Save with DOS/CRLF line\-endings
+.PP
+.TP
+\fB\-f\fR
+Force saving read\-only file
+.PP
+.TP
+\fB\-u\fR
+Save with Unix/LF line\-endings
+.PP
+.TP
+\fB\-p\fR
+Open a command prompt if there's no specified or existing \fIfilename\fR
+.PP
+.TP
+\fB\-e\fR \fIencoding\fR
+Set file \fIencoding\fR. See \fBiconv \-l\fR for list of supported encodings.
+.PP
+.RE
+\fBscroll\-down\fR
+.RS
+Scroll view down one line. Keeps cursor position unchanged if possible.
+.P
+.RE
+\fBscroll\-pgdown\fR
+.RS
+Scroll page down. Cursor position relative to top of screen is
+maintained. See also \fBpgdown\fR.
+.P
+.RE
+\fBscroll\-pgup\fR
+.RS
+Scroll page up. Cursor position relative to top of screen is
+maintained. See also \fBpgup\fR.
+.P
+.RE
+\fBscroll\-up\fR
+.RS
+Scroll view up one line. Keeps cursor position unchanged if possible.
+.P
+.RE
+\fBsearch\fR [\fB\-Hnprw\fR] [\fIpattern\fR]
+.RS
+If no flags or just \fB\-r\fR and no \fIpattern\fR given then dte changes to
+search mode where you can type a regular expression to search.
+.P
+.TP
+\fB\-H\fR
+Don't add \fIpattern\fR to search history
+.PP
+.TP
+\fB\-n\fR
+Search next
+.PP
+.TP
+\fB\-p\fR
+Search previous
+.PP
+.TP
+\fB\-r\fR
+Start searching backwards
+.PP
+.TP
+\fB\-w\fR
+Search word under cursor
+.PP
+.RE
+\fBselect\fR [\fB\-bkl\fR]
+.RS
+Start selecting an area of text.
+.P
+.TP
+\fB\-b\fR
+Select block between opening \fB{\fR and closing \fB}\fR curly braces
+.PP
+.TP
+\fB\-k\fR
+Keep existing selections
+.PP
+.TP
+\fB\-l\fR
+Select whole lines
+.PP
+.RE
+\fBset\fR [\fB\-gl\fR] \fIoption\fR [\fIvalue\fR] ...
+.RS
+Set \fIvalue\fR for \fIoption\fR. Value can be omitted for boolean option to set
+it true. Multiple options can be set at once but then \fIvalue\fR must be
+given for every option.
+.P
+There are three kinds of options.
+.P
+1. Global options.
+.P
+.
+.br
+2. Local options. These are file specific options. Each open file has
+its own copies of the option values.
+.P
+.
+.br
+3. Options that have both global and local values. The Global value is
+just a default local value for opened files and never used for
+anything else. Changing the global value does not affect any already
+opened files.
+.P
+.
+.br
+.P
+By default \fBset\fR changes both global and local values.
+.P
+.TP
+\fB\-g\fR
+Change only global option value
+.PP
+.TP
+\fB\-l\fR
+Change only local option value of current file
+.PP
+In configuration files only global options can be set (no need
+to specify the \fB\-g\fR flag).
+.P
+To automatically set options for specific filetypes and filenames use
+the \fBoption\fR command.
+.P
+.RE
+\fBsetenv\fR \fIname\fR \fIvalue\fR
+.RS
+Set environment variable.
+.P
+.RE
+\fBshift\fR \fIcount\fR
+.RS
+Shift current or selected lines by \fIcount\fR indentation levels.
+Count is usually \fB\-1\fR (decrease indent) or \fB1\fR (increase indent).
+.P
+To specify a negative number, it's necessary to first disable
+option parsing with \fB\-\-\fR, e.g. \fBshift \-\- \-1\fR.
+.P
+.RE
+\fBsuspend\fR
+.RS
+Suspend program.
+.P
+.RE
+\fBtag\fR [\fB\-r\fR] [\fItag\fR]
+.RS
+Save current location to stack and go to the location of \fItag\fR.
+Requires tags file generated by Exuberant Ctags. If no \fItag\fR is
+given then word under cursor is used as a tag instead.
+.P
+.TP
+\fB\-r\fR
+return back to previous location
+.PP
+Tag files are searched from current working directory and its
+parent directories.
+.P
+See also \fBmsg\fR command.
+.P
+.RE
+\fBtoggle\fR [\fB\-gv\fR] \fIoption\fR [\fIvalues\fR]...
+.RS
+Toggle \fIoption\fR. If list of \fIvalues\fR is not given then the option
+must be either boolean or enum.
+.P
+.TP
+\fB\-g\fR
+toggle global option instead of local
+.PP
+.TP
+\fB\-v\fR
+display new value
+.PP
+If \fIoption\fR has both local and global value then local is toggled
+unless \-g is given.
+.P
+.RE
+\fBundo\fR
+.RS
+Undo latest change.
+.P
+.RE
+\fBunselect\fR
+.RS
+Unselect.
+.P
+.RE
+\fBup\fR
+.RS
+Move cursor up.
+.P
+.RE
+\fBview\fR \fIN\fR|last
+.RS
+Display _N_th or last open file.
+.P
+.RE
+\fBwclose\fR [\fB\-f\fR]
+.RS
+Close window.
+.P
+.TP
+\fB\-f\fR
+Close even if there are unsaved files in the window
+.PP
+.RE
+\fBwflip\fR
+.RS
+Change from vertical layout to horizontal and vice versa.
+.P
+.RE
+\fBwnext\fR
+.RS
+Next window.
+.P
+.RE
+\fBword\-bwd\fR [\fB\-s\fR]
+.RS
+Move cursor backward one word.
+.P
+.TP
+\fB\-s\fR
+Skip special characters
+.PP
+.RE
+\fBword\-fwd\fR [\fB\-s\fR]
+.RS
+Move cursor forward one word.
+.P
+.TP
+\fB\-s\fR
+Skip special characters
+.PP
+.RE
+\fBwprev\fR
+.RS
+Previous window.
+.P
+.RE
+\fBwresize\fR [\fB\-hv\fR] [\fIN\fR|+\fIN\fR|\-\- \-\fIN\fR]
+.RS
+If no parameter given, equalize window sizes in current frame.
+.P
+.TP
+\fB\-h\fR
+Resize horizontally
+.PP
+.TP
+\fB\-v\fR
+Resize vertically
+.PP
+.TP
+\fIN\fR
+Set size of current window to \fIN\fR characters.
+.PP
+.TP
+\fB+\fR\fIN\fR
+Increase size of current window by \fIN\fR characters.
+.PP
+.TP
+\fB\-\fR\fIN\fR
+Decrease size of current window by \fIN\fR characters. Use \fB\-\-\fR to
+prevent the minus symbol being parsed as an option flag, e.g.
+\fBwresize \-\- \-5\fR.
+.PP
+.RE
+\fBwsplit\fR [\fB\-bhr\fR] [\fIfile\fR]...
+.RS
+Like \fBopen\fR but at first splits current window vertically.
+.P
+.TP
+\fB\-b\fR
+Add new window before current instead of after.
+.PP
+.TP
+\fB\-h\fR
+Split horizontally instead of vertically.
+.PP
+.TP
+\fB\-r\fR
+Split root instead of current window.
+.PP
+.RE
+\fBwswap\fR
+.RS
+Swap positions of this and next frame.
+.P
+.RE
+.SH OPTIONS
+Options can be changed using the \fBset\fR command. Enumerated options can
+also be \fBtoggle\fRd. To see which options are enumerated, type "toggle "
+in command mode and press the tab key. You can also use the \fBoption\fR
+command to set default options for specific file types.
+.P
+.SS Global options
+\fBcase\-sensitive\-search\fR [true]
+.RS
+.TP
+\fBfalse\fR
+Search is case\-insensitive.
+.PP
+.TP
+\fBtrue\fR
+Search is case\-sensitive.
+.PP
+.TP
+\fBauto\fR
+If search string contains an uppercase letter search is
+case\-sensitive, otherwise it is case\-insensitive.
+.PP
+.RE
+\fBdisplay\-special\fR [false]
+.RS
+Display special characters.
+.P
+.RE
+\fBesc\-timeout\fR [100] 0...2000
+.RS
+When single escape is read from the terminal dte waits some
+time before treating the escape as a single keypress. The
+timeout value is in milliseconds.
+.P
+Too long timeout makes escape key feel slow and too small
+timeout can cause escape sequences of for example arrow keys to
+be split and treated as multiple key presses.
+.P
+.RE
+\fBlock\-files\fR [true]
+.RS
+Lock files using \fB$DTE_HOME/file\-locks\fR. Only protects from your
+own mistakes (two processes editing same file).
+.P
+.RE
+\fBnewline\fR [unix]
+.RS
+Whether to use LF (\fIunix\fR) or CRLF (\fIdos\fR) line\-endings. This is
+just a default value for new files.
+.P
+.RE
+\fBscroll\-margin\fR [0]
+.RS
+Minimum number of lines to keep visible before and after cursor.
+.P
+.RE
+\fBset\-window\-title\fR [false]
+.RS
+Set the window title to the filename of the current buffer (if the
+terminal supports it).
+.P
+.RE
+\fBshow\-line\-numbers\fR [false]
+.RS
+Show line numbers.
+.P
+.RE
+\fBstatusline\-left\fR [" %f%s%m%r%s%M"]
+.RS
+Format string for the left aligned part of status line.
+.P
+.TP
+\fB%f\fR
+Filename.
+.PP
+.TP
+\fB%m\fR
+Prints \fB*\fR if file is has been modified since last save.
+.PP
+.TP
+\fB%r\fR
+Prints \fBRO\fR if file is read\-only.
+.PP
+.TP
+\fB%y\fR
+Cursor row.
+.PP
+.TP
+\fB%Y\fR
+Total rows in file.
+.PP
+.TP
+\fB%x\fR
+Cursor display column.
+.PP
+.TP
+\fB%X\fR
+Cursor column as characters. If it differs from cursor display
+column then both are shown (e.g. \fB2\-9\fR).
+.PP
+.TP
+\fB%p\fR
+Position in percentage.
+.PP
+.TP
+\fB%E\fR
+File encoding.
+.PP
+.TP
+\fB%M\fR
+Miscellaneous status information.
+.PP
+.TP
+\fB%n\fR
+Line\-ending (LF or CRLF).
+.PP
+.TP
+\fB%s\fR
+Add separator.
+.PP
+.TP
+\fB%t\fR
+File type.
+.PP
+.TP
+\fB%u\fR
+Hexadecimal Unicode value value of character under cursor.
+.PP
+.TP
+\fB%%\fR
+Literal \fB%\fR.
+.PP
+.RE
+\fBstatusline\-right\fR [" %y,%X %u %E %n %t %p "]
+.RS
+Format string for the right aligned part of status line.
+.P
+.RE
+\fBtab\-bar\fR [horizontal]
+.RS
+.TP
+\fBhidden\fR
+Hide tab bar.
+.PP
+.TP
+\fBhorizontal\fR
+Show tab bar on top.
+.PP
+.TP
+\fBvertical\fR
+Show tab bar on left if there's enough space, hide otherwise.
+.PP
+.TP
+\fBauto\fR
+Show tab bar on left if there's enough space, on top otherwise.
+.PP
+.RE
+\fBtab\-bar\-max\-components\fR [0]
+.RS
+Maximum number of path components displayed in vertical tab bar.
+Set to \fB0\fR to disable.
+.P
+.RE
+\fBtab\-bar\-width\fR [25]
+.RS
+Width of vertical tab bar. Note that width of tab bar is
+automatically reduced to keep editing area at least 80
+characters wide. Vertical tab bar is shown only if there's
+enough space.
+.P
+.RE
+.SS Local options
+\fBbrace\-indent\fR [false]
+.RS
+Scan for \fB{\fR and \fB}\fR characters when calculating indentation size.
+Depends on the \fBauto\-indent\fR option.
+.P
+.RE
+\fBfiletype\fR [none]
+.RS
+Type of file. Value must be previously registered using the \fBft\fR
+command.
+.P
+.RE
+\fBindent\-regex\fR [""]
+.RS
+If this regular expression matches current line when enter is
+pressed and \fBauto\-indent\fR is true then indentation is increased.
+Set to \fB""\fR to disable.
+.P
+.RE
+.SS Local and global options
+The global values for these options serve as the default values for
+local (per\-file) options.
+.P
+\fBauto\-indent\fR [true]
+.RS
+Automatically insert indentation when pressing enter.
+Indentation is copied from previous non\-empty line. If also the
+\fBindent\-regex\fR local option is set then indentation is
+automatically increased if the regular expression matches
+current line.
+.P
+.RE
+\fBdetect\-indent\fR [""]
+.RS
+Comma\-separated list of indent widths (\fB1\fR\-\fB8\fR) to detect automatically
+when a file is opened. Set to \fB""\fR to disable. Tab indentation is
+detected if the value is not \fB""\fR. Adjusts the following options if
+indentation style is detected: \fBemulate\-tab\fR, \fBexpand\-tab\fR,
+\fBindent\-width\fR.
+.P
+Example:
+.P
+.IP
+.nf
+\f[C]
+set\ detect\-indent\ 2,3,4,8
+\f[]
+.fi
+.PP
+.RE
+\fBemulate\-tab\fR [false]
+.RS
+Make \fBdelete\fR, \fBerase\fR and moving \fBleft\fR and \fBright\fR inside
+indentation feel as if there were tabs instead of spaces.
+.P
+.RE
+\fBexpand\-tab\fR [false]
+.RS
+Convert tab to spaces on insert.
+.P
+.RE
+\fBfile\-history\fR [true]
+.RS
+Save line and column for each file to \fB$DTE_HOME/file\-history\fR.
+.P
+.RE
+\fBindent\-width\fR [8]
+.RS
+Size of indentation in spaces.
+.P
+.RE
+\fBsyntax\fR [true]
+.RS
+Use syntax highlighting.
+.P
+.RE
+\fBtab\-width\fR [8]
+.RS
+Width of tab. Recommended value is \fB8\fR. If you use other
+indentation size than \fB8\fR you should use spaces to indent.
+.P
+.RE
+\fBtext\-width\fR [72]
+.RS
+Preferred width of text. Used as the default argument for the
+\fBformat\-paragraph\fR command.
+.P
+.RE
+\fBws\-error\fR [special]
+.RS
+Comma\-separated list of flags that describe which whitespace
+errors should be highlighted. Set to \fB""\fR to disable.
+.P
+.TP
+\fBauto\-indent\fR
+If the \fBexpand\-tab\fR option is enabled then this is the
+same as \fBtab\-after\-indent,tab\-indent\fR. Otherwise it's
+the same as \fBspace\-indent\fR.
+.PP
+.TP
+\fBspace\-align\fR
+Highlight spaces used for alignment after tab
+indents as errors.
+.PP
+.TP
+\fBspace\-indent\fR
+Highlight space indents as errors. Note that this still allows
+using less than \fBtab\-width\fR spaces at the end of indentation
+for alignment.
+.PP
+.TP
+\fBtab\-after\-indent\fR
+Highlight tabs used anywhere other than indentation as errors.
+.PP
+.TP
+\fBtab\-indent\fR
+Highlight tabs in indentation as errors. If you set this you
+most likely want to set "tab\-after\-indent" too.
+.PP
+.TP
+\fBspecial\fR
+Display all characters that look like regular space as errors.
+One of these characters is no\-break space (U+00A0), which is often
+accidentally typed (AltGr+space in some keyboard layouts).
+.PP
+.TP
+\fBtrailing\fR
+Highlight trailing whitespace characters at the end of lines as
+errors.
+.PP
+.SH SEE ALSO
+\fBdte\fR(1),
+\fBdte\-syntax\fR(5)
+.SH AUTHORS
+Craig Barnes
+.br
+Timo Hirvonen

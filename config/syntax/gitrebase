@@ -1,0 +1,48 @@
+syntax gitrebase
+
+state start text
+    char "\n" this
+    char # comment
+    char -b a-zA-Z0-9_ word
+    eat error
+
+state word text
+    char -b a-zA-Z0-9_ this
+    inlist keyword separator1
+    bufis x exec keyword
+    bufis exec exec keyword
+    noeat error
+
+# FIXME: can be annoying
+state error
+    char "\n" start
+    eat this
+
+state separator1 code
+    char " \t" space1
+    noeat error
+
+state space1 code
+    char " \t" space1
+    noeat sha1
+
+state sha1 constant
+    char 0-9a-fA-F this
+    char "\n" start
+    char " \t" title
+    noeat error
+
+state title text
+    char "\n" start
+    eat this
+
+state exec code
+    char "\n" start
+    eat this
+
+state comment
+    char "\n" start
+    eat this
+
+list keyword \
+    e f p r s edit fixup pick reword squash

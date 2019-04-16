@@ -1,0 +1,252 @@
+.TH DTE 1 "November 2017"
+.nh
+.ad l
+.
+.SH NAME
+.
+dte \- A small and flexible text editor
+.
+.SH SYNOPSIS
+.
+.B dte
+.RB [ \-hBRV ]
+[\fB\-c\fR \fIcommand\fR]
+[\fB\-t\fR \fIctag\fR]
+[\fB\-r\fR \fIrcfile\fR]
+[\fB\-b\fR \fIrcname\fR]
+.RI [[+ line ] " file" ]...
+.
+.SH OPTIONS
+.
+.TP
+.BI \-c " command"
+Run \fIcommand\fR, after reading the rc file and opening any \fIfile\fR
+arguments. See \fBdterc\fR(5) for available commands.
+.
+.TP
+.BI \-t " ctag"
+Jump to source location of \fIctag\fR. Requires \fBtags\fR file generated
+by \fBctags\fR(1).
+.
+.TP
+.BI \-r " rcfile"
+Read configuration from \fIrcfile\fR instead of \fB~/.dte/rc\fR.
+.
+.TP
+.BI \-b " rcname"
+Dump the contents of the built\-in rc or syntax file named \fIrcname\fR
+and exit.
+.
+.TP
+.B \-B
+Print a list of all built\-in config names that can be used with the
+\fB\-b\fR option and exit.
+.
+.TP
+.B \-R
+Don't read the rc file.
+.
+.TP
+.B \-h
+Display the help summary and exit.
+.
+.TP
+.B \-V
+Display the version number and exit.
+.
+.SH BASIC USAGE
+.
+Here's some of the default key bindings. \fBM\-x\fR means Alt+x and
+\fB^V\fR is Ctrl+v.
+.
+.TP
+.B M\-s
+Select
+.
+.TP
+.B M\-l
+Select lines
+.
+.TP
+.B ^C
+Copy current line or selection
+.
+.TP
+.B ^X
+Cut current line or selection
+.
+.TP
+.B ^V
+Paste
+.
+.TP
+.B ^Z
+Undo
+.
+.TP
+.B ^Y
+Redo
+.
+.TP
+.B M\-x
+Enter command mode
+.
+.TP
+.B ^F
+Enter search mode
+.
+.TP
+.B F3
+Search next
+.
+.TP
+.B F4
+Search previous
+.
+.TP
+.B ^T
+Open new tab
+.
+.TP
+.BI M\- N
+Activate \fIN\fRth tab
+.
+.TP
+.B ^W
+Close tab
+.
+.TP
+.B ^S
+Save file
+.
+.TP
+.B ^Q
+Quit
+.
+.SH COMMAND MODE
+.
+Command mode allows you to run various editor commands by using a
+language similar to Unix shell. The \fBnext\fR and \fBprev\fR commands
+switch to the next/previous file. The \fBopen\fR, \fBsave\fR and
+\fBquit\fR commands should be self\-explanatory. For a full list of
+available commands, see \fBdterc\fR(5).
+.P
+The default key bindings for command mode are:
+.
+.TP
+.BR up / down
+Browse previous command history.
+.
+.TP
+.B tab
+Auto\-complete current command or argument
+.
+.TP
+.B ^A
+Go to beginning of command line
+.
+.TP
+.B ^B
+Move left
+.
+.TP
+.B ^C
+Exit command mode
+.
+.TP
+.B ^D
+Delete
+.
+.TP
+.B ^E
+Go to end of command line
+.
+.TP
+.B ^F
+Move right
+.
+.TP
+.B ^K
+Delete to end of command line
+.
+.TP
+.B ^U
+Delete to beginning of command line
+.
+.TP
+.B ^V
+Insert special character
+.
+.TP
+.B ^W
+Erase word
+.
+.TP
+.B Esc
+Exit command mode
+.
+.SH SEARCH MODE
+.
+Search mode allows you to enter an extended regular expression to search
+in the current buffer.
+.P
+The key bindings for search mode are mostly the same as in command mode,
+plus these additional keys:
+.
+.TP
+.B M\-c
+Toggle case sensitive search option.
+.
+.TP
+.B M\-r
+Reverse search direction.
+.
+.SH ENVIRONMENT
+.
+.TP
+.B DTE_HOME
+User configuration directory. Defaults to \fB~/.dte\fR if not set.
+.
+.SH FILES
+.
+.TP
+.B $DTE_HOME/rc
+Your personal configuration file. See \fBdterc\fR(5) for a full list of
+available commands and options or run "dte \-b rc" to see the built\-in,
+default config.
+.
+.TP
+.B $DTE_HOME/syntax/*
+Your personal syntax files. These override the syntax files that come
+with the program. See \fBdte\-syntax\fR(5) for more information or run
+"dte \-b syntax/dte" for a basic example.
+.
+.TP
+.B $DTE_HOME/file\-locks
+Records open files to protect you from accidentally editing files opened
+in another process. Used only if the \fBlock\-files\fR option is
+enabled.
+.
+.TP
+.B $DTE_HOME/file\-history
+History of edited files and cursor positions. Used only if the
+\fBfile\-history\fR option is enabled.
+.
+.TP
+.B $DTE_HOME/command\-history
+History of \fBdterc\fR(5) commands used while in command mode.
+.
+.TP
+.B $DTE_HOME/search\-history
+History of search patterns used while in search mode.
+.
+.SH SEE ALSO
+.
+.BR dterc (5),
+.BR dte\-syntax (5)
+.
+.SH AUTHORS
+.
+Craig Barnes <cr@igbarn.es>
+.br
+Timo Hirvonen <tihirvon@gmail.com>

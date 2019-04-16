@@ -1,0 +1,308 @@
+syntax .c-esc
+
+# TODO: C11 Unicode escapes (e.g. "\u00ff" and "\U00ff99cc")
+state start special
+    char "abfnrtv'\\\"" END special
+    char 0-3 oct1
+    char 4-7 oct2
+    char x hex0
+    # Anything but \n
+    char -n "\n" END error
+    # Don't eat \n
+    noeat END
+
+state oct1 special
+    char 0-7 oct2
+    noeat END
+
+state oct2 special
+    char 0-7 END special
+    noeat END
+
+state hex0 special
+    char 0-9a-fA-F hex1
+    noeat END
+
+state hex1 special
+    char 0-9a-fA-F hex2
+    noeat END
+
+# In strings "\xaff" is an error but "\xafg" is not.
+# In chars both are errors.
+state hex2 special
+    char 0-9a-fA-F END error
+    noeat END
+
+syntax .c-string
+
+state string
+    char "\"" END string
+    # Avoid highlighting rest of the file again
+    char "\n" END error
+    char "\\" .c-esc:this
+    eat this
+
+syntax .c-char
+
+state char
+    char "'\n" END error
+    char \\ .c-esc:char-end
+    eat char-end
+
+state char-end char
+    char "'" END char
+    eat END error
+
+syntax .c-comment
+
+state comment
+    char "*" star
+    eat this
+
+state star comment
+    char / END comment
+    noeat comment
+
+syntax .cpp-comment
+
+state comment
+    char "\n" END
+    char \\ backslash
+    eat this
+
+state backslash comment
+    # Multi-line comment?
+    char "\n" comment
+    noeat comment
+
+syntax c
+
+state start code
+    char " \t" start
+    char # preproc
+    char -b a-z_ ident-label
+    char -b A-Z ident-upper-label
+    noeat c
+
+state preproc
+    char " \t" preproc
+    char -b a-zA-Z_ preproc-ident
+    noeat preproc-misc
+
+state preproc-ident preproc
+    char -b a-zA-Z0-9_ this
+    bufis "include" preproc-include
+    inlist preproccond preproccond
+    noeat preproc-misc
+
+state preproccond
+    # Recolor to start of the line
+    recolor preproccond 100
+    noeat preproc-misc
+
+state preproc-misc preproc
+    char "\n" start
+    char "\\" preproc-cont
+    char \" .c-string:this
+    char \' .c-char:this
+    str "/*" .c-comment:this
+    str "//" .cpp-comment:start
+    eat this
+
+state preproc-include preproc
+    char " \t" preproc-include
+    char "\n" start
+    char "\\" preproc-cont
+    char '"' local-include
+    char '<' system-include
+    # Not an error: #include DEFINE
+    noeat preproc-misc
+
+state preproc-cont preproc
+    char "\n" preproc-misc
+    noeat preproc-misc
+
+state local-include string
+    char '"' end-include string
+    char "\n" start
+    eat this
+
+state system-include string
+    char '>' end-include string
+    char "\n" start
+    eat this
+
+state end-include preproc
+    char "\n" start
+    char " \t" end-include
+    str "/*" .c-comment:this
+    str "//" .cpp-comment:start
+    eat preproc-error
+
+state preproc-error error
+    char "\n" start
+    eat this
+
+state c code
+    char -b a-z_ ident
+    char -b A-Z ident-upper
+    char 0 zero
+    char 1-9 dec
+    char . dot
+    char \" .c-string:this
+    char \' .c-char:this
+    char "\n" start
+    char ';' semicolon
+    str "/*" .c-comment:this
+    str "//" .cpp-comment:start
+    eat this
+
+state semicolon code
+    char " \t" semicolon
+    char -b a-zA-Z_ ident-label
+    noeat c
+
+state ident-label ident
+    char -b a-zA-Z0-9_ this
+    char -b : label
+    noeat -b ident
+
+state label
+    recolor label
+    noeat c
+
+state ident
+    char -b a-zA-Z0-9_ this
+    inlist keyword c
+    inlist c11-keyword c
+    inlist type c
+    inlist constant c
+    inlist cpp-keyword c
+    noeat c
+
+state ident-upper ident
+    char -b a-z class-name
+    char -b A-Z0-9_ ident
+    noeat c
+
+state class-name
+    recolor class-name
+    char a-zA-Z0-9_ this
+    noeat c
+
+state ident-upper-label ident
+    char -b a-z class-name-label
+    char -b A-Z0-9_ ident-label
+    char -b : label
+    noeat c
+
+state class-name-label class-name
+    char -b a-zA-Z0-9_ this
+    char -b : label
+    noeat -b class-name
+
+state zero numeric
+    char xX hex
+    char 0-7 oct
+    char . float
+    noeat check-suffix
+
+state oct numeric
+    char 0-7 this
+    noeat check-suffix
+
+state dec numeric
+    char 0-9 this
+    char eE exp
+    char . float
+    noeat check-suffix
+
+state hex numeric
+    char 0-9a-fA-F this
+    noeat check-suffix
+
+state check-suffix error
+    char -b a-zA-Z0-9_ this
+    inlist numeric-suffix c numeric
+    noeat c
+
+state dot numeric
+    char 0-9 float
+    recolor code 1
+    noeat c
+
+state float numeric
+    char 0-9 this
+    char eE exp
+    char fFlL float-suffix
+    char a-zA-Z0-9_ error-ident
+    noeat c
+
+state float-suffix numeric
+    char a-zA-Z0-9_ error-ident
+    noeat c
+
+state exp numeric
+    char +- exp-digit
+    char 0-9 exp-digit
+    char a-zA-Z0-9_ error-ident
+    noeat c
+
+state exp-digit numeric
+    char 0-9 this
+    char a-zA-Z0-9_ error-ident
+    noeat c
+
+state error-ident error
+    char a-zA-Z0-9_ this
+    noeat c
+
+list keyword \
+    if else for while do continue switch case break default return goto \
+    asm const static inline register extern volatile auto restrict sizeof \
+    typedef
+
+list c11-keyword \
+    _Alignas _Alignof _Noreturn \
+    alignas alignof noreturn
+
+list type \
+    struct union enum void char short int long float double signed \
+    unsigned size_t ssize_t off_t ptrdiff_t time_t va_list wchar_t \
+    bool FILE DIR int8_t int16_t int32_t int64_t uint8_t uint16_t \
+    uint32_t uint64_t int_least8_t int_least16_t int_least32_t \
+    int_least64_t uint_least8_t uint_least16_t uint_least32_t \
+    uint_least64_t int_fast8_t int_fast16_t int_fast32_t int_fast64_t \
+    uint_fast8_t uint_fast16_t uint_fast32_t uint_fast64_t intptr_t \
+    uintptr_t sig_atomic_t wint_t intmax_t uintmax_t char32_t char16_t \
+
+list constant \
+    NULL stdin stdout stderr false true \
+    E2BIG EACCES EADDRINUSE EADDRNOTAVAIL EAFNOSUPPORT EAGAIN EALREADY \
+    EBADF EBADMSG EBUSY ECANCELED ECHILD ECONNABORTED ECONNREFUSED \
+    ECONNRESET EDEADLK EDESTADDRREQ EDOM EDQUOT EEXIST EFAULT EFBIG \
+    EHOSTUNREACH EIDRM EILSEQ EINPROGRESS EINTR EINVAL EIO EISCONN \
+    EISDIR ELOOP EMFILE EMLINK EMSGSIZE EMULTIHOP ENAMETOOLONG ENETDOWN \
+    ENETRESET ENETUNREACH ENFILE ENOBUFS ENODATA ENODEV ENOENT ENOEXEC \
+    ENOLCK ENOLINK ENOMEM ENOMSG ENOPROTOOPT ENOSPC ENOSR ENOSTR ENOSYS \
+    ENOTCONN ENOTDIR ENOTEMPTY ENOTRECOVERABLE ENOTSOCK ENOTSUP ENOTTY \
+    ENXIO EOPNOTSUPP EOVERFLOW EOWNERDEAD EPERM EPIPE EPROTO \
+    EPROTONOSUPPORT EPROTOTYPE ERANGE EROFS ESPIPE ESRCH ESTALE ETIME \
+    ETIMEDOUT ETXTBSY EWOULDBLOCK EXDEV ENOTBLK
+
+list preproccond \
+    elif else endif if ifdef ifndef
+
+list -i numeric-suffix \
+    ULL UL U LLU LU LL L
+
+list cpp-keyword \
+    catch class const_cast delete dynamic_cast explicit friend \
+    mutable namespace new operator private protected public \
+    reinterpret_cast static_cast template this throw try typeid \
+    typeof typename using virtual
+
+default ident class-name
+default keyword c11-keyword
+default keyword cpp-keyword
+default preproc preproccond

@@ -1,0 +1,20 @@
+include -b binding/default
+include -b color/dark
+include -b compiler/gcc
+include -b compiler/go
+include -b filetype
+
+alias help "run man dte"
+alias man "run man"
+alias make "compile gcc make"
+alias read "pass-through cat"
+alias builtin "include -b"
+alias trim 'replace "[ \t]+$" ""'
+
+errorfmt gitgrep "^([^:]+):([0-9]+):" file line
+alias git-grep 'compile -1s gitgrep git grep -n'
+
+# Remove possible 'F' from $LESS so that less will always wait
+# for keypress and "run" can be used without "-p".
+# ('R' = allow ANSI colors, 'S' = chop long lines)
+setenv LESS RS

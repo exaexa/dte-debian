@@ -1,0 +1,40 @@
+syntax gitcommit
+
+state start text
+    char # comment-start
+    noeat text
+
+state text
+    char "\n" start
+    eat this
+
+state comment-start comment
+    char "\n" start
+    char "\t" newfile comment
+    str ' On branch ' branch comment
+    str ' Changes to be committed:' comment added
+    str ' Changed but not updated:' comment modified
+    str ' Untracked files:' comment untracked
+    eat comment
+
+state comment
+    char "\n" start
+    eat this
+
+state branch notice
+    char "\n" start
+    eat this
+
+# abel or new file, not known yet
+state newfile
+    # Buffer anything but \n or :
+    char "\n" start
+    # Anything else but : (-n inverts bitmap)
+    char -bn : this
+    # Recolor buffered bytes to label
+    recolor label
+    noeat file
+
+state file
+    char "\n" start
+    eat this

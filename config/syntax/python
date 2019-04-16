@@ -1,0 +1,169 @@
+syntax .python-esc
+
+# TODO: \N{name}  \uxxxx  \Uxxxxxxxx
+state esc special
+    char "abfnrtv'\\\"" END special
+    char 0-7 oct1
+    char x hex0
+    noeat END
+
+state oct1 special
+    char 0-7 oct2
+    noeat END
+
+state oct2 special
+    char 0-7 END special
+    noeat END
+
+state hex0 special
+    char 0-9a-fA-F hex1
+    noeat END
+
+state hex1 special
+    char 0-9a-fA-F END special
+    noeat END
+
+syntax python
+
+state start code
+    char # comment
+    str '"""' longdq
+    str "'''" longsq
+    char '"' dq
+    char "'" sq
+    # TODO: [uU][rR]" [uU]" [rR]" [bB]" [bB][rR]"
+    char -b a-zA-Z_ ident
+    char 0 zero
+    char 1-9 dec
+    char . dot
+    char " \t\f\r\n" whitespace
+    eat this
+
+state comment
+    char "\n" start
+    eat this
+
+state longdq string
+    str '"""' start string
+    char -b "\\" .python-esc:this
+    eat this
+
+state longsq string
+    str "'''" start string
+    char -b "\\" .python-esc:this
+    eat this
+
+state dq string
+    char "\"" start string
+    char "\n" start
+    char -b "\\" .python-esc:this
+    eat this
+
+state sq string
+    char "'" start string
+    char "\n" start
+    char -b "\\" .python-esc:this
+    eat this
+
+state ident
+    char -b a-zA-Z_0-9 this
+    inlist keyword start
+    inlist constant start
+    noeat start
+
+state zero numeric
+    char bB bin
+    char oO oct
+    char xX hex
+    char 0 dec-zero
+    char . float
+    char eE exponent
+    noeat int-suffix
+
+state bin numeric
+    char 01 this
+    noeat int-suffix
+
+state oct numeric
+    char 0-7 this
+    noeat int-suffix
+
+state dec numeric
+    char 0-9 this
+    char eE exponent
+    char . float
+    noeat int-suffix
+
+state dec-zero numeric
+    char 0 this
+    char eE exponent
+    char . float
+    # TODO: digits 1-9 are allowed here but only if the number becomes a float
+    noeat int-suffix
+
+state hex numeric
+    char 0-9a-fA-F this
+    noeat int-suffix
+
+state int-suffix code
+    # TODO: Remove long int suffixes? (removed in Python 3)
+    char lL int-end numeric
+    char jJ float-end numeric
+    noeat int-end
+
+state int-end error
+    char a-zA-Z0-9_ this
+    noeat start
+
+state float numeric
+    char 0-9 this
+    char eE exponent
+    noeat float-suffix
+
+state exponent numeric
+    char +- exponent-sign
+    char 0-9 exponent-digit
+    recolor error 1
+    noeat float-end
+
+state exponent-sign numeric
+    char 0-9 exponent-digit
+    recolor error 2
+    noeat float-end
+
+state exponent-digit numeric
+    char 0-9 this
+    noeat float-suffix
+
+state float-suffix code
+    char jJ float-end numeric
+    noeat int-end
+
+state float-end error
+    char a-zA-Z_ this
+    noeat start
+
+state whitespace
+    char " \t\f\r\n" whitespace
+    char . whitespace-dot
+    noeat start
+
+state whitespace-dot code
+    char 0-9 dot-float
+    noeat start
+
+state dot-float numeric
+    recolor numeric 2
+    noeat float
+
+state dot code
+    char 0-9 this error
+    noeat start
+
+list keyword \
+    and as assert break class continue def del elif else except exec \
+    finally for from global if import in is lambda not or pass print \
+    raise return try while with yield
+
+list constant \
+    None False True

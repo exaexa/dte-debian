@@ -1,0 +1,46 @@
+syntax diff
+
+state headers header
+    str "diff " header
+    str "index " header
+    str "new " header
+    str -- "--- " header
+    str "+++ " header
+    str "@@ " chunk
+    char # comment
+    noeat text
+
+state header
+    char "\n" headers
+    eat this
+
+state chunk
+    char "\n" diff chunk
+    eat this
+
+state diff code
+    char " " context
+    char + added
+    char -- - removed
+    str "@@ " chunk
+    noeat headers
+
+state context
+    char "\n" diff
+    eat this
+
+state added
+    char "\n" diff
+    eat this
+
+state removed
+    char "\n" diff
+    eat this
+
+state comment
+    char "\n" headers
+    eat this
+
+state text
+    char "\n" headers
+    eat this

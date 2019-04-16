@@ -1,0 +1,56 @@
+syntax roff
+
+state line-start
+    char -b '.' request
+    char "\n" this
+    noeat text
+
+# TODO: Highlight .TH request in bold
+# TODO: Highlight "quoted strings" in request arguments
+state request
+    char -b a-zA-Z this
+    inlist section section
+    noeat text
+
+state escape-start escape
+    char -b '"#' comment
+    char -b f font-selection
+    char -b ( 2char-escape
+    char "\\.%! |^&)/~:{}acdeEprtu-" text escape
+    eat text error
+
+state 2char-escape escape
+    char -b "A-Za-z0-9_<>=!?$%*|/'\":^,~.`+-" 2char-escape-2
+    recolor error
+    char "\n" line-start
+    eat text error
+
+state 2char-escape-2 escape
+    char "A-Za-z0-9_<>=!?$%*|/'\":^,~.`+-" text escape
+    recolor error
+    char "\n" line-start
+    eat text error
+
+state font-selection escape
+    char -b RBI text escape
+    noeat text
+
+state text
+    char -b '\\' escape-start
+    char "\n" line-start
+    eat this
+
+state comment
+    recolor comment
+    char "\n" line-start
+    eat this
+
+state section
+    char "\n" line-start
+    eat this
+
+list section .SH .SS
+
+default special escape
+default string request
+default keyword section

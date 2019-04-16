@@ -1,0 +1,12 @@
+open -e UTF-8
+insert "ภาษาไทย\n"
+up
+copy
+paste
+bol
+delete-eol
+insert "Testing"
+run mkdir -p build/test/
+save -e UTF-8 build/test/thai-utf8.txt
+save -e TIS-620 build/test/thai-tis620.txt
+quit -f
