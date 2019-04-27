@@ -1,0 +1,44 @@
+# This is the color scheme that gets loaded by default when the editor
+# starts. It only uses the basic color palette, in order to maximize
+# compatibility and remain suitable for both light and dark terminals.
+
+hi
+hi linenumber gray darkgray
+hi selection default blue
+
+hi text
+hi code
+hi ident
+hi keyword bold
+hi type green
+hi comment darkgray
+hi numeric blue
+hi string yellow
+hi variable bold yellow
+hi constant bold cyan
+hi special magenta
+hi char magenta
+hi label bold red
+hi notice bold red
+hi error black yellow
+
+hi tex.macro bold yellow
+hi ini.section bold
+hi make.builtin bold magenta
+hi make.special-target green
+hi markdown.heading bold magenta
+hi markdown.emphasis italic cyan
+hi markdown.strong-emphasis bold cyan
+hi markdown.code-block yellow
+hi markdown.code-span yellow
+hi markdown.block-quote green
+hi markdown.reference bold blue
+hi markdown.url blue
+hi html.tag bold magenta
+hi html.attr magenta
+hi xml.tag bold magenta
+hi xml.attr magenta
+hi diff.header cyan
+hi diff.chunk magenta
+hi diff.added bold green
+hi diff.removed bold red

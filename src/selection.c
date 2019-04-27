@@ -4,7 +4,7 @@
 void init_selection(const View *v, SelectionInfo *info)
 {
     BlockIter ei;
-    unsigned int u;
+    CodePoint u;
 
     info->so = v->sel_so;
     info->eo = block_iter_get_offset(&v->cursor);
@@ -12,7 +12,7 @@ void init_selection(const View *v, SelectionInfo *info)
     block_iter_goto_offset(&info->si, info->so);
     info->swapped = false;
     if (info->so > info->eo) {
-        long o = info->so;
+        size_t o = info->so;
         info->so = info->eo;
         info->eo = o;
         info->si = v->cursor;
@@ -32,11 +32,11 @@ void init_selection(const View *v, SelectionInfo *info)
         info->eo += block_iter_eat_line(&ei);
     } else {
         // Character under cursor belongs to the selection
-        info->eo += buffer_next_char(&ei, &u);
+        info->eo += buffer_next_column(&ei);
     }
 }
 
-long prepare_selection(View *v)
+size_t prepare_selection(View *v)
 {
     SelectionInfo info;
     init_selection(v, &info);
@@ -44,7 +44,7 @@ long prepare_selection(View *v)
     return info.eo - info.so;
 }
 
-char *view_get_selection(View *v, long *size)
+char *view_get_selection(View *v, size_t *size)
 {
     char *buf = NULL;
 
@@ -58,12 +58,12 @@ char *view_get_selection(View *v, long *size)
     return buf;
 }
 
-int get_nr_selected_lines(const SelectionInfo *info)
+size_t get_nr_selected_lines(const SelectionInfo *info)
 {
     BlockIter bi = info->si;
-    long pos = info->so;
-    unsigned int u = 0;
-    int nr_lines = 1;
+    size_t pos = info->so;
+    CodePoint u = 0;
+    size_t nr_lines = 1;
 
     while (pos < info->eo) {
         if (u == '\n') {
@@ -74,12 +74,12 @@ int get_nr_selected_lines(const SelectionInfo *info)
     return nr_lines;
 }
 
-int get_nr_selected_chars(const SelectionInfo *info)
+size_t get_nr_selected_chars(const SelectionInfo *info)
 {
     BlockIter bi = info->si;
-    long pos = info->so;
-    unsigned int u;
-    int nr_chars = 0;
+    size_t pos = info->so;
+    CodePoint u;
+    size_t nr_chars = 0;
 
     while (pos < info->eo) {
         nr_chars++;

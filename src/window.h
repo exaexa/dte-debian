@@ -29,7 +29,7 @@ typedef struct Window {
         int last;
     } line_numbers;
 
-    int first_tab_idx;
+    size_t first_tab_idx;
 
     bool update_tabbar;
 } Window;
@@ -39,21 +39,20 @@ extern Window *window;
 Window *new_window(void);
 View *window_add_buffer(Window *w, Buffer *b);
 View *window_open_empty_buffer(Window *w);
-View *window_open_buffer(Window *w, const char *filename, bool must_exist, const char *encoding);
+View *window_open_buffer(Window *w, const char *filename, bool must_exist, const Encoding *encoding);
 View *window_get_view(Window *w, Buffer *b);
 View *window_find_view(Window *w, Buffer *b);
-View *window_find_unclosable_view(Window *w, bool (*can_close)(View *));
-void window_remove_views(Window *w);
+View *window_find_unclosable_view(Window *w, bool (*can_close)(const View *));
 void window_free(Window *w);
 void remove_view(View *v);
 void window_close_current(void);
 void window_close_current_view(Window *w);
 void set_view(View *v);
 View *window_open_new_file(Window *w);
-View *window_open_file(Window *w, const char *filename, const char *encoding);
-void window_open_files(Window *w, char **filenames, const char *encoding);
+View *window_open_file(Window *w, const char *filename, const Encoding *encoding);
+void window_open_files(Window *w, char **filenames, const Encoding *encoding);
 void mark_buffer_tabbars_changed(Buffer *b);
-enum tab_bar tabbar_visibility(const Window *win);
+TabBarMode tabbar_visibility(const Window *win);
 int vertical_tabbar_width(const Window *win);
 void calculate_line_numbers(Window *win);
 void set_window_coordinates(Window *win, int x, int y);

@@ -1,49 +1,123 @@
-#include "editor.h"
-#include "window.h"
-#include "view.h"
-#include "frame.h"
-#include "term.h"
-#include "config.h"
-#include "color.h"
-#include "syntax.h"
+#include <errno.h>
+#include <inttypes.h>
+#include <signal.h>
+#include <stdio.h>
+#include <string.h>
+#include <unistd.h>
 #include "alias.h"
-#include "history.h"
-#include "file-history.h"
-#include "search.h"
+#include "common.h"
+#include "config.h"
+#include "debug.h"
+#include "editor.h"
 #include "error.h"
+#include "file-history.h"
+#include "frame.h"
+#include "history.h"
+#include "load-save.h"
 #include "move.h"
 #include "screen.h"
+#include "search.h"
+#include "syntax/syntax.h"
+#include "terminal/color.h"
+#include "terminal/input.h"
+#include "terminal/output.h"
+#include "terminal/terminal.h"
+#include "util/strtonum.h"
+#include "util/xmalloc.h"
+#include "util/xreadwrite.h"
+#include "view.h"
+#include "window.h"
 
-static void handle_sigtstp(int UNUSED(signum))
+static void handle_sigtstp(int UNUSED_ARG(signum))
 {
     suspend();
 }
 
-static void handle_sigcont(int UNUSED(signum))
+static void handle_sigcont(int UNUSED_ARG(signum))
 {
     if (
         !editor.child_controls_terminal
         && editor.status != EDITOR_INITIALIZING
     ) {
-        term_raw();
-        resize();
+        terminal.raw();
+        editor.resize();
     }
 }
 
-#ifdef SIGWINCH
-static void handle_sigwinch(int UNUSED(signum))
+static void handle_fatal_signal(int signum)
 {
-    editor.resized = true;
+    term_cleanup();
+
+    set_signal_handler(signum, SIG_DFL);
+
+    sigset_t mask;
+    sigemptyset(&mask);
+    sigaddset(&mask, signum);
+    sigprocmask(SIG_UNBLOCK, &mask, NULL);
+
+    raise(signum);
 }
-#else
-MESSAGE("SIGWINCH not defined; disabling handler")
+
+static inline void do_sigaction(int sig, const struct sigaction *action)
+{
+    if (sigaction(sig, action, NULL) != 0) {
+        BUG("Failed to add handler for signal %d: %s", sig, strerror(errno));
+    }
+}
+
+static void set_signal_handlers(void)
+{
+    // SIGABRT is not included here, since we can always call
+    // term_cleanup() explicitly, before calling abort().
+    static const int fatal_signals[] = {
+        SIGBUS, SIGFPE, SIGILL, SIGSEGV,
+        SIGSYS, SIGTRAP, SIGXCPU, SIGXFSZ,
+        SIGALRM, SIGPROF, SIGVTALRM,
+        SIGHUP, SIGTERM,
+    };
+
+    static const int ignored_signals[] = {
+        SIGINT, SIGQUIT, SIGPIPE,
+        SIGUSR1, SIGUSR2,
+    };
+
+    static const struct {
+        int signum;
+        void (*handler)(int);
+    } handled_signals[] = {
+        {SIGTSTP, handle_sigtstp},
+        {SIGCONT, handle_sigcont},
+#ifdef SIGWINCH
+        {SIGWINCH, handle_sigwinch},
 #endif
+    };
+
+    struct sigaction action;
+    memzero(&action);
+    sigfillset(&action.sa_mask);
+
+    action.sa_handler = handle_fatal_signal;
+    for (size_t i = 0; i < ARRAY_COUNT(fatal_signals); i++) {
+        do_sigaction(fatal_signals[i], &action);
+    }
+
+    action.sa_handler = SIG_IGN;
+    for (size_t i = 0; i < ARRAY_COUNT(ignored_signals); i++) {
+        do_sigaction(ignored_signals[i], &action);
+    }
+
+    sigemptyset(&action.sa_mask);
+    for (size_t i = 0; i < ARRAY_COUNT(handled_signals); i++) {
+        action.sa_handler = handled_signals[i].handler;
+        do_sigaction(handled_signals[i].signum, &action);
+    }
+}
 
 static int dump_builtin_config(const char *const name)
 {
     const BuiltinConfig *cfg = get_builtin_config(name);
     if (cfg) {
-        fputs(cfg->text, stdout);
+        xwrite(STDOUT_FILENO, cfg->text.data, cfg->text.length);
         return 0;
     } else {
         fprintf(stderr, "Error: no built-in config with name '%s'\n", name);
@@ -51,18 +125,64 @@ static int dump_builtin_config(const char *const name)
     }
 }
 
+static void showkey_loop(void)
+{
+    terminal.raw();
+    terminal.put_control_code(terminal.control_codes.init);
+    terminal.put_control_code(terminal.control_codes.keypad_on);
+    buf_add_literal("Press any key combination, or use Ctrl+D to exit\r\n");
+    buf_flush();
+
+    bool loop = true;
+    while (loop) {
+        KeyCode key;
+        if (!term_read_key(&key)) {
+            buf_add_literal("   UNKNOWN      -\r\n");
+            buf_flush();
+            continue;
+        }
+        switch (key) {
+        case KEY_PASTE:
+            term_discard_paste();
+            continue;
+        case CTRL('D'):
+            loop = false;
+            break;
+        }
+        const char *str = key_to_string(key);
+        buf_sprintf("   %-12s 0x%-12" PRIX32 "\r\n", str, key);
+        buf_flush();
+    }
+
+    terminal.put_control_code(terminal.control_codes.keypad_off);
+    terminal.put_control_code(terminal.control_codes.deinit);
+    buf_flush();
+    terminal.cooked();
+}
+
+static const char usage[] =
+    "Usage: %s [OPTIONS] [[+LINE] FILE]...\n\n"
+    "Options:\n"
+    "   -c COMMAND  Run COMMAND after editor starts\n"
+    "   -t CTAG     Jump to source location of CTAG\n"
+    "   -r RCFILE   Read user config from RCFILE instead of ~/.dte/rc\n"
+    "   -b NAME     Print built-in config matching NAME and exit\n"
+    "   -B          Print list of built-in config names and exit\n"
+    "   -R          Don't read user config file\n"
+    "   -K          Start editor in \"showkey\" mode\n"
+    "   -h          Display help summary and exit\n"
+    "   -V          Display version number and exit\n"
+    "\n";
+
 int main(int argc, char *argv[])
 {
-    static const char optstring[] = "hBRVb:c:t:r:";
-    static const char opts[] =
-        "[-hbBRV] [-c command] [-t tag] [-r rcfile] [[+line] file]...";
-    static_assert(ARRAY_COUNT(opts) < 70);
-
-    const char *const term = getenv("TERM");
+    static const char optstring[] = "hBHKRVb:c:t:r:";
     const char *tag = NULL;
     const char *rc = NULL;
     const char *command = NULL;
     bool read_rc = true;
+    bool use_showkey = false;
+    bool load_and_save_history = true;
     int ch;
 
     init_editor_state();
@@ -86,17 +206,22 @@ int main(int argc, char *argv[])
         case 'B':
             list_builtin_configs();
             return 0;
+        case 'H':
+            load_and_save_history = false;
+            break;
+        case 'K':
+            use_showkey = true;
+            break;
         case 'V':
             printf("dte %s\n", editor.version);
-            puts("(C) 2017-2018 Craig Barnes");
+            puts("(C) 2017-2019 Craig Barnes");
             puts("(C) 2010-2015 Timo Hirvonen");
             return 0;
         case 'h':
-            fprintf(stderr, "Usage: %s %s\n", argv[0], opts);
+            printf(usage, argv[0]);
             return 0;
         case '?':
         default:
-            fprintf(stderr, "Usage: %s %s\n", argv[0], opts);
             return 1;
         }
     }
@@ -105,19 +230,29 @@ int main(int argc, char *argv[])
         fputs("stdout doesn't refer to a terminal\n", stderr);
         return 1;
     }
-    if (term == NULL || term[0] == 0) {
-        fputs("TERM not set\n", stderr);
-        return 1;
-    }
+
+    Buffer *stdin_buffer = NULL;
     if (!isatty(STDIN_FILENO)) {
+        Buffer *b = buffer_new(&editor.charset);
+        if (read_blocks(b, STDIN_FILENO) == 0) {
+            b->display_filename = xstrdup("(stdin)");
+            stdin_buffer = b;
+        } else {
+            free_buffer(b);
+            error_msg("Unable to read redirected stdin");
+        }
         if (!freopen("/dev/tty", "r", stdin)) {
             fputs("Cannot reopen input tty\n", stderr);
             return 1;
         }
     }
 
-    term_init(term);
-    save_term_title();
+    term_init();
+
+    if (use_showkey) {
+        showkey_loop();
+        return 0;
+    }
 
     // Create this early. Needed if lock-files is true.
     const char *const editor_dir = editor.user_config_dir;
@@ -125,9 +260,12 @@ int main(int argc, char *argv[])
         error_msg("Error creating %s: %s", editor_dir, strerror(errno));
     }
 
+    if (terminal.save_title) {
+        terminal.save_title();
+    }
+
     exec_reset_colors_rc();
     read_config(commands, "rc", CFG_MUST_EXIST | CFG_BUILTIN);
-
     fill_builtin_colors();
 
     // NOTE: syntax_changed() uses window. Should possibly create
@@ -148,46 +286,40 @@ int main(int argc, char *argv[])
     update_all_syntax_colors();
     sort_aliases();
 
-    // Terminal does not generate signals for control keys
-    set_signal_handler(SIGINT, SIG_IGN);
-    set_signal_handler(SIGQUIT, SIG_IGN);
-    set_signal_handler(SIGPIPE, SIG_IGN);
+    set_signal_handlers();
 
-    // Terminal does not generate signal for ^Z but someone can send
-    // us SIGTSTP nevertheless. SIGSTOP can't be caught.
-    set_signal_handler(SIGTSTP, handle_sigtstp);
+    char *file_history_filename = NULL;
+    char *command_history_filename = NULL;
+    char *search_history_filename = NULL;
+    if (load_and_save_history) {
+        file_history_filename = editor_file("file-history");
+        command_history_filename = editor_file("command-history");
+        search_history_filename = editor_file("search-history");
 
-    set_signal_handler(SIGCONT, handle_sigcont);
+        load_file_history(file_history_filename);
 
-#ifdef SIGWINCH
-    set_signal_handler(SIGWINCH, handle_sigwinch);
-#endif
-
-    char *file_history_filename = editor_file("file-history");
-    load_file_history(file_history_filename);
-
-    char *command_history_filename = editor_file("command-history");
-    char *search_history_filename = editor_file("search-history");
-    history_load (
-        &editor.command_history,
-        command_history_filename,
-        command_history_size
-    );
-    history_load (
-        &editor.search_history,
-        search_history_filename,
-        search_history_size
-    );
-    if (editor.search_history.count) {
-        search_set_regexp (
-            editor.search_history.ptrs[editor.search_history.count - 1]
+        history_load (
+            &editor.command_history,
+            command_history_filename,
+            command_history_size
         );
+
+        history_load (
+            &editor.search_history,
+            search_history_filename,
+            search_history_size
+        );
+        if (editor.search_history.count) {
+            search_set_regexp (
+                editor.search_history.ptrs[editor.search_history.count - 1]
+            );
+        }
     }
 
     // Initialize terminal but don't update screen yet. Also display
     // "Press any key to continue" prompt if there were any errors
     // during reading configuration files.
-    term_raw();
+    terminal.raw();
     if (nr_errors) {
         any_key();
         clear_error();
@@ -211,7 +343,11 @@ int main(int argc, char *argv[])
         }
     }
 
-    View *empty_buffer = NULL;
+    if (stdin_buffer) {
+        window_add_buffer(window, stdin_buffer);
+    }
+
+    const View *empty_buffer = NULL;
     if (window->views.count == 0) {
         empty_buffer = window_open_empty_buffer(window);
     }
@@ -219,7 +355,7 @@ int main(int argc, char *argv[])
     set_view(window->views.ptrs[0]);
 
     if (command || tag) {
-        resize();
+        editor.resize();
     }
 
     if (command) {
@@ -247,21 +383,31 @@ int main(int argc, char *argv[])
         remove_view(window->views.ptrs[0]);
     }
 
-    resize();
+    terminal.put_control_code(terminal.control_codes.init);
+
+    editor.resize();
     main_loop();
-    restore_term_title();
-    ui_end();
+    if (terminal.restore_title) {
+        terminal.restore_title();
+    }
+    editor.ui_end();
+
+    terminal.put_control_code(terminal.control_codes.deinit);
+    buf_flush();
 
     // Unlock files and add files to file history
     remove_frame(root_frame);
 
-    history_save(&editor.command_history, command_history_filename);
-    history_save(&editor.search_history, search_history_filename);
-    free(command_history_filename);
-    free(search_history_filename);
+    if (load_and_save_history) {
+        history_save(&editor.command_history, command_history_filename);
+        free(command_history_filename);
 
-    save_file_history(file_history_filename);
-    free(file_history_filename);
+        history_save(&editor.search_history, search_history_filename);
+        free(search_history_filename);
+
+        save_file_history(file_history_filename);
+        free(file_history_filename);
+    }
 
     return 0;
 }

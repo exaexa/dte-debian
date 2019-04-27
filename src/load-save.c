@@ -1,15 +1,22 @@
-#include "load-save.h"
-#include "editor.h"
-#include "block.h"
-#include "wbuf.h"
-#include "decoder.h"
-#include "encoder.h"
-#include "encoding.h"
-#include "error.h"
-#include "cconv.h"
-#include "path.h"
-
+#include <errno.h>
+#include <fcntl.h>
+#include <stdio.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include "load-save.h"
+#include "block.h"
+#include "common.h"
+#include "debug.h"
+#include "editor.h"
+#include "encoding/bom.h"
+#include "encoding/convert.h"
+#include "encoding/decoder.h"
+#include "encoding/encoder.h"
+#include "error.h"
+#include "util/path.h"
+#include "util/xmalloc.h"
+#include "util/xreadwrite.h"
 
 static void add_block(Buffer *b, Block *blk)
 {
@@ -51,48 +58,52 @@ static int decode_and_add_blocks (
     const unsigned char *buf,
     size_t size
 ) {
-    const char *e = detect_encoding_from_bom(buf, size);
+    EncodingType bom_type = detect_encoding_from_bom(buf, size);
 
-    if (b->encoding == NULL) {
-        if (e) {
+    switch (b->encoding.type) {
+    case ENCODING_AUTODETECT:
+        if (bom_type != UNKNOWN_ENCODING) {
             // UTF-16BE/LE or UTF-32BE/LE
-            b->encoding = xstrdup(e);
+            BUG_ON(b->encoding.name != NULL);
+            b->encoding.type = bom_type;
         }
-    } else if (streq(b->encoding, "UTF-16")) {
-        // BE or LE?
-        if (e && str_has_prefix(e, b->encoding)) {
-            free(b->encoding);
-            b->encoding = xstrdup(e);
-        } else {
+        break;
+    case UTF16:
+        switch (bom_type) {
+        case UTF16LE:
+        case UTF16BE:
+            b->encoding.type = bom_type;
+            break;
+        default:
             // "open -e UTF-16" but incompatible or no BOM.
             // Do what the user wants. Big-endian is default.
-            free(b->encoding);
-            b->encoding = xstrdup("UTF-16BE");
+            b->encoding.type = UTF16BE;
         }
-    } else if (streq(b->encoding, "UTF-32")) {
-        // BE or LE?
-        if (e && str_has_prefix(e, b->encoding)) {
-            free(b->encoding);
-            b->encoding = xstrdup(e);
-        } else {
+        break;
+    case UTF32:
+        switch (bom_type) {
+        case UTF32LE:
+        case UTF32BE:
+            b->encoding.type = bom_type;
+            break;
+        default:
             // "open -e UTF-32" but incompatible or no BOM.
             // Do what the user wants. Big-endian is default.
-            free(b->encoding);
-            b->encoding = xstrdup("UTF-32BE");
+            b->encoding.type = UTF32BE;
         }
+        break;
+    default:
+        break;
     }
 
     // Skip BOM only if it matches the specified file encoding.
-    if (b->encoding && e && streq(b->encoding, e)) {
-        size_t bom_len = 2;
-        if (str_has_prefix(e, "UTF-32")) {
-            bom_len = 4;
-        }
+    if (bom_type != UNKNOWN_ENCODING && bom_type == b->encoding.type) {
+        const size_t bom_len = get_bom_for_encoding(bom_type)->len;
         buf += bom_len;
         size -= bom_len;
     }
 
-    FileDecoder *dec = new_file_decoder(b->encoding, buf, size);
+    FileDecoder *dec = new_file_decoder(encoding_to_string(&b->encoding), buf, size);
     if (dec == NULL) {
         return -1;
     }
@@ -118,19 +129,41 @@ static int decode_and_add_blocks (
             add_block(b, blk);
         }
     }
-    if (b->encoding == NULL) {
-        e = dec->encoding;
-        if (e == NULL) {
-            e = editor.charset;
+
+    if (b->encoding.type == ENCODING_AUTODETECT) {
+        if (dec->encoding) {
+            b->encoding = encoding_from_name(dec->encoding);
+        } else {
+            b->encoding = encoding_clone(&editor.charset);
         }
-        b->encoding = xstrdup(e);
     }
 
     free_file_decoder(dec);
     return 0;
 }
 
-static int read_blocks(Buffer *b, int fd)
+static void fixup_blocks(Buffer *b)
+{
+    if (list_empty(&b->blocks)) {
+        Block *blk = block_new(1);
+        list_add_before(&blk->node, &b->blocks);
+    } else {
+        // Incomplete lines are not allowed because they are
+        // special cases and cause lots of trouble.
+        Block *blk = BLOCK(b->blocks.prev);
+        if (blk->size && blk->data[blk->size - 1] != '\n') {
+            if (blk->size == blk->alloc) {
+                blk->alloc = ROUND_UP(blk->size + 1, 64);
+                xrenew(blk->data, blk->alloc);
+            }
+            blk->data[blk->size++] = '\n';
+            blk->nl++;
+            b->nl++;
+        }
+    }
+}
+
+int read_blocks(Buffer *b, int fd)
 {
     size_t size = b->st.st_size;
     size_t map_size = 64 * 1024;
@@ -177,6 +210,10 @@ static int read_blocks(Buffer *b, int fd)
     } else {
         free(buf);
     }
+    if (rc) {
+        return rc;
+    }
+    fixup_blocks(b);
     return rc;
 }
 
@@ -193,6 +230,7 @@ int load_buffer(Buffer *b, bool must_exist, const char *filename)
             error_msg("File %s does not exist.", filename);
             return -1;
         }
+        fixup_blocks(b);
     } else {
         if (fstat(fd, &b->st) != 0) {
             error_msg("fstat failed on %s: %s", filename, strerror(errno));
@@ -204,8 +242,12 @@ int load_buffer(Buffer *b, bool must_exist, const char *filename)
             close(fd);
             return -1;
         }
-        if (b->st.st_size >= 256LL * 1024LL * 1024LL) {
-            error_msg("File exceeds 256MiB file size limit %s", filename);
+        if (b->st.st_size / 1024 / 1024 > editor.options.filesize_limit) {
+            error_msg (
+                "File size exceeds 'filesize-limit' option (%uMiB): %s",
+                editor.options.filesize_limit,
+                filename
+            );
             close(fd);
             return -1;
         }
@@ -217,35 +259,20 @@ int load_buffer(Buffer *b, bool must_exist, const char *filename)
         }
         close(fd);
     }
-    if (list_empty(&b->blocks)) {
-        Block *blk = block_new(1);
-        list_add_before(&blk->node, &b->blocks);
-    } else {
-        // Incomplete lines are not allowed because they are
-        // special cases and cause lots of trouble.
-        Block *blk = BLOCK(b->blocks.prev);
-        if (blk->size && blk->data[blk->size - 1] != '\n') {
-            if (blk->size == blk->alloc) {
-                blk->alloc = ROUND_UP(blk->size + 1, 64);
-                xrenew(blk->data, blk->alloc);
-            }
-            blk->data[blk->size++] = '\n';
-            blk->nl++;
-            b->nl++;
-        }
+
+    if (b->encoding.type == ENCODING_AUTODETECT) {
+        b->encoding = encoding_clone(&editor.charset);
     }
 
-    if (b->encoding == NULL) {
-        b->encoding = xstrdup(editor.charset);
-    }
     return 0;
 }
 
+XMALLOC NONNULL_ARGS
 static char *tmp_filename(const char *filename)
 {
     char *dir = path_dirname(filename);
     const char *base = path_basename(filename);
-    char *tmp = xsprintf("%s/.tmp.%s.XXXXXX", dir, base);
+    char *tmp = xasprintf("%s/.tmp.%s.XXXXXX", dir, base);
     free(dir);
     return tmp;
 }
@@ -258,17 +285,21 @@ static mode_t get_umask(void)
     return old;
 }
 
-static int write_buffer(Buffer *b, FileEncoder *enc, const ByteOrderMark *bom)
+static int write_buffer(Buffer *b, FileEncoder *enc, EncodingType bom_type)
 {
     ssize_t size = 0;
     Block *blk;
 
-    if (bom && !streq(bom->encoding, "UTF-8")) {
-        size = bom->len;
-        if (xwrite(enc->fd, bom->bytes, size) < 0) {
-            goto write_error;
+    if (bom_type != UTF8) {
+        const ByteOrderMark *bom = get_bom_for_encoding(bom_type);
+        if (bom) {
+            size = bom->len;
+            if (xwrite(enc->fd, bom->bytes, size) < 0) {
+                goto write_error;
+            }
         }
     }
+
     list_for_each_entry(blk, &b->blocks, node) {
         ssize_t rc = file_encoder_write(enc, blk->data, blk->size);
 
@@ -299,7 +330,7 @@ write_error:
 int save_buffer (
     Buffer *b,
     const char *filename,
-    const char *encoding,
+    const Encoding *encoding,
     LineEndingType newline
 ) {
     FileEncoder *enc;
@@ -355,7 +386,7 @@ int save_buffer (
         close(fd);
         goto error;
     }
-    if (write_buffer(b, enc, get_bom_for_encoding(encoding))) {
+    if (write_buffer(b, enc, encoding->type)) {
         close(fd);
         goto error;
     }

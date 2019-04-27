@@ -4,19 +4,19 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
-#include "ptr-array.h"
 #include "error.h"
+#include "util/ptr-array.h"
 
 typedef struct {
-    const char *name;
-    const char *flags;
+    const char name[15];
+    const char flags[7];
     int8_t min_args;
     int8_t max_args;
     void (*cmd)(const char *flags, char **args);
 } Command;
 
 // parse-command.c
-char *parse_command_arg(const char *cmd, bool tilde);
+char *parse_command_arg(const char *cmd, size_t len, bool tilde);
 size_t find_end(const char *cmd, size_t pos, Error **err);
 bool parse_commands(PointerArray *array, const char *cmd, Error **err);
 char **copy_string_array(char **src, size_t count);

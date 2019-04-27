@@ -1,13 +1,15 @@
 #include "search.h"
 #include "buffer.h"
-#include "view.h"
-#include "editor.h"
 #include "change.h"
-#include "error.h"
 #include "edit.h"
-#include "str.h"
-#include "regexp.h"
+#include "editor.h"
+#include "error.h"
 #include "selection.h"
+#include "util/ascii.h"
+#include "util/regexp.h"
+#include "util/string.h"
+#include "util/xmalloc.h"
+#include "view.h"
 
 #define MAX_SUBSTRINGS 32
 
@@ -32,13 +34,13 @@ static bool do_search_fwd(regex_t *regex, BlockIter *bi, bool skip)
         if (regexp_exec(regex, lr.line, lr.size, 1, &match, flags)) {
             if (skip && match.rm_so == 0) {
                 // Ignore match at current cursor position
-                long count = match.rm_eo;
+                regoff_t count = match.rm_eo;
                 if (count == 0) {
                     // It is safe to skip one byte because every line
                     // has one extra byte (newline) that is not in lr.line
                     count = 1;
                 }
-                block_iter_skip_bytes(bi, count);
+                block_iter_skip_bytes(bi, (size_t)count);
                 return do_search_fwd(regex, bi, false);
             }
 
@@ -54,7 +56,7 @@ static bool do_search_fwd(regex_t *regex, BlockIter *bi, bool skip)
     return false;
 }
 
-static bool do_search_bwd(regex_t *regex, BlockIter *bi, int cx, bool skip)
+static bool do_search_bwd(regex_t *regex, BlockIter *bi, ssize_t cx, bool skip)
 {
     if (block_iter_is_eof(bi)) {
         goto next;
@@ -64,8 +66,8 @@ static bool do_search_bwd(regex_t *regex, BlockIter *bi, int cx, bool skip)
         regmatch_t match;
         LineRef lr;
         int flags = 0;
-        long offset = -1;
-        long pos = 0;
+        regoff_t offset = -1;
+        regoff_t pos = 0;
 
         fill_line_ref(bi, &lr);
         while (
@@ -231,8 +233,7 @@ static void do_search_next(bool skip)
             info_msg("Pattern '%s' not found.", current_search.pattern);
         }
     } else {
-        int cursor_x = block_iter_bol(&bi);
-
+        size_t cursor_x = block_iter_bol(&bi);
         if (do_search_bwd(&current_search.regex, &bi, cursor_x, skip)) {
             return;
         }
@@ -303,7 +304,7 @@ static void build_replacement (
  * "foo abc bar abc baz" "foo abc bar abc baz"
  * "foo x bar abc baz"   " bar abc baz"
  */
-static int replace_on_line (
+static unsigned int replace_on_line (
     LineRef *lr,
     regex_t *re,
     const char *format,
@@ -315,7 +316,7 @@ static int replace_on_line (
     regmatch_t m[MAX_SUBSTRINGS];
     size_t pos = 0;
     int eflags = 0;
-    int nr = 0;
+    unsigned int nr = 0;
 
     while (regexp_exec (
         re,
@@ -325,7 +326,7 @@ static int replace_on_line (
         m,
         eflags
     )) {
-        int match_len = m[0].rm_eo - m[0].rm_so;
+        regoff_t match_len = m[0].rm_eo - m[0].rm_so;
         bool skip = false;
 
         // Move cursor to beginning of the text to replace
@@ -404,11 +405,11 @@ out:
 void reg_replace(const char *pattern, const char *format, ReplaceFlags flags)
 {
     BlockIter bi = BLOCK_ITER_INIT(&buffer->blocks);
-    unsigned int nr_bytes;
+    size_t nr_bytes;
     bool swapped = false;
     int re_flags = REG_NEWLINE;
-    int nr_substitutions = 0;
-    int nr_lines = 0;
+    unsigned int nr_substitutions = 0;
+    size_t nr_lines = 0;
     regex_t re;
 
     if (pattern[0] == '\0') {
@@ -451,9 +452,9 @@ void reg_replace(const char *pattern, const char *format, ReplaceFlags flags)
 
     while (1) {
         // Number of bytes to process
-        long count;
+        size_t count;
         LineRef lr;
-        int nr;
+        unsigned int nr;
 
         fill_line_ref(&bi, &lr);
         count = lr.size;
@@ -475,7 +476,7 @@ void reg_replace(const char *pattern, const char *format, ReplaceFlags flags)
         }
         nr_bytes -= count + 1;
 
-        BUG_ON(!block_iter_next_line(&bi));
+        block_iter_next_line(&bi);
     }
 
     if (!(flags & REPLACE_CONFIRM)) {
@@ -485,7 +486,7 @@ void reg_replace(const char *pattern, const char *format, ReplaceFlags flags)
     regfree(&re);
 
     if (nr_substitutions) {
-        info_msg("%d substitutions on %d lines.", nr_substitutions, nr_lines);
+        info_msg("%u substitutions on %zu lines.", nr_substitutions, nr_lines);
     } else if (!(flags & REPLACE_CANCEL)) {
         info_msg("Pattern '%s' not found.", pattern);
     }
@@ -496,7 +497,7 @@ void reg_replace(const char *pattern, const char *format, ReplaceFlags flags)
             view->sel_eo--;
         }
         if (swapped) {
-            long tmp = view->sel_so;
+            ssize_t tmp = view->sel_so;
             view->sel_so = view->sel_eo;
             view->sel_eo = tmp;
         }

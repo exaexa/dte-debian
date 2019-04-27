@@ -1,11 +1,12 @@
 #include "change.h"
 #include "buffer.h"
+#include "debug.h"
 #include "error.h"
-#include "block.h"
+#include "util/xmalloc.h"
 #include "view.h"
 
-static enum change_merge change_merge;
-static enum change_merge prev_change_merge;
+static ChangeMergeEnum change_merge;
+static ChangeMergeEnum prev_change_merge;
 
 static Change *alloc_change(void)
 {
@@ -123,7 +124,7 @@ static void record_replace(char *deleted, size_t del_count, size_t ins_count)
     change->buf = deleted;
 }
 
-void begin_change(enum change_merge m)
+void begin_change(ChangeMergeEnum m)
 {
     change_merge = m;
 }
@@ -157,9 +158,8 @@ void end_change_chain(void)
 
 static void fix_cursors(size_t offset, size_t del, size_t ins)
 {
-    for (size_t i = 0; i < buffer->views.count; i++) {
+    for (size_t i = 0, n = buffer->views.count; i < n; i++) {
         View *v = buffer->views.ptrs[i];
-
         if (v != view && offset < v->saved_cursor_offset) {
             if (offset + del <= v->saved_cursor_offset) {
                 v->saved_cursor_offset -= del;
@@ -216,7 +216,7 @@ bool undo(void)
     }
 
     if (is_change_chain_barrier(change)) {
-        int count = 0;
+        unsigned long count = 0;
 
         while (1) {
             change = change->next;
@@ -227,7 +227,7 @@ bool undo(void)
             count++;
         }
         if (count > 1) {
-            info_msg("Undid %d changes.", count);
+            info_msg("Undid %lu changes.", count);
         }
     } else {
         reverse_change(change);
@@ -236,7 +236,7 @@ bool undo(void)
     return true;
 }
 
-bool redo(unsigned int change_id)
+bool redo(unsigned long change_id)
 {
     Change *change = buffer->cur_change;
 
@@ -252,7 +252,7 @@ bool redo(unsigned int change_id)
     if (change_id) {
         if (--change_id >= change->nr_prev) {
             error_msg (
-                "There are only %u possible changes to redo.",
+                "There are only %lu possible changes to redo.",
                 change->nr_prev
             );
             return false;
@@ -262,8 +262,8 @@ bool redo(unsigned int change_id)
         change_id = change->nr_prev - 1;
         if (change->nr_prev > 1) {
             info_msg (
-                "Redoing newest (%u) of %u possible changes.",
-                change_id + 1u,
+                "Redoing newest (%lu) of %lu possible changes.",
+                change_id + 1,
                 change->nr_prev
             );
         }
@@ -271,7 +271,7 @@ bool redo(unsigned int change_id)
 
     change = change->prev[change_id];
     if (is_change_chain_barrier(change)) {
-        int count = 0;
+        unsigned long count = 0;
 
         while (1) {
             change = change->prev[change->nr_prev - 1];
@@ -282,7 +282,7 @@ bool redo(unsigned int change_id)
             count++;
         }
         if (count > 1) {
-            info_msg("Redid %d changes.", count);
+            info_msg("Redid %lu changes.", count);
         }
     } else {
         reverse_change(change);
@@ -340,7 +340,7 @@ void buffer_insert_bytes(const char *buf, const size_t len)
 
 static bool would_delete_last_bytes(size_t count)
 {
-    Block *blk = view->cursor.blk;
+    const Block *blk = view->cursor.blk;
     size_t offset = view->cursor.offset;
 
     while (1) {
@@ -370,7 +370,7 @@ static void buffer_delete_bytes_internal(size_t len, bool move_after)
     // Check if all newlines from EOF would be deleted
     if (would_delete_last_bytes(len)) {
         BlockIter bi = view->cursor;
-        unsigned int u;
+        CodePoint u;
         if (buffer_prev_char(&bi, &u) && u != '\n') {
             // No newline before cursor
             if (--len == 0) {

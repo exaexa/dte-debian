@@ -1,7 +1,18 @@
+#include <fcntl.h>
+#include <signal.h>
+#include <stdio.h>
+#include <sys/stat.h>
+#include <time.h>
+#include <unistd.h>
 #include "lock.h"
 #include "buffer.h"
+#include "common.h"
 #include "editor.h"
 #include "error.h"
+#include "util/ascii.h"
+#include "util/xmalloc.h"
+#include "util/xreadwrite.h"
+#include "util/xsnprintf.h"
 
 static char *file_locks;
 static char *file_locks_lock;
@@ -131,7 +142,7 @@ static int lock_or_unlock(const char *filename, bool lock)
         if (pid == 0) {
             const size_t n = strlen(filename) + 32;
             xrenew(buf, size + n);
-            snprintf(buf + size, n, "%d %s\n", getpid(), filename);
+            xsnprintf(buf + size, n, "%d %s\n", getpid(), filename);
             size += strlen(buf + size);
         } else {
             error_msg("File is locked (%s) by process %d", file_locks, pid);

@@ -1,27 +1,31 @@
+#include <dirent.h>
 #include "completion.h"
-#include "command.h"
-#include "cmdline.h"
-#include "editor.h"
-#include "options.h"
 #include "alias.h"
-#include "str.h"
-#include "ptr-array.h"
-#include "tag.h"
+#include "cmdline.h"
+#include "command.h"
 #include "common.h"
-#include "color.h"
-#include "env.h"
-#include "path.h"
+#include "debug.h"
 #include "config.h"
+#include "editor.h"
+#include "env.h"
+#include "options.h"
+#include "syntax/color.h"
+#include "tag.h"
+#include "util/ascii.h"
+#include "util/path.h"
+#include "util/ptr-array.h"
+#include "util/string.h"
+#include "util/xmalloc.h"
 
 static struct {
-    // Part of string which is to be replaced
+    // Part of string that is to be replaced
     char *escaped;
     char *parsed;
 
     char *head;
     char *tail;
     PointerArray completions;
-    int idx;
+    size_t idx;
 
     // Should we add space after completed string if we have only one match?
     bool add_space;
@@ -52,7 +56,7 @@ void add_completion(char *str)
 
 static void collect_commands(const char *prefix)
 {
-    for (size_t i = 0; commands[i].name; i++) {
+    for (size_t i = 0; commands[i].cmd; i++) {
         const Command *c = &commands[i];
         if (str_has_prefix(c->name, prefix)) {
             add_completion(xstrdup(c->name));
@@ -91,7 +95,7 @@ static void do_collect_files (
         const char *name = de->d_name;
 
         if (flen) {
-            if (strncmp(name, fileprefix, flen)) {
+            if (strncmp(name, fileprefix, flen) != 0) {
                 continue;
             }
         } else {
@@ -139,7 +143,11 @@ static void do_collect_files (
 
 static void collect_files(bool directories_only)
 {
-    char *str = parse_command_arg(completion.escaped, false);
+    char *str = parse_command_arg (
+        completion.escaped,
+        strlen(completion.escaped),
+        false
+    );
 
     if (!streq(completion.parsed, str)) {
         // ~ was expanded
@@ -153,7 +161,7 @@ static void collect_files(bool directories_only)
             char *s = xmalloc(len + 2);
             memcpy(s, str, len);
             s[len] = '/';
-            s[len + 1] = 0;
+            s[len + 1] = '\0';
             add_completion(s);
         } else {
             char *dir = path_dirname(completion.parsed);
@@ -196,11 +204,27 @@ static void collect_env(const char *prefix)
         if (str_has_prefix(e, prefix)) {
             const char *end = strchr(e, '=');
             if (end) {
-                add_completion(xstrslice(e, 0, end - e));
+                add_completion(xstrcut(e, end - e));
             }
         }
     }
     collect_builtin_env(prefix);
+}
+
+static void collect_colors_and_attributes(const char *prefix)
+{
+    static const char names[][16] = {
+        "keep", "default", "black", "red", "green", "yellow",
+        "blue", "magenta", "cyan", "gray", "darkgray", "lightred",
+        "lightgreen", "lightyellow", "lightblue", "lightmagenta",
+        "lightcyan", "white", "underline", "reverse", "blink",
+        "dim", "bold", "invisible", "italic", "strikethrough"
+    };
+    for (size_t i = 0; i < ARRAY_COUNT(names); i++) {
+        if (str_has_prefix(names[i], prefix)) {
+            add_completion(xstrdup(names[i]));
+        }
+    }
 }
 
 static void collect_completions(char **args, int argc)
@@ -214,23 +238,24 @@ static void collect_completions(char **args, int argc)
     if (!cmd) {
         return;
     }
+    const StringView cmd_name = string_view_from_cstring(cmd->name);
 
     if (
-        streq(cmd->name, "open")
-        || streq(cmd->name, "wsplit")
-        || streq(cmd->name, "save")
-        || streq(cmd->name, "compile")
-        || streq(cmd->name, "run")
-        || streq(cmd->name, "pass-through")
+        string_view_equal_literal(&cmd_name, "open")
+        || string_view_equal_literal(&cmd_name, "wsplit")
+        || string_view_equal_literal(&cmd_name, "save")
+        || string_view_equal_literal(&cmd_name, "compile")
+        || string_view_equal_literal(&cmd_name, "run")
+        || string_view_equal_literal(&cmd_name, "pass-through")
     ) {
         collect_files(false);
         return;
     }
-    if (streq(cmd->name, "cd")) {
+    if (string_view_equal_literal(&cmd_name, "cd")) {
         collect_files(true);
         return;
     }
-    if (streq(cmd->name, "include")) {
+    if (string_view_equal_literal(&cmd_name, "include")) {
         switch (argc) {
         case 1:
             collect_files(false);
@@ -243,13 +268,13 @@ static void collect_completions(char **args, int argc)
         }
         return;
     }
-    if (streq(cmd->name, "insert-builtin")) {
+    if (string_view_equal_literal(&cmd_name, "insert-builtin")) {
         if (argc == 1) {
             collect_builtin_configs(completion.parsed, true);
         }
         return;
     }
-    if (streq(cmd->name, "hi")) {
+    if (string_view_equal_literal(&cmd_name, "hi")) {
         switch (argc) {
         case 1:
             collect_hl_colors(completion.parsed);
@@ -260,7 +285,7 @@ static void collect_completions(char **args, int argc)
         }
         return;
     }
-    if (streq(cmd->name, "set")) {
+    if (string_view_equal_literal(&cmd_name, "set")) {
         if (argc % 2) {
             collect_options(completion.parsed);
         } else {
@@ -268,11 +293,11 @@ static void collect_completions(char **args, int argc)
         }
         return;
     }
-    if (streq(cmd->name, "toggle") && argc == 1) {
+    if (string_view_equal_literal(&cmd_name, "toggle") && argc == 1) {
         collect_toggleable_options(completion.parsed);
         return;
     }
-    if (streq(cmd->name, "tag") && argc == 1) {
+    if (string_view_equal_literal(&cmd_name, "tag") && argc == 1) {
         TagFile *tf = load_tag_file();
         if (tf != NULL) {
             collect_tags(tf, completion.parsed);
@@ -285,8 +310,8 @@ static void init_completion(void)
 {
     char *cmd = string_cstring(&editor.cmdline.buf);
     PointerArray array = PTR_ARRAY_INIT;
-    int semicolon = -1;
-    int completion_pos = -1;
+    ssize_t semicolon = -1;
+    ssize_t completion_pos = -1;
     size_t pos = 0;
 
     while (1) {
@@ -323,26 +348,25 @@ static void init_completion(void)
             const char *value = find_alias(name);
 
             if (value) {
-                size_t i, save = array.count;
-
+                size_t save = array.count;
                 if (!parse_commands(&array, value, &err)) {
                     error_free(err);
-                    for (i = save; i < array.count; i++) {
+                    for (size_t i = save; i < array.count; i++) {
                         free(array.ptrs[i]);
                         array.ptrs[i] = NULL;
                     }
                     array.count = save;
-                    ptr_array_add(&array, parse_command_arg(name, true));
+                    ptr_array_add(&array, parse_command_arg(name, end - pos, true));
                 } else {
                     // Remove NULL
                     array.count--;
                 }
             } else {
-                ptr_array_add(&array, parse_command_arg(name, true));
+                ptr_array_add(&array, parse_command_arg(name, end - pos, true));
             }
             free(name);
         } else {
-            ptr_array_add(&array, parse_command_arg(cmd + pos, true));
+            ptr_array_add(&array, parse_command_arg(cmd + pos, end - pos, true));
         }
         pos = end;
     }
@@ -351,24 +375,25 @@ static void init_completion(void)
     size_t len = editor.cmdline.pos - completion_pos;
     if (len && str[0] == '$') {
         bool var = true;
-        for (size_t i = 1; i < len; i++) {
-            char ch = str[i];
-            if (ascii_isalpha(ch) || ch == '_') {
-                continue;
+        if (len >= 2) {
+            if (is_alpha_or_underscore(str[1])) {
+                for (size_t i = 2; i < len; i++) {
+                    if (is_alnum_or_underscore(str[i])) {
+                        continue;
+                    }
+                    var = false;
+                    break;
+                }
+            } else {
+                var = false;
             }
-            if (i > 1 && ascii_isdigit(ch)) {
-                continue;
-            }
-
-            var = false;
-            break;
         }
         if (var) {
             char *name = xstrslice(str, 1, len);
             completion_pos++;
             completion.escaped = NULL;
             completion.parsed = NULL;
-            completion.head = xstrslice(cmd, 0, completion_pos);
+            completion.head = xstrcut(cmd, completion_pos);
             completion.tail = xstrdup(cmd + editor.cmdline.pos);
             collect_env(name);
             sort_completions();
@@ -379,9 +404,9 @@ static void init_completion(void)
         }
     }
 
-    completion.escaped = xstrslice(str, 0, len);
-    completion.parsed = parse_command_arg(completion.escaped, true);
-    completion.head = xstrslice(cmd, 0, completion_pos);
+    completion.escaped = xstrcut(str, len);
+    completion.parsed = parse_command_arg(completion.escaped, len, true);
+    completion.head = xstrcut(cmd, completion_pos);
     completion.tail = xstrdup(cmd + editor.cmdline.pos);
     completion.add_space = true;
 
@@ -403,25 +428,20 @@ static char *escape(const char *str)
     }
 
     if (str[0] == '~' && !completion.tilde_expanded) {
-        string_add_ch(&buf, '\\');
+        string_add_byte(&buf, '\\');
     }
 
     for (size_t i = 0; str[i]; i++) {
-        char ch = str[i];
+        const char ch = str[i];
         switch (ch) {
         case ' ':
         case '"':
         case '$':
         case '\'':
-        case '*':
         case ';':
-        case '?':
-        case '[':
         case '\\':
-        case '{':
-            string_add_ch(&buf, '\\');
-            string_add_byte(&buf, ch);
-            break;
+            string_add_byte(&buf, '\\');
+            // Fallthrough
         default:
             string_add_byte(&buf, ch);
             break;

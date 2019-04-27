@@ -1,17 +1,10 @@
 #ifndef COMPILER_H
 #define COMPILER_H
 
+#include <regex.h>
 #include <stdbool.h>
 #include <stdint.h>
-#include "ptr-array.h"
-#include "regexp.h"
-
-typedef struct {
-    char *file;
-    char *msg;
-    int line;
-    int column;
-} CompileError;
+#include "util/ptr-array.h"
 
 typedef struct {
     bool ignore;

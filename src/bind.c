@@ -1,93 +1,113 @@
+#include <sys/types.h>
 #include "bind.h"
-#include "common.h"
-#include "error.h"
 #include "command.h"
-#include "ptr-array.h"
-
-typedef struct {
-    Key keys[3];
-    size_t count;
-} KeyChain;
+#include "common.h"
+#include "debug.h"
+#include "error.h"
+#include "util/ascii.h"
+#include "util/ptr-array.h"
+#include "util/xmalloc.h"
 
 typedef struct {
     char *command;
-    KeyChain chain;
+    KeyCode key;
 } Binding;
 
-static KeyChain pressed_keys;
-static PointerArray bindings = PTR_ARRAY_INIT;
+// Fast lookup table for most common key combinations (Ctrl or Meta
+// with ASCII keys or any combination of modifiers with special keys)
+static char *bindings_lookup_table[(2 * 128) + (8 * NR_SPECIAL_KEYS)];
 
-static bool parse_keys(KeyChain *chain, const char *str)
+// Fallback for all other keys (Unicode combos etc.)
+static PointerArray bindings_ptr_array = PTR_ARRAY_INIT;
+
+static CONST_FN ssize_t key_lookup_index(KeyCode k)
 {
-    char *keys = xstrdup(str);
-    size_t len = strlen(keys);
+    const KeyCode modifiers = keycode_get_modifiers(k);
+    const KeyCode key = keycode_get_key(k);
 
-    // Convert all whitespace to \0
-    for (size_t i = 0; i < len; i++) {
-        if (ascii_isspace(keys[i])) {
-            keys[i] = 0;
-        }
+    static_assert(MOD_MASK >> 24 == (1 | 2 | 4));
+
+    if (key >= KEY_SPECIAL_MIN && key <= KEY_SPECIAL_MAX) {
+        const size_t mod_offset = (modifiers >> 24) * NR_SPECIAL_KEYS;
+        return (2 * 128) + mod_offset + (key - KEY_SPECIAL_MIN);
     }
 
-    memzero(chain);
-    for (size_t i = 0; i < len; ) {
-        while (i < len && keys[i] == 0) {
-            i++;
-        }
-        const char *key = keys + i;
-        while (i < len && keys[i] != 0) {
-            i++;
-        }
-        if (key == keys + i) {
+    if (key >= 0x20 && key <= 0x7E) {
+        switch (modifiers) {
+        case MOD_CTRL:
+            return key;
+        case MOD_META:
+            return key + 128;
+        default:
             break;
         }
+    }
 
-        if (chain->count >= ARRAY_COUNT(chain->keys)) {
-            error_msg("Too many keys.");
-            free(keys);
-            return false;
-        }
-        if (!parse_key(&chain->keys[chain->count], key)) {
-            error_msg("Invalid key %s", key);
-            free(keys);
-            return false;
-        }
-        chain->count++;
-    }
-    free(keys);
-    if (chain->count == 0) {
-        error_msg("Empty key not allowed.");
-        return false;
-    }
-    return true;
+    return -1;
 }
 
-void add_binding(const char *keys, const char *command)
+UNITTEST {
+    BUG_ON(key_lookup_index(MOD_MASK | KEY_SPECIAL_MAX) != 256 + (8 * NR_SPECIAL_KEYS) - 1);
+    BUG_ON(key_lookup_index(KEY_SPECIAL_MIN) != 256);
+    BUG_ON(key_lookup_index(KEY_SPECIAL_MAX) != 256 + NR_SPECIAL_KEYS - 1);
+    BUG_ON(key_lookup_index(MOD_CTRL | KEY_SPECIAL_MIN) != 256 + NR_SPECIAL_KEYS);
+    BUG_ON(key_lookup_index(MOD_SHIFT | KEY_SPECIAL_MAX) != 256 + (5 * NR_SPECIAL_KEYS) - 1);
+
+    BUG_ON(key_lookup_index(MOD_CTRL | ' ') != 32);
+    BUG_ON(key_lookup_index(MOD_META | ' ') != 32 + 128);
+    BUG_ON(key_lookup_index(MOD_CTRL | '~') != 126);
+    BUG_ON(key_lookup_index(MOD_META | '~') != 126 + 128);
+
+    BUG_ON(key_lookup_index(MOD_CTRL | MOD_META | 'a') != -1);
+    BUG_ON(key_lookup_index(MOD_META | 0x0E01) != -1);
+}
+
+void add_binding(const char *keystr, const char *command)
 {
+    KeyCode key;
+    if (!parse_key(&key, keystr)) {
+        error_msg("invalid key string: %s", keystr);
+        return;
+    }
+
+    const ssize_t idx = key_lookup_index(key);
+    if (idx >= 0) {
+        char *old_command = bindings_lookup_table[idx];
+        if (old_command) {
+            free(old_command);
+        }
+        bindings_lookup_table[idx] = xstrdup(command);
+        return;
+    }
+
     Binding *b = xnew(Binding, 1);
-    if (!parse_keys(&b->chain, keys)) {
-        free(b);
-        return;
-    }
-
+    b->key = key;
     b->command = xstrdup(command);
-    ptr_array_add(&bindings, b);
+    ptr_array_add(&bindings_ptr_array, b);
 }
 
-void remove_binding(const char *keys)
+void remove_binding(const char *keystr)
 {
-    KeyChain chain;
-    size_t i = bindings.count;
-
-    if (!parse_keys(&chain, keys)) {
+    KeyCode key;
+    if (!parse_key(&key, keystr)) {
         return;
     }
 
-    while (i > 0) {
-        Binding *b = bindings.ptrs[--i];
+    const ssize_t idx = key_lookup_index(key);
+    if (idx >= 0) {
+        char *command = bindings_lookup_table[idx];
+        if (command) {
+            free(command);
+            bindings_lookup_table[idx] = NULL;
+        }
+        return;
+    }
 
-        if (memcmp(&b->chain, &chain, sizeof(chain)) == 0) {
-            ptr_array_remove_idx(&bindings, i);
+    size_t i = bindings_ptr_array.count;
+    while (i > 0) {
+        Binding *b = bindings_ptr_array.ptrs[--i];
+        if (b->key == key) {
+            ptr_array_remove_idx(&bindings_ptr_array, i);
             free(b->command);
             free(b);
             return;
@@ -95,38 +115,65 @@ void remove_binding(const char *keys)
     }
 }
 
-void handle_binding(Key key)
+void handle_binding(KeyCode key)
 {
-    pressed_keys.keys[pressed_keys.count] = key;
-    pressed_keys.count++;
-
-    for (size_t i = bindings.count; i > 0; i--) {
-        Binding *b = bindings.ptrs[i - 1];
-        KeyChain *c = &b->chain;
-
-        if (c->count < pressed_keys.count) {
-            continue;
-        }
-
-        if (memcmp (
-            c->keys,
-            pressed_keys.keys,
-            pressed_keys.count * sizeof(pressed_keys.keys[0])
-        )) {
-            continue;
-        }
-
-        if (c->count > pressed_keys.count) {
+    const ssize_t idx = key_lookup_index(key);
+    if (idx >= 0) {
+        const char *command = bindings_lookup_table[idx];
+        if (command) {
+            handle_command(commands, command);
             return;
         }
-
-        handle_command(commands, b->command);
-        break;
     }
-    memzero(&pressed_keys);
+
+    for (size_t i = bindings_ptr_array.count; i > 0; i--) {
+        Binding *b = bindings_ptr_array.ptrs[i - 1];
+        if (b->key == key) {
+            handle_command(commands, b->command);
+            break;
+        }
+    }
 }
 
-int nr_pressed_keys(void)
+String dump_bindings(void)
 {
-    return pressed_keys.count;
+    String buf = STRING_INIT;
+
+    for (KeyCode k = 0x20; k < 0x7E; k++) {
+        const char *command = bindings_lookup_table[k];
+        if (command) {
+            const char *keystr = key_to_string(MOD_CTRL | k);
+            string_sprintf(&buf, "   %-10s  %s\n", keystr, command);
+        }
+    }
+
+    for (KeyCode k = 0x20; k < 0x7E; k++) {
+        const char *command = bindings_lookup_table[k + 128];
+        if (command) {
+            const char *keystr = key_to_string(MOD_META | k);
+            string_sprintf(&buf, "   %-10s  %s\n", keystr, command);
+        }
+    }
+
+    static_assert(MOD_CTRL == (1 << 24));
+    for (KeyCode m = 0; m <= 7; m++) {
+        const KeyCode modifiers = m << 24;
+        for (size_t k = KEY_SPECIAL_MIN; k <= KEY_SPECIAL_MAX; k++) {
+            const size_t mod_offset = m * NR_SPECIAL_KEYS;
+            const size_t i = (2 * 128) + mod_offset + (k - KEY_SPECIAL_MIN);
+            const char *command = bindings_lookup_table[i];
+            if (command) {
+                const char *keystr = key_to_string(modifiers | k);
+                string_sprintf(&buf, "   %-10s  %s\n", keystr, command);
+            }
+        }
+    }
+
+    for (size_t i = 0, nbinds = bindings_ptr_array.count; i < nbinds; i++) {
+        const Binding *b = bindings_ptr_array.ptrs[i];
+        const char *keystr = key_to_string(b->key);
+        string_sprintf(&buf, "   %-10s  %s\n", keystr, b->command);
+    }
+
+    return buf;
 }

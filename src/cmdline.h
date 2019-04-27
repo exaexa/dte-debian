@@ -2,10 +2,9 @@
 #define CMDLINE_H
 
 #include <sys/types.h>
-#include "ptr-array.h"
-#include "str.h"
-#include "key.h"
-#include "term.h"
+#include "terminal/key.h"
+#include "util/ptr-array.h"
+#include "util/string.h"
 
 typedef struct {
     String buf;
@@ -14,14 +13,19 @@ typedef struct {
     char *search_text;
 } CommandLine;
 
-enum {
+typedef enum {
     CMDLINE_UNKNOWN_KEY,
     CMDLINE_KEY_HANDLED,
     CMDLINE_CANCEL,
-};
+} CommandLineResult;
 
 void cmdline_clear(CommandLine *c);
 void cmdline_set_text(CommandLine *c, const char *text);
-int cmdline_handle_key(CommandLine *c, PointerArray *history, Key key);
+
+CommandLineResult cmdline_handle_key (
+    CommandLine *c,
+    PointerArray *history,
+    KeyCode key
+);
 
 #endif

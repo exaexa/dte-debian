@@ -1,4 +1,4 @@
-.TH DTERC 5 "November 2017"
+.TH DTERC 5 "March 2019"
 .nh
 .ad l
 .
@@ -14,7 +14,7 @@ Commands:
 .br
    \fBbof\fR
 .br
-   \fBbol\fR
+   \fBbol\fR [\fB\-cs\fR]
 .br
    \fBbolsf\fR
 .br
@@ -42,11 +42,11 @@ Commands:
 .br
    \fBdelete\-word\fR [\fB\-s\fR]
 .br
-   \fBdown\fR
+   \fBdown\fR [\fB\-cl\fR]
 .br
    \fBeof\fR
 .br
-   \fBeol\fR
+   \fBeol\fR [\fB\-c\fR]
 .br
    \fBeolsf\fR
 .br
@@ -60,7 +60,7 @@ Commands:
 .br
    \fBfilter\fR \fIcommand\fR [\fIparameter\fR]...
 .br
-   \fBformat\-paragraph\fR [\fIwidth\fR]
+   \fBwrap\-paragraph\fR [\fIwidth\fR]
 .br
    \fBft\fR \fIfiletype\fR \fIextension\fR...
 .br
@@ -80,11 +80,9 @@ Commands:
 .br
    \fBinsert\fR [\fB\-km\fR] \fItext\fR
 .br
-   \fBinsert\-special\fR
-.br
    \fBjoin\fR
 .br
-   \fBleft\fR
+   \fBleft\fR [\fB\-c\fR]
 .br
    \fBline\fR \fInumber\fR
 .br
@@ -108,9 +106,9 @@ Commands:
 .br
    \fBpaste\fR
 .br
-   \fBpgdown\fR
+   \fBpgdown\fR [\fB\-cl\fR]
 .br
-   \fBpgup\fR
+   \fBpgup\fR [\fB\-cl\fR]
 .br
    \fBprev\fR
 .br
@@ -118,11 +116,13 @@ Commands:
 .br
    \fBredo\fR [\fIchoice\fR]
 .br
+   \fBrefresh\fR
+.br
    \fBrepeat\fR \fIcount\fR \fIcommand\fR [\fIparameters\fR]...
 .br
    \fBreplace\fR [\fB\-bcgi\fR] \fIpattern\fR \fIreplacement\fR
 .br
-   \fBright\fR
+   \fBright\fR [\fB\-c\fR]
 .br
    \fBrun\fR [\fB\-ps\fR] \fIcommand\fR [\fIparameters\fR]...
 .br
@@ -156,7 +156,7 @@ Commands:
 .br
    \fBunselect\fR
 .br
-   \fBup\fR
+   \fBup\fR [\fB\-cl\fR]
 .br
    \fBview\fR \fIN\fR|last
 .br
@@ -166,9 +166,9 @@ Commands:
 .br
    \fBwnext\fR
 .br
-   \fBword\-bwd\fR [\fB\-s\fR]
+   \fBword\-bwd\fR [\fB\-cs\fR]
 .br
-   \fBword\-fwd\fR [\fB\-s\fR]
+   \fBword\-fwd\fR [\fB\-cs\fR]
 .br
    \fBwprev\fR
 .br
@@ -186,6 +186,8 @@ Global options:
    \fBdisplay\-special\fR [false]
 .br
    \fBesc\-timeout\fR [100] 0...2000
+.br
+   \fBfilesize\-limit\fR [250]
 .br
    \fBlock\-files\fR [true]
 .br
@@ -291,8 +293,12 @@ Single quoted strings can't contain single quotes or escaped characters.
 Double quoted strings may contain the following escapes:
 .P
 .TP
-\fB\\a\fR, \fB\\b\fR, \fB\\t\fR, \fB\\n\fR, \fB\\v\fR, \fB\\f\fR, \fB\\r\fR, \fB\\\\\fR
+\fB\\a\fR, \fB\\b\fR, \fB\\t\fR, \fB\\n\fR, \fB\\v\fR, \fB\\f\fR, \fB\\r\fR
 Control characters (same as in C)
+.PP
+.TP
+\fB\\\\\fR
+Escaped backslash
 .PP
 .TP
 \fB\\x0a\fR
@@ -375,19 +381,25 @@ Alt:
 Shift:
 \fBS\-left\fR
 .PP
-Key chains are supported. For example \fB"^X c"\fR (press \fB^X\fR and then \fBc\fR).
-Keys are separated by spaces.
-.P
 .RE
 \fBbof\fR
 .RS
 Move to beginning of file.
 .P
 .RE
-\fBbol\fR
+\fBbol\fR [\fB\-cs\fR]
 .RS
 Move to beginning of line.
 .P
+.TP
+\fB\-c\fR
+Select characters
+.PP
+.TP
+\fB\-s\fR
+Move to beginning of indented text or beginning of line, depending
+on current cursor position.
+.PP
 .RE
 \fBbolsf\fR
 .RS
@@ -450,8 +462,14 @@ line (see the default \fB^L\fR key binding for why this is useful).
 .RE
 \fBcompile\fR [\fB\-1ps\fR] \fIerrorfmt\fR \fIcommand\fR [\fIparameters\fR]...
 .RS
-Run external \fIcommand\fR and collect error messages. This can be
-used to run \fBmake\fR(1) and \fBgrep\fR(1).
+Run external \fIcommand\fR and collect output messages. This can be
+used to run e.g. compilers, build systems, code search utilities,
+etc. and then jump to a file/line position for each message.
+.P
+The \fIerrorfmt\fR argument corresponds to a regex capture pattern
+previously specified by the \fBerrorfmt\fR command. After \fIcommand\fR
+exits successfully, parsed messages can be navigated using the
+\fBmsg\fR command.
 .P
 .TP
 \fB\-1\fR
@@ -501,20 +519,32 @@ Delete word after cursor.
 Be more "aggressive"
 .PP
 .RE
-\fBdown\fR
+\fBdown\fR [\fB\-cl\fR]
 .RS
 Move cursor down.
 .P
+.TP
+\fB\-c\fR
+Select characters
+.PP
+.TP
+\fB\-l\fR
+Select whole lines
+.PP
 .RE
 \fBeof\fR
 .RS
 Move cursor to end of file.
 .P
 .RE
-\fBeol\fR
+\fBeol\fR [\fB\-c\fR]
 .RS
 Move cursor to end of line.
 .P
+.TP
+\fB\-c\fR
+Select characters
+.PP
 .RE
 \fBeolsf\fR
 .RS
@@ -563,8 +593,19 @@ filter\ sort\ \-r
 \f[]
 .fi
 .PP
+Note that \fIcommand\fR is executed directly using \fBexecvp\fR(3). To use shell
+features like pipes or redirection, use a shell interpreter as the
+\fIcommand\fR. For example:
+.P
+.IP
+.nf
+\f[C]
+filter\ sh\ \-c\ 'tr\ a\-z\ A\-Z\ |\ sed\ s/foo/bar/'
+\f[]
+.fi
+.PP
 .RE
-\fBformat\-paragraph\fR [\fIwidth\fR]
+\fBwrap\-paragraph\fR [\fIwidth\fR]
 .RS
 Format the current selection or paragraph under the cursor. If
 paragraph \fIwidth\fR is not given then the \fBtext\-width\fR option is
@@ -598,9 +639,6 @@ See also:
 \(bu The \fBfiletype\fR option (below)
 .br
 \(bu The \fBdte\-syntax\fR(5) man page
-.br
-\(bu The built\-in filetype associations
-(which can be listed by running \fBdte \-b filetype\fR)
 .br
 .P
 .RE
@@ -660,8 +698,48 @@ Go to top of file list.
 .RS
 Set highlight color.
 .P
-Colors:
+The \fIname\fR argument can be a token name defined by a \fBdte\-syntax\fR(5) file
+or one of the following, built\-in highlight names:
 .P
+\(bu \fBdefault\fR
+.br
+\(bu \fBnontext\fR
+.br
+\(bu \fBnoline\fR
+.br
+\(bu \fBwserror\fR
+.br
+\(bu \fBselection\fR
+.br
+\(bu \fBcurrentline\fR
+.br
+\(bu \fBlinenumber\fR
+.br
+\(bu \fBstatusline\fR
+.br
+\(bu \fBcommandline\fR
+.br
+\(bu \fBerrormsg\fR
+.br
+\(bu \fBinfomsg\fR
+.br
+\(bu \fBtabbar\fR
+.br
+\(bu \fBactivetab\fR
+.br
+\(bu \fBinactivetab\fR
+.br
+.P
+The \fIfg\-color\fR and \fIbg\-color\fR arguments can be one of the following:
+.P
+\(bu No value (equivalent to \fBdefault\fR)
+.br
+\(bu A numeric value between \fB\-2\fR and \fB255\fR
+.br
+\(bu A 256\-color palette value in R/G/B notation (e.g. \fB0/3/5\fR)
+.br
+\(bu A true color value in CSS\-style #RRGGBB notation (e.g. \fB#ab90df\fR)
+.br
 \(bu \fBkeep\fR (\fB\-2\fR)
 .br
 \(bu \fBdefault\fR (\fB\-1\fR)
@@ -699,26 +777,24 @@ Colors:
 \(bu \fBwhite\fR
 .br
 .P
-Color can be given as a numeric value too (\fB\-2\fR..\fB255\fR).
+Colors \fB16\fR to \fB231\fR correspond to R/G/B colors. Colors \fB232\fR to \fB255\fR
+are grayscale values.
 .P
-Colors \fB16\fR\-\fB255\fR are supported by modern \fBxterm\fR\-compatible terminal
-emulators. There's a 6x6x6 color cube at indexes \fB16\fR..\fB231\fR. For these
-colors it is easiest to use the R/G/B syntax where R, G and B are values
-between \fB0\fR and \fB5\fR.
+If the terminal has limited support for rendering colors, the \fIfg\-color\fR
+and \fIbg\-color\fR arguments will fall back to the nearest supported color,
+which may be less precise than the value specified.
 .P
-Indexes \fB232\fR..\fB255\fR contain 24 grayscale values that can be used
-to specify grayscale value more accurately than using the R/G/B
-syntax.
-.P
-Attributes:
+The \fIattribute\fR argument(s) can be any combination of the following:
 .P
 \(bu \fBbold\fR
 .br
-\(bu \fBlowintensity\fR
+\(bu \fBdim\fR
 .br
 \(bu \fBitalic\fR
 .br
 \(bu \fBunderline\fR
+.br
+\(bu \fBstrikethrough\fR
 .br
 \(bu \fBblink\fR
 .br
@@ -735,8 +811,6 @@ to keep \fIfg\-color\fR and attributes and change only \fIbg\-color\fR.
 NOTE: Because \fBkeep\fR is both a color and an attribute you need to
 specify both \fIfg\-color\fR and \fIbg\-color\fR if you want to set the \fBkeep\fR
 \fIattribute\fR.
-.P
-If you omit any color it is set to \fBdefault\fR (\fB\-1\fR).
 .P
 Unset fg/bg colors are inherited from highlight color \fBdefault\fR.
 If you don't set fg/bg for the highlight color \fBdefault\fR then
@@ -765,34 +839,19 @@ Insert one character at a time as if it has been typed
 Move after inserted text
 .PP
 .RE
-\fBinsert\-special\fR
-.RS
-Enter an input mode that allows inserting special characters or byte
-values. After running the command, type a decimal value or use one of
-the following prefixes:
-.P
-.TP
-\fBo\fR
-Insert 3\-digit octal byte value
-.PP
-.TP
-\fBx\fR
-Insert 2\-digit hexadecimal byte value
-.PP
-.TP
-\fBu\fR
-Insert 6\-digit hexadecimal Unicode value
-.PP
-.RE
 \fBjoin\fR
 .RS
 Join selection or next line to current.
 .P
 .RE
-\fBleft\fR
+\fBleft\fR [\fB\-c\fR]
 .RS
 Move left.
 .P
+.TP
+\fB\-c\fR
+Select characters
+.PP
 .RE
 \fBline\fR \fInumber\fR
 .RS
@@ -889,15 +948,31 @@ Paste.
 Paste at the cursor position
 .PP
 .RE
-\fBpgdown\fR
+\fBpgdown\fR [\fB\-cl\fR]
 .RS
 Move cursor page down. See also \fBscroll\-pgdown\fR.
 .P
+.TP
+\fB\-c\fR
+Select characters
+.PP
+.TP
+\fB\-l\fR
+Select whole lines
+.PP
 .RE
-\fBpgup\fR
+\fBpgup\fR [\fB\-cl\fR]
 .RS
 Move cursor page up. See also \fBscroll\-pgup\fR.
 .P
+.TP
+\fB\-c\fR
+Select characters
+.PP
+.TP
+\fB\-l\fR
+Select whole lines
+.PP
 .RE
 \fBprev\fR
 .RS
@@ -910,7 +985,11 @@ Quit.
 .P
 .TP
 \fB\-f\fR
-Force quitting even if there are unsaved files
+Force quit, even if there are unsaved files
+.PP
+.TP
+\fB\-p\fR
+Prompt for confirmation if there are unsaved files
 .PP
 .RE
 \fBredo\fR [\fIchoice\fR]
@@ -927,6 +1006,11 @@ Redoing\ newest\ (2)\ of\ 2\ possible\ changes.
 .PP
 If the change was not the one you wanted, just run \fBundo\fR and
 then, for example, \fBredo 1\fR.
+.P
+.RE
+\fBrefresh\fR
+.RS
+Trigger a full redraw of the screen.
 .P
 .RE
 \fBrepeat\fR \fIcount\fR \fIcommand\fR [\fIparameters\fR]...
@@ -958,10 +1042,14 @@ Replace all matches for each line (instead of just the first)
 Ignore case
 .PP
 .RE
-\fBright\fR
+\fBright\fR [\fB\-c\fR]
 .RS
 Move right.
 .P
+.TP
+\fB\-c\fR
+Select characters
+.PP
 .RE
 \fBrun\fR [\fB\-ps\fR] \fIcommand\fR [\fIparameters\fR]...
 .RS
@@ -1084,7 +1172,7 @@ its own copies of the option values.
 .
 .br
 3. Options that have both global and local values. The Global value is
-just a default local value for opened files and never used for
+just a default local value for opened files and is never used for
 anything else. Changing the global value does not affect any already
 opened files.
 .P
@@ -1156,8 +1244,8 @@ toggle global option instead of local
 \fB\-v\fR
 display new value
 .PP
-If \fIoption\fR has both local and global value then local is toggled
-unless \-g is given.
+If \fIoption\fR has both local and global values then local is toggled
+unless \fB\-g\fR is used.
 .P
 .RE
 \fBundo\fR
@@ -1170,10 +1258,18 @@ Undo latest change.
 Unselect.
 .P
 .RE
-\fBup\fR
+\fBup\fR [\fB\-cl\fR]
 .RS
 Move cursor up.
 .P
+.TP
+\fB\-c\fR
+Select characters
+.PP
+.TP
+\fB\-l\fR
+Select whole lines
+.PP
 .RE
 \fBview\fR \fIN\fR|last
 .RS
@@ -1199,19 +1295,27 @@ Change from vertical layout to horizontal and vice versa.
 Next window.
 .P
 .RE
-\fBword\-bwd\fR [\fB\-s\fR]
+\fBword\-bwd\fR [\fB\-cs\fR]
 .RS
 Move cursor backward one word.
 .P
+.TP
+\fB\-c\fR
+Select characters
+.PP
 .TP
 \fB\-s\fR
 Skip special characters
 .PP
 .RE
-\fBword\-fwd\fR [\fB\-s\fR]
+\fBword\-fwd\fR [\fB\-cs\fR]
 .RS
 Move cursor forward one word.
 .P
+.TP
+\fB\-c\fR
+Select characters
+.PP
 .TP
 \fB\-s\fR
 Skip special characters
@@ -1308,6 +1412,13 @@ timeout value is in milliseconds.
 Too long timeout makes escape key feel slow and too small
 timeout can cause escape sequences of for example arrow keys to
 be split and treated as multiple key presses.
+.P
+.RE
+\fBfilesize\-limit\fR [250]
+.RS
+Refuse to open any file with a size larger than this value (in
+mebibytes). Useful to prevent accidentally opening very large
+files, which can take a long time on some systems.
 .P
 .RE
 \fBlock\-files\fR [true]
@@ -1528,7 +1639,7 @@ indentation size than \fB8\fR you should use spaces to indent.
 \fBtext\-width\fR [72]
 .RS
 Preferred width of text. Used as the default argument for the
-\fBformat\-paragraph\fR command.
+\fBwrap\-paragraph\fR command.
 .P
 .RE
 \fBws\-error\fR [special]
@@ -1573,6 +1684,7 @@ accidentally typed (AltGr+space in some keyboard layouts).
 Highlight trailing whitespace characters at the end of lines as
 errors.
 .PP
+.
 .SH SEE ALSO
 \fBdte\fR(1),
 \fBdte\-syntax\fR(5)

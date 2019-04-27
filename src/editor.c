@@ -1,32 +1,43 @@
-#include <locale.h>
 #include <langinfo.h>
+#include <locale.h>
+#include <signal.h>
+#include <stdio.h>
+#include <unistd.h>
 #include "editor.h"
 #include "buffer.h"
-#include "window.h"
-#include "view.h"
-#include "term.h"
-#include "obuf.h"
-#include "search.h"
-#include "screen.h"
-#include "config.h"
 #include "command.h"
+#include "common.h"
+#include "config.h"
+#include "debug.h"
 #include "error.h"
+#include "mode.h"
+#include "screen.h"
+#include "search.h"
+#include "terminal/input.h"
+#include "terminal/output.h"
+#include "terminal/terminal.h"
+#include "util/ascii.h"
+#include "util/xmalloc.h"
+#include "view.h"
+#include "window.h"
+#include "../build/version.h"
 
-extern const EditorModeOps normal_mode_ops;
-extern const EditorModeOps command_mode_ops;
-extern const EditorModeOps search_mode_ops;
-extern const EditorModeOps git_open_ops;
+static volatile sig_atomic_t terminal_resized;
+
+static void resize(void);
+static void ui_end(void);
 
 EditorState editor = {
     .status = EDITOR_INITIALIZING,
     .input_mode = INPUT_NORMAL,
     .child_controls_terminal = false,
     .everything_changed = false,
-    .resized = false,
     .search_history = PTR_ARRAY_INIT,
     .command_history = PTR_ARRAY_INIT,
-    .version = VERSION,
+    .version = version,
     .cmdline_x = 0,
+    .resize = resize,
+    .ui_end = ui_end,
     .cmdline = {
         .buf = STRING_INIT,
         .pos = 0,
@@ -36,6 +47,7 @@ EditorState editor = {
     .options = {
         .auto_indent = true,
         .detect_indent = 0,
+        .editorconfig = false,
         .emulate_tab = false,
         .expand_tab = false,
         .file_history = true,
@@ -59,6 +71,7 @@ EditorState editor = {
         .tab_bar = TAB_BAR_HORIZONTAL,
         .tab_bar_max_components = 0,
         .tab_bar_width = 25,
+        .filesize_limit = 250,
     },
     .mode_ops = {
         [INPUT_NORMAL] = &normal_mode_ops,
@@ -70,20 +83,22 @@ EditorState editor = {
 
 void init_editor_state(void)
 {
+    const char *const pager = getenv("PAGER");
     const char *const home = getenv("HOME");
     const char *const dte_home = getenv("DTE_HOME");
 
+    editor.pager = xstrdup(pager ? pager : "less");
     editor.home_dir = xstrdup(home ? home : "");
 
     if (dte_home) {
         editor.user_config_dir = xstrdup(dte_home);
     } else {
-        editor.user_config_dir = xsprintf("%s/.dte", editor.home_dir);
+        editor.user_config_dir = xasprintf("%s/.dte", editor.home_dir);
     }
 
     setlocale(LC_CTYPE, "");
-    editor.charset = nl_langinfo(CODESET);
-    editor.term_utf8 = streq(editor.charset, "UTF-8");
+    editor.charset = encoding_from_name(nl_langinfo(CODESET));
+    editor.term_utf8 = (editor.charset.type == UTF8);
 
     editor.options.statusline_left = xstrdup(" %f%s%m%r%s%M");
     editor.options.statusline_right = xstrdup(" %y,%X   %u   %E %n %t   %p ");
@@ -91,10 +106,7 @@ void init_editor_state(void)
 
 static void sanity_check(void)
 {
-    if (!DEBUG) {
-        return;
-    }
-
+#if DEBUG >= 1
     View *v = window->view;
     Block *blk;
     list_for_each_entry(blk, &v->buffer->blocks, node) {
@@ -104,54 +116,20 @@ static void sanity_check(void)
         }
     }
     BUG("cursor not seen");
-}
-
-void set_input_mode(InputMode mode)
-{
-    editor.input_mode = mode;
+#endif
 }
 
 void any_key(void)
 {
-    Key key;
+    KeyCode key;
 
-    puts("Press any key to continue");
+    fputs("Press any key to continue\r\n", stderr);
     while (!term_read_key(&key)) {
         ;
     }
     if (key == KEY_PASTE) {
         term_discard_paste();
     }
-}
-
-static void show_message(const char *const msg, bool is_error)
-{
-    buf_reset(0, terminal.width, 0);
-    buf_move_cursor(0, terminal.height - 1);
-    print_message(msg, is_error);
-    buf_clear_eol();
-}
-
-static void update_command_line(void)
-{
-    char prefix = ':';
-
-    buf_reset(0, terminal.width, 0);
-    buf_move_cursor(0, terminal.height - 1);
-    switch (editor.input_mode) {
-    case INPUT_NORMAL:
-        print_message(error_buf, msg_is_error);
-        break;
-    case INPUT_SEARCH:
-        prefix = current_search_direction() == SEARCH_FWD ? '/' : '?';
-        // fallthrough
-    case INPUT_COMMAND:
-        editor.cmdline_x = print_command(prefix);
-        break;
-    case INPUT_GIT_OPEN:
-        break;
-    }
-    buf_clear_eol();
 }
 
 static void update_window_full(Window *w)
@@ -174,13 +152,14 @@ static void restore_cursor(void)
     View *v = window->view;
     switch (editor.input_mode) {
     case INPUT_NORMAL:
-        buf_move_cursor(
+        terminal.move_cursor (
             window->edit_x + v->cx_display - v->vx,
-            window->edit_y + v->cy - v->vy);
+            window->edit_y + v->cy - v->vy
+        );
         break;
     case INPUT_COMMAND:
     case INPUT_SEARCH:
-        buf_move_cursor(editor.cmdline_x, terminal.height - 1);
+        terminal.move_cursor(editor.cmdline_x, terminal.height - 1);
         break;
     case INPUT_GIT_OPEN:
         break;
@@ -245,7 +224,7 @@ static void update_window(Window *w)
 // Update all visible views containing this buffer
 static void update_buffer_windows(const Buffer *const b)
 {
-    for (size_t i = 0; i < b->views.count; i++) {
+    for (size_t i = 0, n = b->views.count; i < n; i++) {
         View *v = b->views.ptrs[i];
         if (v->window->view == v) {
             // Visible view
@@ -273,48 +252,38 @@ void normal_update(void)
     end_update();
 }
 
-void resize(void)
+void handle_sigwinch(int UNUSED_ARG(signum))
 {
-    editor.resized = false;
+    terminal_resized = true;
+}
+
+static void resize(void)
+{
+    terminal_resized = false;
     update_screen_size();
 
-    // "dtach -r winch" sends SIGWINCH after program has been attached
-    if (terminal.control_codes->keypad_on) {
-        // Turn keypad on (makes cursor keys work)
-        buf_escape(terminal.control_codes->keypad_on);
-    }
-    if (terminal.control_codes->cup_mode_on) {
-        // Use alternate buffer if possible
-        buf_escape(terminal.control_codes->cup_mode_on);
-    }
+    // Turn keypad on (makes cursor keys work)
+    terminal.put_control_code(terminal.control_codes.keypad_on);
+
+    // Use alternate buffer if possible
+    terminal.put_control_code(terminal.control_codes.cup_mode_on);
 
     editor.mode_ops[editor.input_mode]->update();
 }
 
-void ui_end(void)
+static void ui_end(void)
 {
-    const TermColor color = {
-        .fg = COLOR_DEFAULT,
-        .bg = COLOR_DEFAULT,
-        .attr = 0
-    };
+    terminal.put_control_code(terminal.control_codes.reset_colors);
+    terminal.put_control_code(terminal.control_codes.reset_attrs);
 
-    buf_set_color(&color);
-    buf_move_cursor(0, terminal.height - 1);
+    terminal.move_cursor(0, terminal.height - 1);
     buf_show_cursor();
 
-    // Back to main buffer
-    if (terminal.control_codes->cup_mode_off) {
-        buf_escape(terminal.control_codes->cup_mode_off);
-    }
-
-    // Turn keypad off
-    if (terminal.control_codes->keypad_off) {
-        buf_escape(terminal.control_codes->keypad_off);
-    }
+    terminal.put_control_code(terminal.control_codes.cup_mode_off);
+    terminal.put_control_code(terminal.control_codes.keypad_off);
 
     buf_flush();
-    term_cooked();
+    terminal.cooked();
 }
 
 void suspend(void)
@@ -334,16 +303,16 @@ void suspend(void)
 
 char *editor_file(const char *name)
 {
-    return xsprintf("%s/%s", editor.user_config_dir, name);
+    return xasprintf("%s/%s", editor.user_config_dir, name);
 }
 
 char get_confirmation(const char *choices, const char *format, ...)
 {
     View *v = window->view;
     char buf[4096];
-    Key key;
+    KeyCode key;
     int pos, i, count = strlen(choices);
-    char def = 0;
+    unsigned char def = 0;
     va_list ap;
 
     va_start(ap, format);
@@ -362,7 +331,7 @@ char get_confirmation(const char *choices, const char *format, ...)
     }
     pos--;
     buf[pos++] = ']';
-    buf[pos] = 0;
+    buf[pos] = '\0';
 
     // update_windows() assumes these have been called for the current view
     view_update_cursor_x(v);
@@ -402,7 +371,7 @@ char get_confirmation(const char *choices, const char *format, ...)
             if (key == def) {
                 break;
             }
-        } else if (editor.resized) {
+        } else if (terminal_resized) {
             resize();
         }
     }
@@ -464,7 +433,6 @@ static void update_screen(const ScreenState *const s)
 void set_signal_handler(int signum, void (*handler)(int signum))
 {
     struct sigaction act;
-
     memzero(&act);
     sigemptyset(&act.sa_mask);
     act.sa_handler = handler;
@@ -474,9 +442,9 @@ void set_signal_handler(int signum, void (*handler)(int signum))
 void main_loop(void)
 {
     while (editor.status == EDITOR_RUNNING) {
-        Key key;
+        KeyCode key;
 
-        if (editor.resized) {
+        if (terminal_resized) {
             resize();
         }
         if (!term_read_key(&key)) {

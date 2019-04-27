@@ -1,9 +1,11 @@
 #include "frame.h"
+#include "debug.h"
+#include "util/xmalloc.h"
 #include "window.h"
 
 Frame *root_frame;
 
-static int get_min_w(Frame *f)
+static int get_min_w(const Frame *f)
 {
     if (f->window) {
         return 8;
@@ -11,7 +13,7 @@ static int get_min_w(Frame *f)
 
     if (f->vertical) {
         int max = 0;
-        for (int i = 0; i < f->frames.count; i++) {
+        for (int i = 0, n = f->frames.count; i < n; i++) {
             int w = get_min_w(f->frames.ptrs[i]);
             if (w > max) {
                 max = w;
@@ -20,14 +22,14 @@ static int get_min_w(Frame *f)
         return max;
     } else {
         int w = f->frames.count - 1; // Separators
-        for (int i = 0; i < f->frames.count; i++) {
+        for (int i = 0, n = f->frames.count; i < n; i++) {
             w += get_min_w(f->frames.ptrs[i]);
         }
         return w;
     }
 }
 
-static int get_min_h(Frame *f)
+static int get_min_h(const Frame *f)
 {
     if (f->window) {
         return 3;
@@ -35,7 +37,7 @@ static int get_min_h(Frame *f)
 
     if (!f->vertical) {
         int max = 0;
-        for (int i = 0; i < f->frames.count; i++) {
+        for (int i = 0, n = f->frames.count; i < n; i++) {
             int h = get_min_h(f->frames.ptrs[i]);
             if (h > max) {
                 max = h;
@@ -44,14 +46,14 @@ static int get_min_h(Frame *f)
         return max;
     } else {
         int h = 0; // No separators
-        for (int i = 0; i < f->frames.count; i++) {
+        for (int i = 0, n = f->frames.count; i < n; i++) {
             h += get_min_h(f->frames.ptrs[i]);
         }
         return h;
     }
 }
 
-static int get_min(Frame *f)
+static int get_min(const Frame *f)
 {
     if (f->parent->vertical) {
         return get_min_h(f);
@@ -59,7 +61,7 @@ static int get_min(Frame *f)
     return get_min_w(f);
 }
 
-static int get_size(Frame *f)
+static int get_size(const Frame *f)
 {
     if (f->parent->vertical) {
         return f->h;
@@ -67,7 +69,7 @@ static int get_size(Frame *f)
     return f->w;
 }
 
-static int get_container_size(Frame *f)
+static int get_container_size(const Frame *f)
 {
     if (f->vertical) {
         return f->h;
@@ -84,26 +86,27 @@ static void set_size(Frame *f, int size)
     }
 }
 
-static void divide_equally(Frame *f)
+static void divide_equally(const Frame *f)
 {
-    int q, r, s, n, used, count = f->frames.count;
-    int *size, *min;
+    size_t count = f->frames.count;
+    BUG_ON(count == 0);
 
-    size = xnew0(int, count);
-    min = xnew(int, count);
-    for (int i = 0; i < count; i++) {
+    int *size = xnew0(int, count);
+    int *min = xnew(int, count);
+    for (size_t i = 0; i < count; i++) {
         min[i] = get_min(f->frames.ptrs[i]);
     }
 
-    s = get_container_size(f);
+    int q, r, used;
+    int s = get_container_size(f);
+    size_t n = count;
 
     // Consume q and r as equally as possible
-    n = count;
     do {
         used = 0;
         q = s / n;
         r = s % n;
-        for (int i = 0; i < count; i++) {
+        for (size_t i = 0; i < count; i++) {
             if (size[i] == 0 && min[i] > q) {
                 size[i] = min[i];
                 used += min[i];
@@ -113,13 +116,11 @@ static void divide_equally(Frame *f)
         s -= used;
     } while (used && n > 0);
 
-    for (int i = 0; i < count; i++) {
+    for (size_t i = 0; i < count; i++) {
         Frame *c = f->frames.ptrs[i];
-
         if (size[i] == 0) {
             size[i] = q + (r-- > 0);
         }
-
         set_size(c, size[i]);
     }
 
@@ -127,7 +128,7 @@ static void divide_equally(Frame *f)
     free(min);
 }
 
-static void fix_size(Frame *f)
+static void fix_size(const Frame *f)
 {
     int s, total, count = f->frames.count;
     int *size, *min;
@@ -136,7 +137,7 @@ static void fix_size(Frame *f)
     min = xnew(int, count);
     total = 0;
     for (int i = 0; i < count; i++) {
-        Frame *c = f->frames.ptrs[i];
+        const Frame *c = f->frames.ptrs[i];
         min[i] = get_min(c);
         size[i] = get_size(c);
         if (size[i] < min[i]) {
@@ -171,7 +172,7 @@ static void fix_size(Frame *f)
 
 static void add_to_sibling_size(Frame *f, int count)
 {
-    Frame *parent = f->parent;
+    const Frame *parent = f->parent;
     int idx = ptr_array_idx(&parent->frames, f);
 
     if (idx == parent->frames.count - 1) {
@@ -196,19 +197,20 @@ static int sub(Frame *f, int count)
     return count - (old - new);
 }
 
-static void subtract_from_sibling_size(Frame *f, int count)
+static void subtract_from_sibling_size(const Frame *f, int count)
 {
-    Frame *parent = f->parent;
-    int idx = ptr_array_idx(&parent->frames, f);
+    const Frame *parent = f->parent;
+    size_t idx = ptr_array_idx(&parent->frames, f);
 
-    for (int i = idx + 1; i < parent->frames.count; i++) {
+    for (size_t i = idx + 1, n = parent->frames.count; i < n; i++) {
         count = sub(parent->frames.ptrs[i], count);
         if (count == 0) {
             return;
         }
     }
-    for (int i = idx - 1; i >= 0; i--) {
-        count = sub(parent->frames.ptrs[i], count);
+
+    for (size_t i = idx; i > 0; i--) {
+        count = sub(parent->frames.ptrs[i - 1], count);
         if (count == 0) {
             return;
         }
@@ -217,7 +219,7 @@ static void subtract_from_sibling_size(Frame *f, int count)
 
 static void resize_to(Frame *f, int size)
 {
-    Frame *parent = f->parent;
+    const Frame *parent = f->parent;
     int total = parent->vertical ? parent->h : parent->w;
     int count = parent->frames.count;
     int min = get_min(f);
@@ -247,9 +249,9 @@ static void resize_to(Frame *f, int size)
     }
 }
 
-static bool rightmost_frame(Frame *f)
+static bool rightmost_frame(const Frame *f)
 {
-    Frame *parent = f->parent;
+    const Frame *parent = f->parent;
 
     if (parent == NULL) {
         return true;
@@ -265,7 +267,6 @@ static bool rightmost_frame(Frame *f)
 static Frame *new_frame(void)
 {
     Frame *f = xnew0(Frame, 1);
-
     f->equal_size = true;
     return f;
 }
@@ -273,7 +274,6 @@ static Frame *new_frame(void)
 static Frame *add_frame(Frame *parent, Window *w, int idx)
 {
     Frame *f = new_frame();
-
     f->parent = parent;
     f->window = w;
     w->frame = f;
@@ -371,15 +371,15 @@ void resize_frame(Frame *f, ResizeDirection dir, int size)
     update_window_coordinates();
 }
 
-static void update_frame_coordinates(Frame *f, int x, int y)
+static void update_frame_coordinates(const Frame *f, int x, int y)
 {
     if (f->window) {
         set_window_coordinates(f->window, x, y);
         return;
     }
 
-    for (int i = 0; i < f->frames.count; i++) {
-        Frame *c = f->frames.ptrs[i];
+    for (int i = 0, n = f->frames.count; i < n; i++) {
+        const Frame *c = f->frames.ptrs[i];
         update_frame_coordinates(c, x, y);
         if (f->vertical) {
             y += c->h;
@@ -396,12 +396,8 @@ void update_window_coordinates(void)
 
 Frame *split_frame(Window *w, bool vertical, bool before)
 {
-    Frame *f, *parent;
-    Window *neww;
-    int idx;
-
-    f = w->frame;
-    parent = f->parent;
+    Frame *f = w->frame;
+    Frame *parent = f->parent;
     if (parent == NULL || parent->vertical != vertical) {
         // Reparent w
         f->vertical = vertical;
@@ -409,11 +405,11 @@ Frame *split_frame(Window *w, bool vertical, bool before)
         parent = f;
     }
 
-    idx = ptr_array_idx(&parent->frames, w->frame);
+    int idx = ptr_array_idx(&parent->frames, w->frame);
     if (!before) {
         idx++;
     }
-    neww = new_window();
+    Window *neww = new_window();
     f = add_frame(parent, neww, idx);
     parent->equal_size = true;
 
@@ -481,7 +477,7 @@ void remove_frame(Frame *f)
         c->w = parent->w;
         c->h = parent->h;
         if (gp) {
-            long idx = ptr_array_idx(&gp->frames, parent);
+            size_t idx = ptr_array_idx(&gp->frames, parent);
             gp->frames.ptrs[idx] = c;
         } else {
             root_frame = c;
@@ -497,8 +493,7 @@ void remove_frame(Frame *f)
 }
 
 #ifdef DEBUG_FRAMES
-
-static void debug_frame(Frame *f, int level)
+static void debug_frame(const Frame *f, int level)
 {
     d_print (
         "%*s%dx%d %d %d %zu\n",
@@ -524,8 +519,8 @@ static void debug_frame(Frame *f, int level)
         BUG_ON(f != f->window->frame);
     }
 
-    for (int i = 0; i < f->frames.count; i++) {
-        Frame *c = f->frames.ptrs[i];
+    for (int i = 0, n = f->frames.count; i < n; i++) {
+        const Frame *c = f->frames.ptrs[i];
         BUG_ON(c->parent != f);
         debug_frame(c, level + 1);
     }
@@ -535,9 +530,4 @@ void debug_frames(void)
 {
     debug_frame(root_frame, 0);
 }
-
-#else
-
-void debug_frames(void) {}
-
 #endif

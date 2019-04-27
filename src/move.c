@@ -1,14 +1,15 @@
 #include "move.h"
 #include "buffer.h"
 #include "indent.h"
-#include "uchar.h"
+#include "util/ascii.h"
+#include "util/utf8.h"
 
-enum char_type {
+typedef enum {
     CT_SPACE,
     CT_NEWLINE,
     CT_WORD,
     CT_OTHER,
-};
+} CharTypeEnum;
 
 void move_to_preferred_x(int preferred_x)
 {
@@ -37,10 +38,10 @@ void move_to_preferred_x(int preferred_x)
     }
 
     while (x < view->preferred_x && i < lr.size) {
-        unsigned int u = lr.line[i++];
+        CodePoint u = lr.line[i++];
 
         if (u < 0x80) {
-            if (!u_is_ctrl(u)) {
+            if (!ascii_iscntrl(u)) {
                 x++;
             } else if (u == '\t') {
                 x = (x + tw) / tw * tw;
@@ -64,45 +65,67 @@ void move_to_preferred_x(int preferred_x)
         i--;
     }
     view->cursor.offset += i;
+
+    // If cursor stopped on a zero-width char, move to the next spacing char.
+    // TODO: Incorporate this cursor fixup into the logic above.
+    CodePoint u;
+    if (buffer_get_char(&view->cursor, &u) && u_is_nonspacing_mark(u)) {
+        buffer_next_column(&view->cursor);
+    }
 }
 
 void move_cursor_left(void)
 {
-    unsigned int u;
-
     if (buffer->options.emulate_tab) {
-        int size = get_indent_level_bytes_left();
+        size_t size = get_indent_level_bytes_left();
         if (size) {
             block_iter_back_bytes(&view->cursor, size);
             view_reset_preferred_x(view);
             return;
         }
     }
-
-    buffer_prev_char(&view->cursor, &u);
+    buffer_prev_column(&view->cursor);
     view_reset_preferred_x(view);
 }
 
 void move_cursor_right(void)
 {
-    unsigned int u;
-
     if (buffer->options.emulate_tab) {
-        int size = get_indent_level_bytes_right();
+        size_t size = get_indent_level_bytes_right();
         if (size) {
             block_iter_skip_bytes(&view->cursor, size);
             view_reset_preferred_x(view);
             return;
         }
     }
-
-    buffer_next_char(&view->cursor, &u);
+    buffer_next_column(&view->cursor);
     view_reset_preferred_x(view);
 }
 
 void move_bol(void)
 {
     block_iter_bol(&view->cursor);
+    view_reset_preferred_x(view);
+}
+
+void move_bol_smart(void)
+{
+    LineRef lr;
+    const size_t cursor_offset = fetch_this_line(&view->cursor, &lr);
+
+    size_t indent_bytes = 0;
+    while (ascii_isblank(*lr.line++)) {
+        indent_bytes++;
+    }
+
+    size_t move_bytes;
+    if (cursor_offset > indent_bytes) {
+        move_bytes = cursor_offset - indent_bytes;
+    } else {
+        move_bytes = cursor_offset;
+    }
+
+    block_iter_back_bytes(&view->cursor, move_bytes);
     view_reset_preferred_x(view);
 }
 
@@ -150,18 +173,17 @@ void move_eof(void)
     view_reset_preferred_x(view);
 }
 
-void move_to_line(View *v, int line)
+void move_to_line(View *v, size_t line)
 {
     block_iter_goto_line(&v->cursor, line - 1);
     v->center_on_scroll = true;
 }
 
-void move_to_column(View *v, int column)
+void move_to_column(View *v, size_t column)
 {
     block_iter_bol(&v->cursor);
     while (column-- > 1) {
-        unsigned int u;
-
+        CodePoint u;
         if (!buffer_next_char(&v->cursor, &u)) {
             break;
         }
@@ -173,12 +195,12 @@ void move_to_column(View *v, int column)
     view_reset_preferred_x(v);
 }
 
-static enum char_type get_char_type(unsigned int u)
+static CharTypeEnum get_char_type(CodePoint u)
 {
     if (u == '\n') {
         return CT_NEWLINE;
     }
-    if (u_is_space(u)) {
+    if (u_is_breakable_whitespace(u)) {
         return CT_SPACE;
     }
     if (u_is_word_char(u)) {
@@ -187,10 +209,9 @@ static enum char_type get_char_type(unsigned int u)
     return CT_OTHER;
 }
 
-static bool get_current_char_type(BlockIter *bi, enum char_type *type)
+static bool get_current_char_type(BlockIter *bi, CharTypeEnum *type)
 {
-    unsigned int u;
-
+    CodePoint u;
     if (!buffer_get_char(bi, &u)) {
         return false;
     }
@@ -199,11 +220,10 @@ static bool get_current_char_type(BlockIter *bi, enum char_type *type)
     return true;
 }
 
-static long skip_fwd_char_type(BlockIter *bi, enum char_type type)
+static size_t skip_fwd_char_type(BlockIter *bi, CharTypeEnum type)
 {
-    long count = 0;
-    unsigned int u;
-
+    size_t count = 0;
+    CodePoint u;
     while (buffer_next_char(bi, &u)) {
         if (get_char_type(u) != type) {
             buffer_prev_char(bi, &u);
@@ -214,11 +234,10 @@ static long skip_fwd_char_type(BlockIter *bi, enum char_type type)
     return count;
 }
 
-static long skip_bwd_char_type(BlockIter *bi, enum char_type type)
+static size_t skip_bwd_char_type(BlockIter *bi, CharTypeEnum type)
 {
-    long count = 0;
-    unsigned int u;
-
+    size_t count = 0;
+    CodePoint u;
     while (buffer_prev_char(bi, &u)) {
         if (get_char_type(u) != type) {
             buffer_next_char(bi, &u);
@@ -229,10 +248,10 @@ static long skip_bwd_char_type(BlockIter *bi, enum char_type type)
     return count;
 }
 
-long word_fwd(BlockIter *bi, bool skip_non_word)
+size_t word_fwd(BlockIter *bi, bool skip_non_word)
 {
-    long count = 0;
-    enum char_type type;
+    size_t count = 0;
+    CharTypeEnum type;
 
     while (1) {
         count += skip_fwd_char_type(bi, CT_SPACE);
@@ -251,11 +270,11 @@ long word_fwd(BlockIter *bi, bool skip_non_word)
     }
 }
 
-long word_bwd(BlockIter *bi, bool skip_non_word)
+size_t word_bwd(BlockIter *bi, bool skip_non_word)
 {
-    long count = 0;
-    enum char_type type;
-    unsigned int u;
+    size_t count = 0;
+    CharTypeEnum type;
+    CodePoint u;
 
     do {
         count += skip_bwd_char_type(bi, CT_SPACE);

@@ -1,16 +1,17 @@
+#include <unistd.h>
 #include "buffer.h"
-#include "view.h"
+#include "common.h"
 #include "editor.h"
-#include "block.h"
-#include "filetype.h"
-#include "state.h"
 #include "file-option.h"
+#include "filetype.h"
 #include "lock.h"
 #include "selection.h"
-#include "path.h"
-#include "unicode.h"
-#include "uchar.h"
-#include "detect.h"
+#include "syntax/state.h"
+#include "util/path.h"
+#include "util/regexp.h"
+#include "util/utf8.h"
+#include "util/xmalloc.h"
+#include "view.h"
 
 Buffer *buffer;
 PointerArray buffers = PTR_ARRAY_INIT;
@@ -50,9 +51,9 @@ const char *buffer_filename(const Buffer *b)
     return b->display_filename;
 }
 
-Buffer *buffer_new(const char *encoding)
+Buffer *buffer_new(const Encoding *encoding)
 {
-    static int id;
+    static unsigned int id;
 
     Buffer *b = xnew0(Buffer, 1);
     list_init(&b->blocks);
@@ -60,14 +61,17 @@ Buffer *buffer_new(const char *encoding)
     b->saved_change = &b->change_head;
     b->id = ++id;
     b->newline = editor.options.newline;
+
     if (encoding) {
-        b->encoding = xstrdup(encoding);
+        b->encoding = encoding_clone(encoding);
+    } else {
+        b->encoding.type = ENCODING_AUTODETECT;
     }
 
     memcpy(&b->options, &editor.options, sizeof(CommonOptions));
     b->options.brace_indent = 0;
     b->options.filetype = xstrdup("none");
-    b->options.indent_regex = xstrdup("");
+    b->options.indent_regex = NULL;
 
     ptr_array_add(&buffers, b);
     return b;
@@ -75,7 +79,7 @@ Buffer *buffer_new(const char *encoding)
 
 Buffer *open_empty_buffer(void)
 {
-    Buffer *b = buffer_new(editor.charset);
+    Buffer *b = buffer_new(&editor.charset);
 
     // At least one block required
     Block *blk = block_new(1);
@@ -107,7 +111,7 @@ void free_buffer(Buffer *b)
     free(b->views.ptrs);
     free(b->display_filename);
     free(b->abs_filename);
-    free(b->encoding);
+    free_encoding(&b->encoding);
     free_local_options(&b->options);
     free(b);
 }
@@ -149,19 +153,18 @@ Buffer *find_buffer_by_id(unsigned int id)
 
 bool buffer_detect_filetype(Buffer *b)
 {
-    char *interpreter = detect_interpreter(b);
     const char *ft = NULL;
 
     if (BLOCK(b->blocks.next)->size) {
         BlockIter bi = BLOCK_ITER_INIT(&b->blocks);
         LineRef lr;
-
         fill_line_ref(&bi, &lr);
-        ft = find_ft(b->abs_filename, interpreter, lr.line, lr.size);
+        StringView line = string_view(lr.line, lr.size);
+        ft = find_ft(b->abs_filename, line);
     } else if (b->abs_filename) {
-        ft = find_ft(b->abs_filename, interpreter, NULL, 0);
+        StringView line = STRING_VIEW_INIT;
+        ft = find_ft(b->abs_filename, line);
     }
-    free(interpreter);
 
     if (ft && !streq(ft, b->options.filetype)) {
         free(b->options.filetype);
@@ -169,6 +172,46 @@ bool buffer_detect_filetype(Buffer *b)
         return true;
     }
     return false;
+}
+
+static char *short_filename_cwd(const char *absolute, const char *cwd)
+{
+    char *f = relative_filename(absolute, cwd);
+    size_t home_len = strlen(editor.home_dir);
+    size_t abs_len = strlen(absolute);
+    size_t f_len = strlen(f);
+
+    if (f_len >= abs_len) {
+        // Prefer absolute if relative isn't shorter
+        free(f);
+        f = xstrdup(absolute);
+        f_len = abs_len;
+    }
+
+    if (
+        abs_len > home_len
+        && !memcmp(absolute, editor.home_dir, home_len)
+        && absolute[home_len] == '/'
+    ) {
+        size_t len = abs_len - home_len + 1;
+        if (len < f_len) {
+            char *filename = xnew(char, len + 1);
+            filename[0] = '~';
+            memcpy(filename + 1, absolute + home_len, len);
+            free(f);
+            return filename;
+        }
+    }
+    return f;
+}
+
+char *short_filename(const char *absolute)
+{
+    char cwd[8192];
+    if (getcwd(cwd, sizeof(cwd))) {
+        return short_filename_cwd(absolute, cwd);
+    }
+    return xstrdup(absolute);
 }
 
 void update_short_filename_cwd(Buffer *b, const char *cwd)
@@ -218,11 +261,140 @@ void buffer_update_syntax(Buffer *b)
     mark_all_lines_changed(b);
 }
 
+static bool allow_odd_indent(const Buffer *b)
+{
+    // 1, 3, 5 and 7 space indent
+    const unsigned int odd = 1 << 0 | 1 << 2 | 1 << 4 | 1 << 6;
+    return (b->options.detect_indent & odd) ? true : false;
+}
+
+static int indent_len(const Buffer *b, const char *line, int len, bool *tab_indent)
+{
+    bool space_before_tab = false;
+    int spaces = 0;
+    int tabs = 0;
+    int pos = 0;
+
+    while (pos < len) {
+        if (line[pos] == ' ') {
+            spaces++;
+        } else if (line[pos] == '\t') {
+            tabs++;
+            if (spaces) {
+                space_before_tab = true;
+            }
+        } else {
+            break;
+        }
+        pos++;
+    }
+    *tab_indent = false;
+    if (pos == len) {
+        // Whitespace only
+        return -1;
+    }
+    if (pos == 0) {
+        // Not indented
+        return 0;
+    }
+    if (space_before_tab) {
+        // Mixed indent
+        return -2;
+    }
+    if (tabs) {
+        // Tabs and possible spaces after tab for alignment
+        *tab_indent = true;
+        return tabs * 8;
+    }
+    if (len > spaces && line[spaces] == '*') {
+        // '*' after indent, could be long C style comment
+        if (spaces % 2 || allow_odd_indent(b)) {
+            return spaces - 1;
+        }
+    }
+    return spaces;
+}
+
+static bool detect_indent(Buffer *b)
+{
+    BlockIter bi = BLOCK_ITER_INIT(&b->blocks);
+    int current_indent = 0;
+    int counts[9] = {0};
+    int tab_count = 0;
+    int space_count = 0;
+
+    for (unsigned int i = 0; i < 200; i++) {
+        LineRef lr;
+        int indent;
+        bool tab;
+
+        fill_line_ref(&bi, &lr);
+        indent = indent_len(b, lr.line, lr.size, &tab);
+        if (indent == -2) {
+            // Ignore mixed indent because tab width might not be 8
+        } else if (indent == -1) {
+            // Empty line, no change in indent
+        } else if (indent == 0) {
+            current_indent = 0;
+        } else {
+            // Indented line
+            int change;
+
+            // Count only increase in indentation because indentation
+            // almost always grows one level at time, whereas it can
+            // can decrease multiple levels all at once.
+            if (current_indent == -1) {
+                current_indent = 0;
+            }
+            change = indent - current_indent;
+            if (change > 0 && change <= 8) {
+                counts[change]++;
+            }
+
+            if (tab) {
+                tab_count++;
+            } else {
+                space_count++;
+            }
+            current_indent = indent;
+        }
+
+        if (!block_iter_next_line(&bi)) {
+            break;
+        }
+    }
+    if (tab_count == 0 && space_count == 0) {
+        return false;
+    }
+    if (tab_count > space_count) {
+        b->options.emulate_tab = false;
+        b->options.expand_tab = false;
+        b->options.indent_width = b->options.tab_width;
+    } else {
+        size_t m = 0;
+        for (size_t i = 1; i < ARRAY_COUNT(counts); i++) {
+            if (b->options.detect_indent & 1 << (i - 1)) {
+                if (counts[i] > counts[m]) {
+                    m = i;
+                }
+            }
+        }
+        if (m == 0) {
+            return false;
+        }
+        b->options.emulate_tab = true;
+        b->options.expand_tab = true;
+        b->options.indent_width = m;
+    }
+    return true;
+}
+
 void buffer_setup(Buffer *b)
 {
     b->setup = true;
     buffer_detect_filetype(b);
     set_file_options(b);
+    set_editorconfig_options(b);
     buffer_update_syntax(b);
     if (b->options.detect_indent && b->abs_filename != NULL) {
         detect_indent(b);
