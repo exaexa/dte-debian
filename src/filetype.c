@@ -1,27 +1,46 @@
+#include <stdint.h>
 #include "filetype.h"
 #include "common.h"
-#include "regexp.h"
-#include "path.h"
-#include "ptr-array.h"
+#include "debug.h"
+#include "util/macros.h"
+#include "util/path.h"
+#include "util/ptr-array.h"
+#include "util/regexp.h"
+#include "util/string-view.h"
+#include "util/xmalloc.h"
 
-// Single filetype and extension/regexp pair.
-// Filetypes are not grouped by name to make it possible to order them freely.
+static int ft_compare(const void *key, const void *elem)
+{
+    const StringView *sv = key;
+    const char *ext = elem; // Cast to first member of struct
+    int res = memcmp(sv->data, ext, sv->length);
+    if (res == 0 && ext[sv->length] != '\0') {
+        return -1;
+    }
+    return res;
+}
+
+// Built-in filetypes
+#include "filetype/names.c"
+#include "filetype/basenames.c"
+#include "filetype/extensions.c"
+#include "filetype/interpreters.c"
+#include "filetype/ignored-exts.c"
+#include "filetype/signatures.c"
+
+// Filetypes dynamically added via the `ft` command.
+// Not grouped by name to make it possible to order them freely.
 typedef struct {
     char *name;
     char *str;
     enum detect_type type;
-} FileType;
+} UserFileTypeEntry;
 
 static PointerArray filetypes = PTR_ARRAY_INIT;
 
-static const char *const ignore[] = {
-    "bak", "dpkg-dist", "dpkg-old", "new", "old", "orig", "pacnew",
-    "pacorig", "pacsave", "rpmnew", "rpmsave",
-};
-
 void add_filetype(const char *name, const char *str, enum detect_type type)
 {
-    FileType *ft;
+    UserFileTypeEntry *ft;
     regex_t re;
 
     switch (type) {
@@ -36,114 +55,194 @@ void add_filetype(const char *name, const char *str, enum detect_type type)
         break;
     }
 
-    ft = xnew(FileType, 1);
+    ft = xnew(UserFileTypeEntry, 1);
     ft->name = xstrdup(name);
     ft->str = xstrdup(str);
     ft->type = type;
     ptr_array_add(&filetypes, ft);
 }
 
-// file.c.old~ -> c
-// file..old   -> old
-// file.old    -> old
-static char *get_ext(const char *const filename)
+static inline StringView get_ext(const StringView filename)
 {
-    const char *ext = strrchr(filename, '.');
-
-    if (!ext) {
-        return NULL;
+    StringView ext = STRING_VIEW_INIT;
+    ext.data = memrchr_(filename.data, '.', filename.length);
+    if (ext.data == NULL) {
+        return ext;
     }
 
-    ext++;
-    size_t ext_len = strlen(ext);
-    if (ext_len && ext[ext_len - 1] == '~') {
-        ext_len--;
+    ext.data++;
+    ext.length = filename.length - (ext.data - filename.data);
+
+    if (ext.length && ext.data[ext.length - 1] == '~') {
+        ext.length--;
     }
-    if (!ext_len) {
-        return NULL;
+    if (ext.length == 0) {
+        return ext;
     }
 
-    for (size_t i = 0; i < ARRAY_COUNT(ignore); i++) {
-        if (!strncmp(ignore[i], ext, ext_len) && !ignore[i][ext_len]) {
-            int idx = -2;
-            while (ext + idx >= filename) {
-                if (ext[idx] == '.') {
-                    int len = -idx - 2;
-                    if (len) {
-                        ext -= len + 1;
-                        ext_len = len;
-                    }
-                    break;
+    if (is_ignored_extension(ext.data, ext.length)) {
+        int idx = -2;
+        while (ext.data + idx >= filename.data) {
+            if (ext.data[idx] == '.') {
+                int len = -idx - 2;
+                if (len) {
+                    ext.data -= len + 1;
+                    ext.length = len;
                 }
-                idx--;
+                break;
             }
-            break;
+            idx--;
         }
     }
-    return xstrslice(ext, 0, ext_len);
+
+    return ext;
 }
 
-const char *find_ft (
-    const char *filename,
-    const char *interpreter,
-    const char *first_line,
-    size_t line_len
-) {
-    size_t filename_len = 0;
-    const char *base = NULL;
-    char *ext = NULL;
-    if (filename) {
-        base = path_basename(filename);
-        ext = get_ext(filename);
-        filename_len = strlen(filename);
+// Parse hashbang and return interpreter name, without version number.
+// For example, if line is "#!/usr/bin/env python2", "python" is returned.
+static StringView get_interpreter(const StringView line)
+{
+    static const char pat[] = "^#! */.*(/env +|/)([a-zA-Z0-9_-]+)[0-9.]*( |$)";
+    static regex_t re;
+    static bool compiled;
+    if (!compiled) {
+        compiled = regexp_compile(&re, pat, REG_NEWLINE);
+        BUG_ON(!compiled);
+        BUG_ON(re.re_nsub < 2);
     }
+
+    StringView sv = STRING_VIEW_INIT;
+    regmatch_t m[3];
+    if (!regexp_exec(&re, line.data, line.length, ARRAY_COUNT(m), m, 0)) {
+        return sv;
+    }
+
+    regoff_t start = m[2].rm_so;
+    regoff_t end = m[2].rm_eo;
+    BUG_ON(start < 0 || end < 0);
+    sv = string_view(line.data + start, end - start);
+    return sv;
+}
+
+HOT const char *find_ft(const char *filename, StringView line)
+{
+    StringView path = STRING_VIEW_INIT;
+    StringView ext = STRING_VIEW_INIT;
+    StringView base = STRING_VIEW_INIT;
+    if (filename) {
+        const char *b = path_basename(filename);
+        base = string_view_from_cstring(b);
+        ext = get_ext(base);
+        path = string_view_from_cstring(filename);
+    }
+
+    StringView interpreter = STRING_VIEW_INIT;
+    if (line.length >= 4 && line.data[0] == '#' && line.data[1] == '!') {
+        interpreter = get_interpreter(line);
+    }
+
+    // Search user `ft` entries
     for (size_t i = 0; i < filetypes.count; i++) {
-        const FileType *ft = filetypes.ptrs[i];
+        const UserFileTypeEntry *ft = filetypes.ptrs[i];
         switch (ft->type) {
         case FT_EXTENSION:
-            if (!ext || !streq(ext, ft->str)) {
+            if (!ext.length || !string_view_equal_cstr(&ext, ft->str)) {
                 continue;
             }
             break;
         case FT_BASENAME:
-            if (!base || !streq(base, ft->str)) {
+            if (!base.length || !string_view_equal_cstr(&base, ft->str)) {
                 continue;
             }
             break;
         case FT_FILENAME:
             if (
-                !filename
-                || !regexp_match_nosub(ft->str, filename, filename_len)
+                !path.length
+                || !regexp_match_nosub(ft->str, path.data, path.length)
             ) {
                 continue;
             }
             break;
         case FT_CONTENT:
             if (
-                !first_line
-                || !regexp_match_nosub(ft->str, first_line, line_len)
+                !line.length
+                || !regexp_match_nosub(ft->str, line.data, line.length)
             ) {
                 continue;
             }
             break;
         case FT_INTERPRETER:
-            if (!interpreter || !streq(interpreter, ft->str)) {
+            if (
+                !interpreter.length
+                || !string_view_equal_cstr(&interpreter, ft->str)
+            ) {
                 continue;
             }
             break;
         }
-        free(ext);
         return ft->name;
     }
-    free(ext);
+
+    // Search built-in lookup tables
+    if (interpreter.length) {
+        FileTypeEnum ft = filetype_from_interpreter(interpreter.data, interpreter.length);
+        if (ft) {
+            return builtin_filetype_names[ft];
+        }
+    }
+
+    if (base.length) {
+        FileTypeEnum ft = filetype_from_basename(base.data, base.length);
+        if (ft) {
+            return builtin_filetype_names[ft];
+        }
+    }
+
+    if (line.length) {
+        FileTypeEnum ft = filetype_from_signature(line.data, line.length);
+        if (ft) {
+            return builtin_filetype_names[ft];
+        }
+    }
+
+    if (ext.length) {
+        FileTypeEnum ft = filetype_from_extension(ext.data, ext.length);
+        if (ft) {
+            return builtin_filetype_names[ft];
+        }
+    }
+
+    if (string_view_has_literal_prefix(&path, "/etc/default/")) {
+        return builtin_filetype_names[SHELL];
+    } else if (string_view_has_literal_prefix(&path, "/etc/nginx/")) {
+        return builtin_filetype_names[NGINX];
+    }
+
+    const StringView conf = STRING_VIEW("conf");
+    if (string_view_equal(&ext, &conf)) {
+        if (string_view_has_literal_prefix(&path, "/etc/systemd/")) {
+            return builtin_filetype_names[INI];
+        } else if (string_view_has_literal_prefix(&path, "/etc/")) {
+            return builtin_filetype_names[CONFIG];
+        }
+    }
+
     return NULL;
 }
 
 bool is_ft(const char *name)
 {
+    if (name[0] == '\0') {
+        return false;
+    }
     for (size_t i = 0; i < filetypes.count; i++) {
-        const FileType *ft = filetypes.ptrs[i];
+        const UserFileTypeEntry *ft = filetypes.ptrs[i];
         if (streq(ft->name, name)) {
+            return true;
+        }
+    }
+    for (size_t i = 1; i < ARRAY_COUNT(builtin_filetype_names); i++) {
+        if (streq(builtin_filetype_names[i], name)) {
             return true;
         }
     }

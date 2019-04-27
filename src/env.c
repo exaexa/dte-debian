@@ -1,8 +1,12 @@
 #include "env.h"
+#include "common.h"
 #include "completion.h"
-#include "window.h"
-#include "selection.h"
+#include "debug.h"
 #include "editor.h"
+#include "error.h"
+#include "selection.h"
+#include "util/xmalloc.h"
+#include "window.h"
 
 typedef struct {
     const char *name;
@@ -16,7 +20,13 @@ static char *expand_dte_home(void)
 
 static char *expand_file(void)
 {
+    if (editor.status != EDITOR_RUNNING) {
+        return xstrdup("");
+    }
+
+    BUG_ON(!window);
     View *v = window->view;
+    BUG_ON(!v);
 
     if (v->buffer->abs_filename == NULL) {
         return xstrdup("");
@@ -26,13 +36,19 @@ static char *expand_file(void)
 
 static char *expand_word(void)
 {
-    View *v = window->view;
-    long size;
-    char *str = view_get_selection(v, &size);
+    if (editor.status != EDITOR_RUNNING) {
+        return xstrdup("");
+    }
 
+    BUG_ON(!window);
+    View *v = window->view;
+    BUG_ON(!v);
+
+    size_t size;
+    char *str = view_get_selection(v, &size);
     if (str != NULL) {
         xrenew(str, size + 1);
-        str[size] = 0;
+        str[size] = '\0';
     } else {
         str = view_get_word_under_cursor(v);
         if (str == NULL) {
@@ -44,19 +60,7 @@ static char *expand_word(void)
 
 static char *expand_pkgdatadir(void)
 {
-    static bool warned;
-    if (!warned) {
-        fputs (
-            "\n\033[1;31mNOTICE:\033[0m "
-            "$PKGDATADIR has been removed from dte\n\n"
-            "  The command \"include $PKGDATADIR/...\" is now"
-            " \"include -b ...\"\n\n"
-            "  See: https://github.com/craigbarnes/dte/issues/70\n\n\n",
-            stderr
-        );
-        editor.everything_changed = true;
-        warned = true;
-    }
+    error_msg("The $PKGDATADIR variable was removed in dte v1.4");
     return xstrdup("");
 }
 

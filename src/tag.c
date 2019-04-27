@@ -1,8 +1,14 @@
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
 #include "tag.h"
-#include "completion.h"
-#include "path.h"
-#include "error.h"
 #include "common.h"
+#include "completion.h"
+#include "debug.h"
+#include "error.h"
+#include "util/path.h"
+#include "util/xmalloc.h"
+#include "util/xreadwrite.h"
 
 static TagFile *current_tag_file;
 static char *current_filename; // For sorting tags
@@ -120,8 +126,11 @@ static int open_tag_file(char *path)
     return -1;
 }
 
-static bool tag_file_changed(TagFile *tf, const char *filename, struct stat *st)
-{
+static bool tag_file_changed (
+    const TagFile *tf,
+    const char *filename,
+    const struct stat *st
+) {
     if (tf->mtime != st->st_mtime) {
         return true;
     }
@@ -182,15 +191,15 @@ TagFile *load_tag_file(void)
     return current_tag_file;
 }
 
+static void free_tags_cb(Tag *t)
+{
+    free_tag(t);
+    free(t);
+}
+
 void free_tags(PointerArray *tags)
 {
-    for (size_t i = 0; i < tags->count; i++) {
-        Tag *t = tags->ptrs[i];
-        free_tag(t);
-        free(t);
-    }
-    free(tags->ptrs);
-    memzero(tags);
+    ptr_array_free_cb(tags, FREE_FUNC(free_tags_cb));
 }
 
 // Both parameters must be absolute and clean
@@ -201,7 +210,7 @@ static char *path_relative(const char *filename, const char *dir)
     if (!str_has_prefix(filename, dir)) {
         return NULL;
     }
-    if (filename[dlen] == 0) {
+    if (filename[dlen] == '\0') {
         // Equal strings
         return xstrdup(".");
     }
@@ -212,7 +221,7 @@ static char *path_relative(const char *filename, const char *dir)
 }
 
 void tag_file_find_tags (
-    TagFile *tf,
+    const TagFile *tf,
     const char *filename,
     const char *name,
     PointerArray *tags
@@ -242,7 +251,7 @@ void tag_file_find_tags (
     current_filename = NULL;
 }
 
-char *tag_file_get_tag_filename(TagFile *tf, Tag *t)
+char *tag_file_get_tag_filename(const TagFile *tf, const Tag *t)
 {
     char *dir = path_dirname(tf->filename);
     size_t a = strlen(dir);
@@ -256,7 +265,7 @@ char *tag_file_get_tag_filename(TagFile *tf, Tag *t)
     return filename;
 }
 
-void collect_tags(TagFile *tf, const char *prefix)
+void collect_tags(const TagFile *tf, const char *prefix)
 {
     Tag t;
     size_t pos = 0;

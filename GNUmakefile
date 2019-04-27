@@ -1,9 +1,9 @@
 include mk/compat.mk
-include mk/util.mk
 -include Config.mk
+include mk/util.mk
 include mk/build.mk
-include mk/check.mk
 include mk/docs.mk
+include mk/gen.mk
 -include mk/dev.mk
 
 prefix ?= /usr/local
@@ -19,6 +19,16 @@ INSTALL_DATA = $(INSTALL) -m 644
 RM = rm -f
 
 all: $(dte)
+
+check: $(test) all
+	$(E) TEST $<
+	$(Q) ln -sf ../../README.md build/test/test-symlink
+	$(Q) ./$<
+	$(Q) diff -u build/test/env.txt test/data/env.txt
+	$(Q) diff -u build/test/thai-utf8.txt test/data/thai-utf8.txt
+# TODO: $(Q) diff -u build/test/thai-tis620.txt test/data/thai-tis620.txt
+	$(Q) diff -u build/test/crlf.txt test/data/crlf.txt
+	$(Q) $(RM) build/test/thai-*.txt
 
 install: all
 	$(Q) $(INSTALL) -d -m755 '$(DESTDIR)$(bindir)'
@@ -40,7 +50,7 @@ uninstall:
 	$(RM) '$(DESTDIR)$(man5dir)/dte-syntax.5'
 
 tags:
-	ctags src/*.[ch]
+	ctags $$(find src/ test/ -type f -name '*.[ch]')
 
 clean:
 	$(RM) $(CLEANFILES)
@@ -48,5 +58,5 @@ clean:
 
 
 .DEFAULT_GOAL = all
-.PHONY: all install uninstall tags clean
+.PHONY: all check install uninstall tags clean
 .DELETE_ON_ERROR:

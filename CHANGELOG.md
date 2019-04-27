@@ -1,8 +1,103 @@
 Releases
 ========
 
-v1.7 (latest release)
----------------------
+v1.8.2 (latest release)
+-----------------------
+
+Released on 2019-04-23.
+
+**Changes:**
+
+* Fixed makefile to work with GNU Make 3.81 (which is still used
+  by OS X and Ubuntu 14.04).
+
+**Downloads:**
+
+* [dte-1.8.2.tar.gz](https://craigbarnes.gitlab.io/dist/dte/dte-1.8.2.tar.gz)
+* [dte-1.8.2.tar.gz.sig](https://craigbarnes.gitlab.io/dist/dte/dte-1.8.2.tar.gz.sig)
+
+v1.8.1
+------
+
+Released on 2019-04-22.
+
+**Fixes:**
+
+* Fixed parsing of escaped special characters in command arguments
+  (which was causing Lua syntax highlighting to fail).
+* Removed use of `rep` (repeat character) control sequence, due to
+  problems caused by certain terminal emulators that claim to be
+  "xterm" but don't support the full set of features in the xterm
+  `terminfo(5)` entry (notably, the FreeBSD 12 console).
+
+**Additions:**
+
+* Show a confirmation prompt if Ctrl+q (quit) is pressed with unsaved
+  changes, instead of a cryptic error message.
+
+**Downloads:**
+
+* [dte-1.8.1.tar.gz](https://craigbarnes.gitlab.io/dist/dte/dte-1.8.1.tar.gz)
+* [dte-1.8.1.tar.gz.sig](https://craigbarnes.gitlab.io/dist/dte/dte-1.8.1.tar.gz.sig)
+
+v1.8
+----
+
+Released on 2019-04-18.
+
+**Additions:**
+
+* Added support for 24-bit RGB terminal colors.
+* Added support for `strikethrough` terminal attribute.
+* Added support for `alias` names containing multi-byte Unicode characters.
+* Added `refresh` command (to force a full screen redraw).
+* Added `dte -K` command-line option (for keycode debugging).
+* Added support for reading a buffer from `stdin` at startup.
+* Added support for binding Ctrl/Alt/Shift + F1-F12 on xterm-like terminals.
+* Added `-s` flag to `bol` command, to allow moving to beginning of indented
+  text, before moving to beginning of line (a.k.a "smart home").
+* Added `-c` flag to all cursor movement commands, to allow selecting
+  characters while moving.
+* Added `-l` flag to `up`, `down`, `pgup` and `pgdown` commands, to
+  allow selecting whole lines while moving.
+* Added default bindings for various Shift+key combinations, for doing
+  GUI-style text selections.
+* Added key bindings to command mode for deleting/erasing whole words
+  (Alt+Delete and Alt+Backspace).
+
+**Improvements:**
+
+* Optimized built-in filetype detection.
+* Fixed cursor interaction with Unicode combining characters.
+* Improved handling of Unicode whitespace and unprintable characters.
+* Updated character class lookup tables to Unicode 11.
+* Expanded documentation for `hi` and `compile` commands.
+* Optimized code to reduce editor startup and input latency.
+
+**Breaking changes:**
+
+* Changed the `bind` command to be much more strict when parsing key
+  strings and show an error message when invalid. The caret (`^`)
+  modifier can now only be used alone (not in combination with other
+  modifiers) and the `C-`, `M-` and `S-` modifiers *must* be
+  uppercase.
+* Removed support for chained key bindings (e.g. `bind '^X c' ...`).
+  Commands that aren't bound to simple key combinations can just be
+  accessed via command mode.
+* Removed support for recognizing some Ctrl/Alt/Shift key combinations
+  produced by the `rxvt` terminal emulator. The key codes produced by
+  `rxvt` violate the [ECMA-48] specification. Users of such terminals
+  are encouraged to configure the key codes to mimic `xterm` instead.
+
+**Downloads:**
+
+* [dte-1.8.tar.gz](https://craigbarnes.gitlab.io/dist/dte/dte-1.8.tar.gz)
+* [dte-1.8.tar.gz.sig](https://craigbarnes.gitlab.io/dist/dte/dte-1.8.tar.gz.sig)
+
+v1.7
+----
+
+Released on 2018-05-08.
 
 **Changes:**
 
@@ -10,7 +105,6 @@ v1.7 (latest release)
   (e.g. `open -g *.[ch]`).
 * Added support for binding more xterm extended key combinations
   (Ctrl/Meta/Shift + PageUp/PageDown/Home/End).
-* Added basic syntax highlighters for Perl and `texmf.cnf` files.
 * Improved compiler error parsing for newer versions of GCC.
 * Improved handling of underline/dim/italic terminal attributes
   (including support for the `ncv` terminfo capability).
@@ -199,3 +293,4 @@ available at <https://craigbarnes.gitlab.io/dist/dte/dte-sha256sums.txt>.
 [website]: https://craigbarnes.gitlab.io/dte/
 [dex]: https://github.com/tihirvon/dex
 [dex v1.0]: https://github.com/tihirvon/dex/releases/tag/v1.0
+[ECMA-48]: https://www.ecma-international.org/publications/standards/Ecma-048.htm

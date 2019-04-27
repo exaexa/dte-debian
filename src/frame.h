@@ -2,9 +2,9 @@
 #define FRAME_H
 
 #include <stdbool.h>
-#include "ptr-array.h"
+#include "util/ptr-array.h"
 
-struct Frame {
+typedef struct Frame {
     struct Frame *parent;
 
     // Every frame contains either one window or multiple subframes
@@ -16,9 +16,7 @@ struct Frame {
 
     bool vertical;
     bool equal_size;
-};
-
-typedef struct Frame Frame;
+} Frame;
 
 typedef enum {
     RESIZE_DIRECTION_AUTO,
@@ -37,6 +35,11 @@ void update_window_coordinates(void);
 Frame *split_frame(struct Window *w, bool vertical, bool before);
 Frame *split_root(bool vertical, bool before);
 void remove_frame(Frame *f);
-void debug_frames(void);
+
+#ifdef DEBUG_FRAMES
+  void debug_frames(void);
+#else
+  static inline void debug_frames(void) {}
+#endif
 
 #endif

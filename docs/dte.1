@@ -9,7 +9,7 @@ dte \- A small and flexible text editor
 .SH SYNOPSIS
 .
 .B dte
-.RB [ \-hBRV ]
+.RB [ \-hBKRV ]
 [\fB\-c\fR \fIcommand\fR]
 [\fB\-t\fR \fIctag\fR]
 [\fB\-r\fR \fIrcfile\fR]
@@ -47,6 +47,11 @@ Print a list of all built\-in config names that can be used with the
 Don't read the rc file.
 .
 .TP
+.B \-K
+Start in a special mode that continuously reads input and prints the
+name and numeric code of each pressed key.
+.
+.TP
 .B \-h
 Display the help summary and exit.
 .
@@ -56,7 +61,7 @@ Display the version number and exit.
 .
 .SH BASIC USAGE
 .
-Here's some of the default key bindings. \fBM\-x\fR means Alt+x and
+Here are some of the default key bindings. \fBM\-x\fR means Alt+x and
 \fB^V\fR is Ctrl+v.
 .
 .TP
@@ -205,7 +210,17 @@ Reverse search direction.
 .
 .TP
 .B DTE_HOME
-User configuration directory. Defaults to \fB~/.dte\fR if not set.
+User configuration directory. Defaults to \fB$HOME/.dte\fR if not set.
+.
+.TP
+.B DTE_FORCE_TERMINFO
+Force \fBdte\fR to use \fBterminfo\fR(5) database, even for terminals
+with built-in support. Enabled if set.
+.
+.TP
+.B TERM
+Identifier used to determine which \fBterminfo\fR(5) entry or built-in
+terminal support to use.
 .
 .SH FILES
 .

@@ -1,11 +1,16 @@
+#include <errno.h>
+#include <unistd.h>
 #include "window.h"
+#include "common.h"
 #include "editor.h"
-#include "file-history.h"
-#include "path.h"
-#include "lock.h"
-#include "load-save.h"
 #include "error.h"
+#include "file-history.h"
+#include "load-save.h"
+#include "lock.h"
 #include "move.h"
+#include "util/path.h"
+#include "util/strtonum.h"
+#include "util/xmalloc.h"
 
 Window *window;
 
@@ -38,13 +43,13 @@ View *window_open_buffer (
     Window *w,
     const char *filename,
     bool must_exist,
-    const char *encoding
+    const Encoding *encoding
 ) {
     char *absolute;
     bool dir_missing = false;
     Buffer *b = NULL;
 
-    if (filename[0] == 0) {
+    if (filename[0] == '\0') {
         error_msg("Empty filename not allowed");
         return NULL;
     }
@@ -107,14 +112,14 @@ View *window_open_buffer (
 
     if (editor.options.lock_files) {
         if (lock_file(b->abs_filename)) {
-            b->ro = true;
+            b->readonly = true;
         } else {
             b->locked = true;
         }
     }
-    if (b->st.st_mode != 0 && !b->ro && access(filename, W_OK)) {
+    if (b->st.st_mode != 0 && !b->readonly && access(filename, W_OK)) {
         error_msg("No write permission to %s, marking read-only.", filename);
-        b->ro = true;
+        b->readonly = true;
     }
     return window_add_buffer(w, b);
 }
@@ -133,9 +138,8 @@ View *window_get_view(Window *w, Buffer *b)
 
 View *window_find_view(Window *w, Buffer *b)
 {
-    View *v;
-    for (size_t i = 0; i < b->views.count; i++) {
-        v = b->views.ptrs[i];
+    for (size_t i = 0, n = b->views.count; i < n; i++) {
+        View *v = b->views.ptrs[i];
         if (v->window == w) {
             return v;
         }
@@ -144,13 +148,13 @@ View *window_find_view(Window *w, Buffer *b)
     return NULL;
 }
 
-View *window_find_unclosable_view(Window *w, bool (*can_close)(View *))
+View *window_find_unclosable_view(Window *w, bool (*can_close)(const View *))
 {
     // Check active view first
     if (w->view != NULL && !can_close(w->view)) {
         return w->view;
     }
-    for (size_t i = 0; i < w->views.count; i++) {
+    for (size_t i = 0, n = w->views.count; i < n; i++) {
         View *v = w->views.ptrs[i];
         if (!can_close(v)) {
             return v;
@@ -159,7 +163,7 @@ View *window_find_unclosable_view(Window *w, bool (*can_close)(View *))
     return NULL;
 }
 
-void window_remove_views(Window *w)
+static void window_remove_views(Window *w)
 {
     while (w->views.count > 0) {
         View *v = w->views.ptrs[w->views.count - 1];
@@ -245,8 +249,7 @@ void window_close_current_view(Window *w)
 
 static void restore_cursor_from_history(View *v)
 {
-    int row, col;
-
+    unsigned long row, col;
     if (find_file_in_history(v->buffer->abs_filename, &row, &col)) {
         move_to_line(v, row);
         move_to_column(v, col);
@@ -289,7 +292,7 @@ void set_view(View *v)
     }
 
     // Save cursor states of views sharing same buffer
-    for (size_t i = 0; i < v->buffer->views.count; i++) {
+    for (size_t i = 0, n = v->buffer->views.count; i < n; i++) {
         View *other = v->buffer->views.ptrs[i];
         if (other != v) {
             other->saved_cursor_offset = block_iter_get_offset(&other->cursor);
@@ -333,7 +336,7 @@ static bool is_useless_empty_view(View *v)
     return true;
 }
 
-View *window_open_file(Window *w, const char *filename, const char *encoding)
+View *window_open_file(Window *w, const char *filename, const Encoding *encoding)
 {
     View *prev = w->view;
     bool useless = is_useless_empty_view(prev);
@@ -353,7 +356,7 @@ View *window_open_file(Window *w, const char *filename, const char *encoding)
     return v;
 }
 
-void window_open_files(Window *w, char **filenames, const char *encoding)
+void window_open_files(Window *w, char **filenames, const Encoding *encoding)
 {
     View *empty = w->view;
     bool useless = is_useless_empty_view(empty);
@@ -373,7 +376,7 @@ void window_open_files(Window *w, char **filenames, const char *encoding)
 
 void mark_buffer_tabbars_changed(Buffer *b)
 {
-    for (size_t i = 0; i < b->views.count; i++) {
+    for (size_t i = 0, n = b->views.count; i < n; i++) {
         View *v = b->views.ptrs[i];
         v->window->update_tabbar = true;
     }
@@ -394,7 +397,7 @@ static int calc_vertical_tabbar_width(const Window *win)
     return w;
 }
 
-enum tab_bar tabbar_visibility(const Window *win)
+TabBarMode tabbar_visibility(const Window *win)
 {
     switch (editor.options.tab_bar) {
     case TAB_BAR_HIDDEN:
@@ -426,9 +429,9 @@ int vertical_tabbar_width(const Window *win)
 
 static int line_numbers_width(const Window *win)
 {
-    int w = 0, min_w = 5;
-
+    int w = 0;
     if (editor.options.show_line_numbers && win->view) {
+        const int min_w = 5;
         w = number_width(win->view->buffer->nl) + 1;
         if (w < min_w) {
             w = min_w;
@@ -519,6 +522,11 @@ static void for_each_window_data (
     frame_for_each_window(root_frame, func, data);
 }
 
+// Conversion from a void* pointer to a function pointer is not defined
+// by the ISO C standard, but POSIX explicitly requires it:
+// https://pubs.opengroup.org/onlinepubs/9699919799/functions/dlsym.html
+IGNORE_WARNING("-Wpedantic")
+
 static void call_data(Window *w, void *data)
 {
     void (*func)(Window *) = data;
@@ -529,6 +537,8 @@ void for_each_window(void (*func)(Window *w))
 {
     for_each_window_data(call_data, func);
 }
+
+UNIGNORE_WARNINGS
 
 static void collect_window(Window *w, void *data)
 {

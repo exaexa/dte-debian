@@ -1,15 +1,15 @@
 #include "buffer.h"
-#include "uchar.h"
+#include "util/utf8.h"
 
-long buffer_get_char(BlockIter *bi, unsigned int *up)
+size_t buffer_get_char(BlockIter *bi, CodePoint *up)
 {
     BlockIter tmp = *bi;
     return buffer_next_char(&tmp, up);
 }
 
-long buffer_next_char(BlockIter *bi, unsigned int *up)
+size_t buffer_next_char(BlockIter *bi, CodePoint *up)
 {
-    long offset = bi->offset;
+    size_t offset = bi->offset;
 
     if (offset == bi->blk->size) {
         if (bi->blk->node.next == bi->head) {
@@ -30,9 +30,9 @@ long buffer_next_char(BlockIter *bi, unsigned int *up)
     return bi->offset - offset;
 }
 
-long buffer_prev_char(BlockIter *bi, unsigned int *up)
+size_t buffer_prev_char(BlockIter *bi, CodePoint *up)
 {
-    long offset = bi->offset;
+    size_t offset = bi->offset;
 
     if (!offset) {
         if (bi->blk->node.prev == bi->head) {
@@ -51,4 +51,25 @@ long buffer_prev_char(BlockIter *bi, unsigned int *up)
 
     *up = u_prev_char(bi->blk->data, &bi->offset);
     return offset - bi->offset;
+}
+
+size_t buffer_next_column(BlockIter *bi)
+{
+    CodePoint u;
+    size_t size = buffer_next_char(bi, &u);
+    while (buffer_get_char(bi, &u) && u_is_nonspacing_mark(u)) {
+        size += buffer_next_char(bi, &u);
+    }
+    return size;
+}
+
+size_t buffer_prev_column(BlockIter *bi)
+{
+    CodePoint u;
+    size_t skip, total = 0;
+    do {
+        skip = buffer_prev_char(bi, &u);
+        total += skip;
+    } while (skip && u_is_nonspacing_mark(u));
+    return total;
 }

@@ -1,17 +1,19 @@
 #ifndef BUFFER_H
 #define BUFFER_H
 
-#include <sys/stat.h>
-#include <stdbool.h>
 #include <limits.h>
+#include <stdbool.h>
+#include <stddef.h>
+#include <sys/stat.h>
 #include "block-iter.h"
-#include "list.h"
-#include "options.h"
-#include "common.h"
-#include "ptr-array.h"
 #include "change.h"
-#include "syntax.h"
-#include "editor.h"
+#include "encoding/encoding.h"
+#include "options.h"
+#include "syntax/syntax.h"
+#include "util/list.h"
+#include "util/macros.h"
+#include "util/ptr-array.h"
+#include "util/unicode.h"
 
 typedef struct Buffer {
     ListHead blocks;
@@ -26,7 +28,7 @@ typedef struct Buffer {
     // Needed for identifying buffers whose filename is NULL
     unsigned int id;
 
-    long nl;
+    size_t nl;
 
     // Views pointing to this buffer
     PointerArray views;
@@ -34,14 +36,14 @@ typedef struct Buffer {
     char *display_filename;
     char *abs_filename;
 
-    bool ro;
+    bool readonly;
     bool locked;
     bool setup;
 
     LineEndingType newline;
 
     // Encoding of the file. Buffer always contains UTF-8.
-    char *encoding;
+    Encoding encoding;
 
     LocalOptions options;
 
@@ -65,11 +67,6 @@ static inline void mark_all_lines_changed(Buffer *b)
     b->changed_line_max = INT_MAX;
 }
 
-static inline void mark_everything_changed(void)
-{
-    editor.everything_changed = true;
-}
-
 static inline bool buffer_modified(const Buffer *b)
 {
     return b->saved_change != b->cur_change;
@@ -78,19 +75,22 @@ static inline bool buffer_modified(const Buffer *b)
 void buffer_mark_lines_changed(Buffer *b, int min, int max);
 const char *buffer_filename(const Buffer *b);
 
+char *short_filename(const char *absolute) XMALLOC NONNULL_ARGS;
 void update_short_filename_cwd(Buffer *b, const char *cwd);
 void update_short_filename(Buffer *b);
 Buffer *find_buffer(const char *abs_filename);
 Buffer *find_buffer_by_id(unsigned int id);
-Buffer *buffer_new(const char *encoding);
+Buffer *buffer_new(const Encoding *encoding);
 Buffer *open_empty_buffer(void);
 void free_buffer(Buffer *b);
 bool buffer_detect_filetype(Buffer *b);
 void buffer_update_syntax(Buffer *b);
 void buffer_setup(Buffer *b);
 
-long buffer_get_char(BlockIter *bi, unsigned int *up);
-long buffer_next_char(BlockIter *bi, unsigned int *up);
-long buffer_prev_char(BlockIter *bi, unsigned int *up);
+size_t buffer_get_char(BlockIter *bi, CodePoint *up);
+size_t buffer_next_char(BlockIter *bi, CodePoint *up);
+size_t buffer_prev_char(BlockIter *bi, CodePoint *up);
+size_t buffer_next_column(BlockIter *bi);
+size_t buffer_prev_column(BlockIter *bi);
 
 #endif

@@ -1,36 +1,42 @@
 #include "command.h"
-#include "editor.h"
-#include "error.h"
-#include "str.h"
-#include "ptr-array.h"
-#include "env.h"
 #include "common.h"
-#include "uchar.h"
+#include "debug.h"
+#include "editor.h"
+#include "env.h"
+#include "error.h"
+#include "util/ascii.h"
+#include "util/ptr-array.h"
+#include "util/string.h"
+#include "util/utf8.h"
+#include "util/xmalloc.h"
 
-static String arg = STRING_INIT;
-
-static void parse_sq(const char *cmd, size_t *posp)
+static size_t parse_sq(const char *cmd, size_t len, String *buf)
 {
-    size_t pos = *posp;
-
-    while (1) {
-        if (cmd[pos] == '\'') {
-            pos++;
+    size_t pos = 0;
+    char ch = '\0';
+    while (pos < len) {
+        ch = cmd[pos];
+        if (ch == '\'') {
             break;
         }
-        if (!cmd[pos]) {
-            break;
-        }
-        string_add_byte(&arg, cmd[pos++]);
+        pos++;
     }
-    *posp = pos;
+    string_add_buf(buf, cmd, pos);
+    if (ch == '\'') {
+        pos++;
+    }
+    return pos;
 }
 
-static size_t unicode_escape(const char *str, size_t count)
+static size_t unicode_escape(const char *str, size_t count, String *buf)
 {
+    if (count == 0) {
+        return 0;
+    }
+
     CodePoint u = 0;
     size_t i;
-    for (i = 0; i < count && str[i]; i++) {
+    for (i = 0; i < count; i++) {
         int x = hex_decode(str[i]);
         if (x < 0) {
             break;
@@ -38,200 +44,198 @@ static size_t unicode_escape(const char *str, size_t count)
         u = u << 4 | x;
     }
     if (u_is_unicode(u)) {
-        string_add_ch(&arg, u);
+        string_add_ch(buf, u);
     }
     return i;
 }
 
-static void parse_dq(const char *cmd, size_t *posp)
+static inline size_t min(size_t a, size_t b)
 {
-    size_t pos = *posp;
+    return (a < b) ? a : b;
+}
 
-    while (cmd[pos]) {
-        char ch = cmd[pos++];
+static size_t parse_dq(const char *cmd, size_t len, String *buf)
+{
+    size_t pos = 0;
+    while (pos < len) {
+        unsigned char ch = cmd[pos++];
 
         if (ch == '"') {
             break;
         }
 
-        if (ch == '\\' && cmd[pos]) {
+        if (ch == '\\' && pos < len) {
             ch = cmd[pos++];
             switch (ch) {
+            case 'a': ch = '\a'; break;
+            case 'b': ch = '\b'; break;
+            case 'f': ch = '\f'; break;
+            case 'n': ch = '\n'; break;
+            case 'r': ch = '\r'; break;
+            case 't': ch = '\t'; break;
+            case 'v': ch = '\v'; break;
             case '\\':
             case '"':
-                string_add_byte(&arg, ch);
-                break;
-            case 'a':
-                string_add_ch(&arg, '\a');
-                break;
-            case 'b':
-                string_add_ch(&arg, '\b');
-                break;
-            case 'f':
-                string_add_ch(&arg, '\f');
-                break;
-            case 'n':
-                string_add_ch(&arg, '\n');
-                break;
-            case 'r':
-                string_add_ch(&arg, '\r');
-                break;
-            case 't':
-                string_add_ch(&arg, '\t');
-                break;
-            case 'v':
-                string_add_ch(&arg, '\v');
                 break;
             case 'x':
-                if (cmd[pos]) {
-                    int x1, x2;
-                    x1 = hex_decode(cmd[pos]);
-                    if (x1 >= 0 && cmd[++pos]) {
-                        x2 = hex_decode(cmd[pos]);
+                if (pos < len) {
+                    const int x1 = hex_decode(cmd[pos]);
+                    if (x1 >= 0 && ++pos < len) {
+                        const int x2 = hex_decode(cmd[pos]);
                         if (x2 >= 0) {
                             pos++;
-                            string_add_byte(&arg, x1 << 4 | x2);
+                            ch = x1 << 4 | x2;
+                            break;
                         }
                     }
                 }
-                break;
+                continue;
             case 'u':
-                pos += unicode_escape(cmd + pos, 4);
-                break;
+                pos += unicode_escape(cmd + pos, min(4, len - pos), buf);
+                continue;
             case 'U':
-                pos += unicode_escape(cmd + pos, 8);
-                break;
+                pos += unicode_escape(cmd + pos, min(8, len - pos), buf);
+                continue;
             default:
-                string_add_ch(&arg, '\\');
-                string_add_byte(&arg, ch);
+                string_add_byte(buf, '\\');
                 break;
             }
-        } else {
-            string_add_byte(&arg, ch);
         }
+
+        string_add_byte(buf, ch);
     }
-    *posp = pos;
+
+    return pos;
 }
 
-static void parse_var(const char *cmd, size_t *posp)
+static size_t parse_var(const char *cmd, size_t len, String *buf)
 {
-    size_t si = *posp;
-    size_t ei = si;
-    char *name, *value;
-
-    while (1) {
-        char ch = cmd[ei];
-
-        if (ascii_isalpha(ch) || ch == '_') {
-            ei++;
-            continue;
-        }
-        if (ei > si && ascii_isdigit(ch)) {
-            ei++;
-            continue;
-        }
-        break;
+    if (len == 0 || !is_alpha_or_underscore(cmd[0])) {
+        return 0;
     }
-    *posp = ei;
-    if (ei == si) {
-        return;
+
+    size_t n = 1;
+    while (n < len && is_alnum_or_underscore(cmd[n])) {
+        n++;
     }
-    name = xstrslice(cmd, si, ei);
-    value = expand_builtin_env(name);
+
+    char *name = xstrcut(cmd, n);
+    char *value = expand_builtin_env(name);
     if (value != NULL) {
-        string_add_str(&arg, value);
+        string_add_str(buf, value);
         free(value);
     } else {
         const char *val = getenv(name);
         if (val != NULL) {
-            string_add_str(&arg, val);
+            string_add_str(buf, val);
         }
     }
+
     free(name);
+    return n;
 }
 
-char *parse_command_arg(const char *cmd, bool tilde)
+char *parse_command_arg(const char *cmd, size_t len, bool tilde)
 {
+    String buf;
     size_t pos = 0;
 
-    if (tilde && cmd[pos] == '~' && cmd[pos+1] == '/') {
-        string_add_str(&arg, editor.home_dir);
-        pos++;
+    if (tilde && len >= 2 && cmd[0] == '~' && cmd[1] == '/') {
+        const size_t home_dir_len = strlen(editor.home_dir);
+        buf = string_new(len + home_dir_len);
+        string_add_buf(&buf, editor.home_dir, home_dir_len);
+        string_add_byte(&buf, '/');
+        pos += 2;
+    } else {
+        buf = string_new(len);
     }
 
-    while (1) {
-        char ch = cmd[pos];
-
-        if (!ch || ch == ';' || ascii_isspace(ch)) {
+    while (pos < len) {
+        char ch = cmd[pos++];
+        switch (ch) {
+        case '\t':
+        case '\n':
+        case '\r':
+        case ' ':
+        case ';':
+            goto end;
+        case '\'':
+            pos += parse_sq(cmd + pos, len - pos, &buf);
+            break;
+        case '"':
+            pos += parse_dq(cmd + pos, len - pos, &buf);
+            break;
+        case '$':
+            pos += parse_var(cmd + pos, len - pos, &buf);
+            break;
+        case '\\':
+            if (pos == len) {
+                goto end;
+            }
+            ch = cmd[pos++];
+            // Fallthrough
+        default:
+            string_add_byte(&buf, ch);
             break;
         }
-
-        pos++;
-        if (ch == '\'') {
-            parse_sq(cmd, &pos);
-        } else if (ch == '"') {
-            parse_dq(cmd, &pos);
-        } else if (ch == '$') {
-            parse_var(cmd, &pos);
-        } else if (ch == '\\') {
-            if (!cmd[pos]) {
-                break;
-            }
-            string_add_byte(&arg, cmd[pos++]);
-        } else {
-            string_add_byte(&arg, ch);
-        }
     }
-    return string_steal_cstring(&arg);
+
+end:
+    return string_steal_cstring(&buf);
 }
 
-size_t find_end(const char *cmd, size_t pos, Error **err)
+size_t find_end(const char *cmd, const size_t startpos, Error **err)
 {
+    size_t pos = startpos;
     while (1) {
-        char ch = cmd[pos];
-
-        if (!ch || ch == ';' || ascii_isspace(ch)) {
-            break;
-        }
-
-        pos++;
-        if (ch == '\'') {
+        switch (cmd[pos++]) {
+        case '\'':
             while (1) {
                 if (cmd[pos] == '\'') {
                     pos++;
                     break;
                 }
-                if (!cmd[pos]) {
+                if (cmd[pos] == '\0') {
                     *err = error_create("Missing '");
                     return 0;
                 }
                 pos++;
             }
-        } else if (ch == '"') {
+            break;
+        case '"':
             while (1) {
                 if (cmd[pos] == '"') {
                     pos++;
                     break;
                 }
-                if (!cmd[pos]) {
+                if (cmd[pos] == '\0') {
                     *err = error_create("Missing \"");
                     return 0;
                 }
                 if (cmd[pos++] == '\\') {
-                    if (!cmd[pos]) {
+                    if (cmd[pos] == '\0') {
                         goto unexpected_eof;
                     }
                     pos++;
                 }
             }
-        } else if (ch == '\\') {
-            if (!cmd[pos]) {
+            break;
+        case '\\':
+            if (cmd[pos] == '\0') {
                 goto unexpected_eof;
             }
             pos++;
+            break;
+        case '\0':
+        case '\t':
+        case '\n':
+        case '\r':
+        case ' ':
+        case ';':
+            return pos - 1;
         }
     }
-    return pos;
+    BUG("Unexpected break of outer loop");
 unexpected_eof:
     *err = error_create("Unexpected EOF");
     return 0;
@@ -246,7 +250,7 @@ bool parse_commands(PointerArray *array, const char *cmd, Error **err)
             pos++;
         }
 
-        if (!cmd[pos]) {
+        if (cmd[pos] == '\0') {
             break;
         }
 
@@ -261,7 +265,7 @@ bool parse_commands(PointerArray *array, const char *cmd, Error **err)
             return false;
         }
 
-        ptr_array_add(array, parse_command_arg(cmd + pos, true));
+        ptr_array_add(array, parse_command_arg(cmd + pos, end - pos, true));
         pos = end;
     }
     ptr_array_add(array, NULL);
@@ -271,10 +275,9 @@ bool parse_commands(PointerArray *array, const char *cmd, Error **err)
 char **copy_string_array(char **src, size_t count)
 {
     char **dst = xnew(char *, count + 1);
-    size_t i;
-    for (i = 0; i < count; i++) {
+    for (size_t i = 0; i < count; i++) {
         dst[i] = xstrdup(src[i]);
     }
-    dst[i] = NULL;
+    dst[count] = NULL;
     return dst;
 }

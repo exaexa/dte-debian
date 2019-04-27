@@ -1,20 +1,27 @@
+#include <errno.h>
+#include <fcntl.h>
+#include <stdio.h>
+#include <string.h>
+#include <sys/select.h>
+#include <unistd.h>
 #include "spawn.h"
 #include "editor.h"
-#include "buffer.h"
-#include "regexp.h"
 #include "error.h"
-#include "str.h"
 #include "msg.h"
-#include "term.h"
-#include "fork.h"
+#include "terminal/terminal.h"
+#include "util/exec.h"
+#include "util/regexp.h"
+#include "util/string.h"
+#include "util/strtonum.h"
+#include "util/xmalloc.h"
 
-static void handle_error_msg(Compiler *c, char *str)
+static void handle_error_msg(const Compiler *c, char *str)
 {
     size_t i, len;
 
     for (i = 0; str[i]; i++) {
         if (str[i] == '\n') {
-            str[i] = 0;
+            str[i] = '\0';
             break;
         }
         if (str[i] == '\t') {
@@ -36,9 +43,15 @@ static void handle_error_msg(Compiler *c, char *str)
         if (!p->ignore) {
             Message *msg = new_message(m.ptrs[p->msg_idx]);
             msg->loc = xnew0(FileLocation, 1);
-            msg->loc->filename = p->file_idx < 0 ? NULL : xstrdup(m.ptrs[p->file_idx]);
-            msg->loc->line = p->line_idx < 0 ? 0 : atoi(m.ptrs[p->line_idx]);
-            msg->loc->column = p->column_idx < 0 ? 0 : atoi(m.ptrs[p->column_idx]);
+            if (p->file_idx >= 0) {
+                msg->loc->filename = xstrdup(m.ptrs[p->file_idx]);
+                if (p->line_idx >= 0) {
+                    str_to_ulong(m.ptrs[p->line_idx], &msg->loc->line);
+                }
+                if (p->column_idx >= 0) {
+                    str_to_ulong(m.ptrs[p->column_idx], &msg->loc->column);
+                }
+            }
             add_message(msg);
         }
         ptr_array_free(&m);
@@ -47,7 +60,7 @@ static void handle_error_msg(Compiler *c, char *str)
     add_message(new_message(str));
 }
 
-static void read_errors(Compiler *c, int fd, bool quiet)
+static void read_errors(const Compiler *c, int fd, bool quiet)
 {
     FILE *f = fdopen(fd, "r");
     char line[4096];
@@ -68,9 +81,8 @@ static void read_errors(Compiler *c, int fd, bool quiet)
 
 static void filter(int rfd, int wfd, FilterData *fdata)
 {
-    unsigned int wlen = 0;
+    size_t wlen = 0;
     String buf = STRING_INIT;
-    int rc;
 
     if (!fdata->in_len) {
         close(wfd);
@@ -93,8 +105,7 @@ static void filter(int rfd, int wfd, FilterData *fdata)
             fd_high = wfd;
         }
 
-        rc = select(fd_high + 1, &rfds, wfdsp, NULL, NULL);
-        if (rc < 0) {
+        if (select(fd_high + 1, &rfds, wfdsp, NULL, NULL) < 0) {
             if (errno == EINTR) {
                 continue;
             }
@@ -105,7 +116,7 @@ static void filter(int rfd, int wfd, FilterData *fdata)
         if (FD_ISSET(rfd, &rfds)) {
             char data[8192];
 
-            rc = read(rfd, data, sizeof(data));
+            ssize_t rc = read(rfd, data, sizeof(data));
             if (rc < 0) {
                 error_msg("read: %s", strerror(errno));
                 break;
@@ -116,15 +127,15 @@ static void filter(int rfd, int wfd, FilterData *fdata)
                 }
                 break;
             }
-            string_add_buf(&buf, data, rc);
+            string_add_buf(&buf, data, (size_t) rc);
         }
         if (wfdsp && FD_ISSET(wfd, &wfds)) {
-            rc = write(wfd, fdata->in + wlen, fdata->in_len - wlen);
+            ssize_t rc = write(wfd, fdata->in + wlen, fdata->in_len - wlen);
             if (rc < 0) {
                 error_msg("write: %s", strerror(errno));
                 break;
             }
-            wlen += rc;
+            wlen += (size_t) rc;
             if (wlen == fdata->in_len) {
                 if (close(wfd)) {
                     error_msg("close: %s", strerror(errno));
@@ -148,7 +159,7 @@ static int open_dev_null(int flags)
     return fd;
 }
 
-static int handle_child_error(int pid)
+static int handle_child_error(pid_t pid)
 {
     int ret = wait_child(pid);
 
@@ -167,7 +178,6 @@ int spawn_filter(char **argv, FilterData *data)
     int p0[2] = {-1, -1};
     int p1[2] = {-1, -1};
     int dev_null = -1;
-    int fd[3], pid;
 
     data->out = NULL;
     data->out_len = 0;
@@ -181,10 +191,8 @@ int spawn_filter(char **argv, FilterData *data)
         goto error;
     }
 
-    fd[0] = p0[0];
-    fd[1] = p1[1];
-    fd[2] = dev_null;
-    pid = fork_exec(argv, fd);
+    int fd[3] = {p0[0], p1[1], dev_null};
+    const pid_t pid = fork_exec(argv, fd);
     if (pid < 0) {
         error_msg("Error: %s", strerror(errno));
         goto error;
@@ -210,18 +218,18 @@ error:
     return -1;
 }
 
-void spawn_compiler(char **args, SpawnFlags flags, Compiler *c)
+void spawn_compiler(char **args, SpawnFlags flags, const Compiler *c)
 {
-    bool read_stdout = !!(flags & SPAWN_READ_STDOUT);
+    const bool read_stdout = !!(flags & SPAWN_READ_STDOUT);
+    const bool quiet = !!(flags & SPAWN_QUIET);
     bool prompt = !!(flags & SPAWN_PROMPT);
-    bool quiet = !!(flags & SPAWN_QUIET);
-    int pid, dev_null, p[2], fd[3];
+    int p[2], fd[3];
 
     fd[0] = open_dev_null(O_RDONLY);
     if (fd[0] < 0) {
         return;
     }
-    dev_null = open_dev_null(O_WRONLY);
+    const int dev_null = open_dev_null(O_WRONLY);
     if (dev_null < 0) {
         close(fd[0]);
         return;
@@ -243,14 +251,14 @@ void spawn_compiler(char **args, SpawnFlags flags, Compiler *c)
 
     if (!quiet) {
         editor.child_controls_terminal = true;
-        ui_end();
+        editor.ui_end();
     }
 
-    pid = fork_exec(args, fd);
+    const pid_t pid = fork_exec(args, fd);
     if (pid < 0) {
         error_msg("Error: %s", strerror(errno));
         close(p[1]);
-        prompt = 0;
+        prompt = false;
     } else {
         // Must close write end of the pipe before read_errors() or
         // the read end never gets EOF!
@@ -259,11 +267,11 @@ void spawn_compiler(char **args, SpawnFlags flags, Compiler *c)
         handle_child_error(pid);
     }
     if (!quiet) {
-        term_raw();
+        terminal.raw();
         if (prompt) {
             any_key();
         }
-        resize();
+        editor.resize();
         editor.child_controls_terminal = false;
     }
     close(p[0]);
@@ -273,12 +281,12 @@ void spawn_compiler(char **args, SpawnFlags flags, Compiler *c)
 
 void spawn(char **args, int fd[3], bool prompt)
 {
-    int pid, quiet, redir_count = 0;
-    int dev_null = open_dev_null(O_WRONLY);
-
+    const int dev_null = open_dev_null(O_WRONLY);
     if (dev_null < 0) {
         return;
     }
+
+    unsigned int redir_count = 0;
     if (fd[0] < 0) {
         fd[0] = open_dev_null(O_RDONLY);
         if (fd[0] < 0) {
@@ -295,14 +303,14 @@ void spawn(char **args, int fd[3], bool prompt)
         fd[2] = dev_null;
         redir_count++;
     }
-    quiet = redir_count == 3;
 
+    const bool quiet = (redir_count == 3);
     if (!quiet) {
         editor.child_controls_terminal = true;
-        ui_end();
+        editor.ui_end();
     }
 
-    pid = fork_exec(args, fd);
+    const pid_t pid = fork_exec(args, fd);
     if (pid < 0) {
         error_msg("Error: %s", strerror(errno));
         prompt = false;
@@ -310,11 +318,11 @@ void spawn(char **args, int fd[3], bool prompt)
         handle_child_error(pid);
     }
     if (!quiet) {
-        term_raw();
+        terminal.raw();
         if (prompt) {
             any_key();
         }
-        resize();
+        editor.resize();
         editor.child_controls_terminal = false;
     }
     if (dev_null >= 0) {

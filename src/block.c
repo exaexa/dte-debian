@@ -1,18 +1,17 @@
 #include "block.h"
 #include "buffer.h"
+#include "common.h"
+#include "debug.h"
+#include "syntax/highlight.h"
+#include "util/xmalloc.h"
 #include "view.h"
-#include "highlight.h"
 
 #define BLOCK_EDIT_SIZE 512
 
 static void sanity_check(void)
 {
-    if (!DEBUG) {
-        return;
-    }
-
+#if DEBUG >= 1
     BUG_ON(list_empty(&buffer->blocks));
-
     bool cursor_seen = false;
     Block *blk;
     list_for_each_entry(blk, &buffer->blocks, node) {
@@ -28,6 +27,7 @@ static void sanity_check(void)
     }
     BUG_ON(!cursor_seen);
     BUG_ON(view->cursor.offset > view->cursor.blk->size);
+#endif
 }
 
 static inline size_t ALLOC_ROUND(size_t size)
@@ -188,6 +188,7 @@ static size_t split_and_insert(const char *buf, size_t len)
             size_t avail = size3 - offset;
             size_t count = size - copied;
 
+            DEBUG_VAR(avail);
             BUG_ON(count > avail);
             new->nl += copy_count_nl(new->data + copied, buf3 + offset, count);
             copied += count;

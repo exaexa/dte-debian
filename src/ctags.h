@@ -2,8 +2,7 @@
 #define CTAGS_H
 
 #include <stdbool.h>
-#include <stddef.h>
-#include <time.h>
+#include <sys/types.h>
 
 typedef struct {
     char *filename;
@@ -18,7 +17,7 @@ typedef struct {
     char *pattern;
     char *member;
     char *typeref;
-    int line;
+    unsigned long line;
     char kind;
     bool local;
 } Tag;

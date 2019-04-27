@@ -2,11 +2,7 @@
 #define OPTIONS_H
 
 #include <stdbool.h>
-
-typedef enum {
-    NEWLINE_UNIX,
-    NEWLINE_DOS,
-} LineEndingType;
+#include "encoding/encoder.h"
 
 enum {
     // Trailing whitespace
@@ -39,24 +35,25 @@ typedef enum {
     CSS_AUTO,
 } SearchCaseSensitivity;
 
-enum tab_bar {
+typedef enum {
     TAB_BAR_HIDDEN,
     TAB_BAR_HORIZONTAL,
     TAB_BAR_VERTICAL,
     TAB_BAR_AUTO,
-};
+} TabBarMode;
 
 #define COMMON_OPTIONS \
-    int auto_indent; \
-    int detect_indent; \
-    int emulate_tab; \
-    int expand_tab; \
-    int file_history; \
-    int indent_width; \
-    int syntax; \
-    int tab_width; \
-    int text_width; \
-    int ws_error
+    unsigned int auto_indent; \
+    unsigned int detect_indent; \
+    unsigned int editorconfig; \
+    unsigned int emulate_tab; \
+    unsigned int expand_tab; \
+    unsigned int file_history; \
+    unsigned int indent_width; \
+    unsigned int syntax; \
+    unsigned int tab_width; \
+    unsigned int text_width; \
+    unsigned int ws_error
 
 typedef struct {
     COMMON_OPTIONS;
@@ -65,7 +62,7 @@ typedef struct {
 typedef struct {
     COMMON_OPTIONS;
     // Only local
-    int brace_indent;
+    unsigned int brace_indent;
     char *filetype;
     char *indent_regex;
 } LocalOptions;
@@ -73,19 +70,20 @@ typedef struct {
 typedef struct {
     COMMON_OPTIONS;
     // Only global
-    SearchCaseSensitivity case_sensitive_search;
-    int display_special;
-    int esc_timeout;
-    int lock_files;
+    unsigned int display_special;
+    unsigned int esc_timeout;
+    unsigned int filesize_limit;
+    unsigned int lock_files;
+    unsigned int scroll_margin;
+    unsigned int set_window_title;
+    unsigned int show_line_numbers;
+    unsigned int tab_bar_max_components;
+    unsigned int tab_bar_width;
     LineEndingType newline; // Default value for new files
-    int scroll_margin;
-    int set_window_title;
-    int show_line_numbers;
+    SearchCaseSensitivity case_sensitive_search;
+    TabBarMode tab_bar;
     const char *statusline_left;
     const char *statusline_right;
-    enum tab_bar tab_bar;
-    int tab_bar_max_components;
-    int tab_bar_width;
 } GlobalOptions;
 
 #undef COMMON_OPTIONS
@@ -101,6 +99,5 @@ void collect_options(const char *prefix);
 void collect_toggleable_options(const char *prefix);
 void collect_option_values(const char *name, const char *prefix);
 void free_local_options(LocalOptions *opt);
-const char *case_sensitivity_to_string(SearchCaseSensitivity s);
 
 #endif

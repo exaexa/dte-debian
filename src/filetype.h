@@ -3,6 +3,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include "util/string-view.h"
 
 enum detect_type {
     FT_EXTENSION,
@@ -14,12 +15,6 @@ enum detect_type {
 
 void add_filetype(const char *name, const char *str, enum detect_type type);
 bool is_ft(const char *name);
-
-const char *find_ft (
-    const char *filename,
-    const char *interpreter,
-    const char *first_line,
-    size_t line_len
-);
+const char *find_ft(const char *filename, StringView line);
 
 #endif

@@ -1,41 +1,55 @@
-#include "command.h"
-#include "error.h"
 #include "alias.h"
-#include "parse-args.h"
 #include "change.h"
-#include "config.h"
+#include "command.h"
 #include "common.h"
-
-// Commands that are allowed in config files
-static const char *const config_commands[] = {
-    "alias",
-    "bind",
-    "cd",
-    "errorfmt",
-    "ft",
-    "hi",
-    "include",
-    "load-syntax",
-    "option",
-    "set",
-    "setenv",
-};
+#include "debug.h"
+#include "config.h"
+#include "error.h"
+#include "parse-args.h"
+#include "util/xmalloc.h"
 
 const Command *current_command;
 
-static bool allowed_command(const char *name)
+static PURE bool allowed_command(const char *name)
 {
-    for (size_t i = 0; i < ARRAY_COUNT(config_commands); i++) {
-        if (streq(name, config_commands[i])) {
-            return true;
+    size_t len = strlen(name);
+    switch (len) {
+    case 3: return !memcmp(name, "set", len);
+    case 4: return !memcmp(name, "bind", len);
+    case 5: return !memcmp(name, "alias", len);
+    case 7: return !memcmp(name, "include", len);
+    case 8: return !memcmp(name, "errorfmt", len);
+    case 11: return !memcmp(name, "load-syntax", len);
+    case 2:
+        switch (name[0]) {
+        case 'c': return name[1] == 'd';
+        case 'f': return name[1] == 't';
+        case 'h': return name[1] == 'i';
         }
+        return false;
+    case 6:
+        switch (name[0]) {
+        case 'o': return !memcmp(name, "option", len);
+        case 's': return !memcmp(name, "setenv", len);
+        }
+        return false;
     }
     return false;
 }
 
+UNITTEST {
+    BUG_ON(!allowed_command("alias"));
+    BUG_ON(!allowed_command("cd"));
+    BUG_ON(!allowed_command("include"));
+    BUG_ON(!allowed_command("set"));
+    BUG_ON(allowed_command("alias_"));
+    BUG_ON(allowed_command("c"));
+    BUG_ON(allowed_command("cD"));
+}
+
 const Command *find_command(const Command *cmds, const char *name)
 {
-    for (size_t i = 0; cmds[i].name; i++) {
+    for (size_t i = 0; cmds[i].cmd; i++) {
         const Command *cmd = &cmds[i];
         if (streq(name, cmd->name)) {
             return cmd;
@@ -47,9 +61,6 @@ const Command *find_command(const Command *cmds, const char *name)
 static void run_command(const Command *cmds, char **av)
 {
     const Command *cmd = find_command(cmds, av[0]);
-    const char *pf;
-    char **args;
-
     if (!cmd) {
         PointerArray array = PTR_ARRAY_INIT;
         const char *alias_name = av[0];
@@ -85,13 +96,13 @@ static void run_command(const Command *cmds, char **av)
         return;
     }
 
-    // By default change can't be merged with previous on.
+    // By default change can't be merged with previous one.
     // Any command can override this by calling begin_change() again.
     begin_change(CHANGE_MERGE_NONE);
 
     current_command = cmd;
-    args = av + 1;
-    pf = parse_args(args, cmd->flags, cmd->min_args, cmd->max_args);
+    char **args = av + 1;
+    const char *pf = parse_args(args, cmd->flags, cmd->min_args, cmd->max_args);
     if (pf) {
         cmd->cmd(pf, args);
     }
@@ -102,11 +113,9 @@ static void run_command(const Command *cmds, char **av)
 
 void run_commands(const Command *cmds, const PointerArray *array)
 {
-    size_t s, e;
-
-    s = 0;
+    size_t s = 0;
     while (s < array->count) {
-        e = s;
+        size_t e = s;
         while (e < array->count && array->ptrs[e]) {
             e++;
         }

@@ -1,7 +1,7 @@
 ---
 title: dterc
 section: 5
-date: November 2017
+date: March 2019
 description: Command and configuration language used by `dte`
 author: [Craig Barnes, Timo Hirvonen]
 seealso: ["`dte`", "`dte-syntax`"]
@@ -55,8 +55,11 @@ Single quoted strings can't contain single quotes or escaped characters.
 
 Double quoted strings may contain the following escapes:
 
-`\a`, `\b`, `\t`, `\n`, `\v`, `\f`, `\r`, `\\`
+`\a`, `\b`, `\t`, `\n`, `\v`, `\f`, `\r`
 :   Control characters (same as in C)
+
+`\\`
+:   Escaped backslash
 
 `\x0a`
 :   Hexadecimal byte value 0x0a. Note that `\x00` is not supported because
@@ -114,16 +117,20 @@ Alt:
 Shift:
 :   `S-left`
 
-Key chains are supported. For example `"^X c"` (press `^X` and then `c`).
-Keys are separated by spaces.
-
 ### **bof**
 
 Move to beginning of file.
 
-### **bol**
+### **bol** [**-cs**]
 
 Move to beginning of line.
+
+`-c`
+:   Select characters
+
+`-s`
+:   Move to beginning of indented text or beginning of line, depending
+    on current cursor position.
 
 ### **bolsf**
 
@@ -174,8 +181,14 @@ line (see the default `^L` key binding for why this is useful).
 
 ### **compile** [**-1ps**] _errorfmt_ _command_ [_parameters_]...
 
-Run external _command_ and collect error messages. This can be
-used to run `make`(1) and `grep`(1).
+Run external _command_ and collect output messages. This can be
+used to run e.g. compilers, build systems, code search utilities,
+etc. and then jump to a file/line position for each message.
+
+The _errorfmt_ argument corresponds to a regex capture pattern
+previously specified by the `errorfmt` command. After _command_
+exits successfully, parsed messages can be navigated using the
+`msg` command.
 
 `-1`
 :   Read error messages from stdout instead of stderr
@@ -214,17 +227,26 @@ Delete word after cursor.
 `-s`
 :   Be more "aggressive"
 
-### **down**
+### **down** [**-cl**]
 
 Move cursor down.
+
+`-c`
+:   Select characters
+
+`-l`
+:   Select whole lines
 
 ### **eof**
 
 Move cursor to end of file.
 
-### **eol**
+### **eol** [**-c**]
 
 Move cursor to end of line.
+
+`-c`
+:   Select characters
 
 ### **eolsf**
 
@@ -261,7 +283,13 @@ Example:
 
     filter sort -r
 
-### **format-paragraph** [_width_]
+Note that _command_ is executed directly using [`execvp`]. To use shell
+features like pipes or redirection, use a shell interpreter as the
+_command_. For example:
+
+    filter sh -c 'tr a-z A-Z | sed s/foo/bar/'
+
+### **wrap-paragraph** [_width_]
 
 Format the current selection or paragraph under the cursor. If
 paragraph _width_ is not given then the `text-width` option is
@@ -287,8 +315,6 @@ See also:
 * The `option` command (below)
 * The `filetype` option (below)
 * The [`dte-syntax`] man page
-* The [built-in filetype associations][`config/filetype`]
-  (which can be listed by running `dte -b filetype`)
 
 ### **ft** **-b** _filetype_ _basename_...
 
@@ -335,8 +361,30 @@ Same keys work as in command mode, but with these changes:
 
 Set highlight color.
 
-Colors:
+The _name_ argument can be a token name defined by a `dte-syntax` file
+or one of the following, built-in highlight names:
 
+* `default`
+* `nontext`
+* `noline`
+* `wserror`
+* `selection`
+* `currentline`
+* `linenumber`
+* `statusline`
+* `commandline`
+* `errormsg`
+* `infomsg`
+* `tabbar`
+* `activetab`
+* `inactivetab`
+
+The _fg-color_ and _bg-color_ arguments can be one of the following:
+
+* No value (equivalent to `default`)
+* A numeric value between `-2` and `255`
+* A 256-color palette value in R/G/B notation (e.g. `0/3/5`)
+* A true color value in CSS-style #RRGGBB notation (e.g. `#ab90df`)
 * `keep` (`-2`)
 * `default` (`-1`)
 * `black` (`0`)
@@ -356,23 +404,20 @@ Colors:
 * `lightcyan`
 * `white`
 
-Color can be given as a numeric value too (`-2`..`255`).
+Colors `16` to `231` correspond to R/G/B colors. Colors `232` to `255`
+are grayscale values.
 
-Colors `16`-`255` are supported by modern [`xterm`]-compatible terminal
-emulators. There's a 6x6x6 color cube at indexes `16`..`231`. For these
-colors it is easiest to use the R/G/B syntax where R, G and B are values
-between `0` and `5`.
+If the terminal has limited support for rendering colors, the _fg-color_
+and _bg-color_ arguments will fall back to the nearest supported color,
+which may be less precise than the value specified.
 
-Indexes `232`..`255` contain 24 grayscale values that can be used
-to specify grayscale value more accurately than using the R/G/B
-syntax.
-
-Attributes:
+The _attribute_ argument(s) can be any combination of the following:
 
 * `bold`
-* `lowintensity`
+* `dim`
 * `italic`
 * `underline`
+* `strikethrough`
 * `blink`
 * `reverse`
 * `invisible`
@@ -384,8 +429,6 @@ to keep _fg-color_ and attributes and change only _bg-color_.
 NOTE: Because `keep` is both a color and an attribute you need to
 specify both _fg-color_ and _bg-color_ if you want to set the `keep`
 _attribute_.
-
-If you omit any color it is set to `default` (`-1`).
 
 Unset fg/bg colors are inherited from highlight color `default`.
 If you don't set fg/bg for the highlight color `default` then
@@ -408,28 +451,16 @@ Insert _text_ into the buffer.
 `-m`
 :   Move after inserted text
 
-### **insert-special**
-
-Enter an input mode that allows inserting special characters or byte
-values. After running the command, type a decimal value or use one of
-the following prefixes:
-
-`o`
-:   Insert 3-digit octal byte value
-
-`x`
-:   Insert 2-digit hexadecimal byte value
-
-`u`
-:   Insert 6-digit hexadecimal Unicode value
-
 ### **join**
 
 Join selection or next line to current.
 
-### **left**
+### **left** [**-c**]
 
 Move left.
+
+`-c`
+:   Select characters
 
 ### **line** _number_
 
@@ -508,13 +539,25 @@ Paste.
 `-c`
 :   Paste at the cursor position
 
-### **pgdown**
+### **pgdown** [**-cl**]
 
 Move cursor page down. See also `scroll-pgdown`.
 
-### **pgup**
+`-c`
+:   Select characters
+
+`-l`
+:   Select whole lines
+
+### **pgup** [**-cl**]
 
 Move cursor page up. See also `scroll-pgup`.
+
+`-c`
+:   Select characters
+
+`-l`
+:   Select whole lines
 
 ### **prev**
 
@@ -525,7 +568,10 @@ Display previous file.
 Quit.
 
 `-f`
-:   Force quitting even if there are unsaved files
+:   Force quit, even if there are unsaved files
+
+`-p`
+:   Prompt for confirmation if there are unsaved files
 
 ### **redo** [_choice_]
 
@@ -536,6 +582,10 @@ possibilities an informative message is displayed:
 
 If the change was not the one you wanted, just run `undo` and
 then, for example, `redo 1`.
+
+### **refresh**
+
+Trigger a full redraw of the screen.
 
 ### **repeat** _count_ _command_ [_parameters_]...
 
@@ -560,9 +610,12 @@ The _pattern_ is a POSIX extended **regex**(7).
 `-i`
 :   Ignore case
 
-### **right**
+### **right** [**-c**]
 
 Move right.
+
+`-c`
+:   Select characters
 
 ### **run** [**-ps**] _command_ [_parameters_]...
 
@@ -658,7 +711,7 @@ There are three kinds of options.
    its own copies of the option values.
 
 3. Options that have both global and local values. The Global value is
-   just a default local value for opened files and never used for
+   just a default local value for opened files and is never used for
    anything else. Changing the global value does not affect any already
    opened files.
 
@@ -717,8 +770,8 @@ must be either boolean or enum.
 `-v`
 :   display new value
 
-If _option_ has both local and global value then local is toggled
-unless -g is given.
+If _option_ has both local and global values then local is toggled
+unless `-g` is used.
 
 ### **undo**
 
@@ -728,9 +781,15 @@ Undo latest change.
 
 Unselect.
 
-### **up**
+### **up** [**-cl**]
 
 Move cursor up.
+
+`-c`
+:   Select characters
+
+`-l`
+:   Select whole lines
 
 ### **view** _N_|last
 
@@ -751,16 +810,22 @@ Change from vertical layout to horizontal and vice versa.
 
 Next window.
 
-### **word-bwd** [**-s**]
+### **word-bwd** [**-cs**]
 
 Move cursor backward one word.
+
+`-c`
+:   Select characters
 
 `-s`
 :   Skip special characters
 
-### **word-fwd** [**-s**]
+### **word-fwd** [**-cs**]
 
 Move cursor forward one word.
+
+`-c`
+:   Select characters
 
 `-s`
 :   Skip special characters
@@ -841,6 +906,12 @@ timeout value is in milliseconds.
 Too long timeout makes escape key feel slow and too small
 timeout can cause escape sequences of for example arrow keys to
 be split and treated as multiple key presses.
+
+### **filesize-limit** [250]
+
+Refuse to open any file with a size larger than this value (in
+mebibytes). Useful to prevent accidentally opening very large
+files, which can take a long time on some systems.
 
 ### **lock-files** [true]
 
@@ -1017,7 +1088,7 @@ indentation size than `8` you should use spaces to indent.
 ### **text-width** [72]
 
 Preferred width of text. Used as the default argument for the
-`format-paragraph` command.
+`wrap-paragraph` command.
 
 ### **ws-error** [special]
 
@@ -1056,6 +1127,6 @@ errors should be highlighted. Set to `""` to disable.
 
 
 [`dte-syntax`]: dte-syntax.html
-[`glob`]: http://pubs.opengroup.org/onlinepubs/9699919799/functions/glob.html
-[`config/filetype`]: https://github.com/craigbarnes/dte/blob/master/config/filetype
+[`execvp`]: https://pubs.opengroup.org/onlinepubs/9699919799/functions/execvp.html
+[`glob`]: https://pubs.opengroup.org/onlinepubs/9699919799/functions/glob.html
 [`xterm`]: https://invisible-island.net/xterm/

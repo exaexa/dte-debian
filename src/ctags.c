@@ -1,16 +1,17 @@
+#include <stdlib.h>
+#include <string.h>
 #include "ctags.h"
 #include "common.h"
+#include "util/strtonum.h"
+#include "util/xmalloc.h"
 
 static size_t parse_excmd(Tag *t, const char *buf, size_t size)
 {
-    char ch = *buf;
-    long line;
-
+    const char ch = *buf;
     if (ch == '/' || ch == '?') {
         // The search pattern is not a real regular expression.
         // Need to escape special characters.
         char *pattern = xnew(char, size * 2);
-
         for (size_t i = 1, j = 0; i < size; i++) {
             if (buf[i] == '\\' && i + 1 < size) {
                 i++;
@@ -24,7 +25,7 @@ static size_t parse_excmd(Tag *t, const char *buf, size_t size)
                 if (i + 2 < size && buf[i + 1] == ';' && buf[i + 2] == '"') {
                     i += 2;
                 }
-                pattern[j] = 0;
+                pattern[j] = '\0';
                 t->pattern = pattern;
                 return i + 1;
             }
@@ -41,8 +42,9 @@ static size_t parse_excmd(Tag *t, const char *buf, size_t size)
         return 0;
     }
 
-    size_t i = 0;
-    if (!buf_parse_long(buf, size, &i, &line)) {
+    unsigned long line;
+    size_t i = buf_parse_ulong(buf, size, &line);
+    if (i == 0) {
         return 0;
     }
 
@@ -63,7 +65,7 @@ static bool parse_line(Tag *t, const char *buf, size_t size)
     }
 
     size_t len = end - buf;
-    t->name = xstrslice(buf, 0, len);
+    t->name = xstrcut(buf, len);
 
     size_t si = len + 1;
     if (si >= size) {
@@ -149,7 +151,7 @@ bool next_tag (
             continue;
         }
 
-        if (len <= prefix_len || memcmp(line, prefix, prefix_len)) {
+        if (len <= prefix_len || memcmp(line, prefix, prefix_len) != 0) {
             continue;
         }
 

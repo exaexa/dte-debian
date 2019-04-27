@@ -1,11 +1,15 @@
 #include <stdbool.h>
 #include "alias.h"
-#include "ptr-array.h"
-#include "common.h"
-#include "error.h"
-#include "editor.h"
-#include "completion.h"
 #include "command.h"
+#include "common.h"
+#include "completion.h"
+#include "editor.h"
+#include "error.h"
+#include "util/ascii.h"
+#include "util/macros.h"
+#include "util/ptr-array.h"
+#include "util/utf8.h"
+#include "util/xmalloc.h"
 
 typedef struct {
     char *name;
@@ -14,21 +18,32 @@ typedef struct {
 
 static PointerArray aliases = PTR_ARRAY_INIT;
 
-static bool is_valid_alias_name(const char *const name)
+static void CONSTRUCTOR prealloc(void)
 {
-    for (size_t i = 0; name[i]; i++) {
-        const char ch = name[i];
-        if (!ascii_isalnum(ch) && ch != '-' && ch != '_') {
-            return false;
-        }
+    ptr_array_init(&aliases, 32);
+}
+
+static bool is_valid_alias_name(const char *name)
+{
+    if (unlikely(name[0] == '\0')) {
+        error_msg("Empty alias name not allowed");
+        return false;
     }
-    return !!name[0];
+
+    for (unsigned char c; (c = *name); name++) {
+        if (is_word_byte(c) || c == '-' || c == '?' || c == '!') {
+            continue;
+        }
+        error_msg("Invalid byte in alias name: 0x%02x", (unsigned int)c);
+        return false;
+    }
+
+    return true;
 }
 
 void add_alias(const char *name, const char *value)
 {
     if (!is_valid_alias_name(name)) {
-        error_msg("Invalid alias name '%s'", name);
         return;
     }
     if (find_command(commands, name)) {
@@ -65,19 +80,16 @@ static int alias_cmp(const void *const ap, const void *const bp)
 
 void sort_aliases(void)
 {
-    if (aliases.count > 1) {
-        BUG_ON(!aliases.ptrs);
-        qsort(aliases.ptrs, aliases.count, sizeof(*aliases.ptrs), alias_cmp);
-    }
+    ptr_array_sort(aliases, alias_cmp);
 }
 
 const char *find_alias(const char *const name)
 {
-    for (size_t i = 0; i < aliases.count; i++) {
-        const CommandAlias *const alias = aliases.ptrs[i];
-        if (streq(alias->name, name)) {
-            return alias->value;
-        }
+    const CommandAlias key = {.name = (char*) name};
+    const void *ptr = ptr_array_bsearch(aliases, &key, alias_cmp);
+    if (ptr) {
+        const CommandAlias *alias = *(const CommandAlias **) ptr;
+        return alias->value;
     }
     return NULL;
 }

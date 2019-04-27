@@ -1,29 +1,32 @@
+#include <strings.h>
 #include "screen.h"
-#include "view.h"
+#include "debug.h"
 #include "editor.h"
-#include "uchar.h"
-#include "obuf.h"
 #include "selection.h"
-#include "highlight.h"
+#include "syntax/highlight.h"
+#include "terminal/output.h"
+#include "terminal/terminal.h"
+#include "util/ascii.h"
+#include "util/utf8.h"
 
 typedef struct {
-    View *view;
-    long line_nr;
-    long offset;
-    long sel_so;
-    long sel_eo;
+    const View *view;
+    size_t line_nr;
+    size_t offset;
+    ssize_t sel_so;
+    ssize_t sel_eo;
 
     const unsigned char *line;
     size_t size;
     size_t pos;
-    long indent_size;
-    long trailing_ws_offset;
+    size_t indent_size;
+    size_t trailing_ws_offset;
     HlColor **colors;
 } LineInfo;
 
-static bool is_default_bg_color(int color)
+static bool is_default_bg_color(int32_t color)
 {
-    return color == editor.builtin_colors[BC_DEFAULT]->bg || color < 0;
+    return color == builtin_colors[BC_DEFAULT]->bg || color < 0;
 }
 
 // Like mask_color() but can change bg color only if it has not been changed yet
@@ -41,17 +44,17 @@ static void mask_color2(TermColor *color, const TermColor *over)
 }
 
 static void mask_selection_and_current_line (
-    LineInfo *info,
+    const LineInfo *info,
     TermColor *color
 ) {
     if (info->offset >= info->sel_so && info->offset < info->sel_eo) {
-        mask_color(color, editor.builtin_colors[BC_SELECTION]);
+        mask_color(color, builtin_colors[BC_SELECTION]);
     } else if (info->line_nr == info->view->cy) {
-        mask_color2(color, editor.builtin_colors[BC_CURRENTLINE]);
+        mask_color2(color, builtin_colors[BC_CURRENTLINE]);
     }
 }
 
-static bool is_non_text(unsigned int u)
+static bool is_non_text(CodePoint u)
 {
     if (u < 0x20) {
         return u != '\t' || editor.options.display_special;
@@ -62,7 +65,7 @@ static bool is_non_text(unsigned int u)
     return u_is_unprintable(u);
 }
 
-static int get_ws_error_option(Buffer *b)
+static int get_ws_error_option(const Buffer *b)
 {
     int flags = b->options.ws_error;
 
@@ -76,9 +79,9 @@ static int get_ws_error_option(Buffer *b)
     return flags;
 }
 
-static bool whitespace_error(LineInfo *info, unsigned int u, long i)
+static bool whitespace_error(const LineInfo *info, CodePoint u, size_t i)
 {
-    View *v = info->view;
+    const View *v = info->view;
     int flags = get_ws_error_option(v->buffer);
 
     if (i >= info->trailing_ws_offset && flags & WSE_TRAILING) {
@@ -135,14 +138,14 @@ static bool whitespace_error(LineInfo *info, unsigned int u, long i)
     return false;
 }
 
-static unsigned int screen_next_char(LineInfo *info)
+static CodePoint screen_next_char(LineInfo *info)
 {
-    long count, pos = info->pos;
-    unsigned int u = info->line[pos];
+    size_t count, pos = info->pos;
+    CodePoint u = info->line[pos];
     TermColor color;
     bool ws_error = false;
 
-    if (likely(u < 0x80)) {
+    if (u < 0x80) {
         info->pos++;
         count = 1;
         if (u == '\t' || u == ' ') {
@@ -163,13 +166,13 @@ static unsigned int screen_next_char(LineInfo *info)
     if (info->colors && info->colors[pos]) {
         color = info->colors[pos]->color;
     } else {
-        color = *editor.builtin_colors[BC_DEFAULT];
+        color = *builtin_colors[BC_DEFAULT];
     }
     if (is_non_text(u)) {
-        mask_color(&color, editor.builtin_colors[BC_NONTEXT]);
+        mask_color(&color, builtin_colors[BC_NONTEXT]);
     }
     if (ws_error) {
-        mask_color(&color, editor.builtin_colors[BC_WSERROR]);
+        mask_color(&color, builtin_colors[BC_WSERROR]);
     }
     mask_selection_and_current_line(info, &color);
     set_color(&color);
@@ -180,11 +183,10 @@ static unsigned int screen_next_char(LineInfo *info)
 
 static void screen_skip_char(LineInfo *info)
 {
-    unsigned int u = info->line[info->pos++];
-
+    CodePoint u = info->line[info->pos++];
     info->offset++;
-    if (likely(u < 0x80)) {
-        if (likely(!u_is_ctrl(u))) {
+    if (u < 0x80) {
+        if (!ascii_iscntrl(u)) {
             obuf.x++;
         } else if (u == '\t' && obuf.tab != TAB_CONTROL) {
             obuf.x += (obuf.x + obuf.tab_width) / obuf.tab_width * obuf.tab_width - obuf.x;
@@ -193,8 +195,7 @@ static void screen_skip_char(LineInfo *info)
             obuf.x += 2;
         }
     } else {
-        long pos = info->pos;
-
+        size_t pos = info->pos;
         info->pos--;
         u = u_get_nonascii(info->line, info->size, &info->pos);
         obuf.x += u_char_width(u);
@@ -202,31 +203,27 @@ static void screen_skip_char(LineInfo *info)
     }
 }
 
-static bool is_notice(const char *word, size_t len)
+static PURE bool is_notice(const char *word, size_t len)
 {
-    static const char *const words[] = {"fixme", "todo", "xxx"};
-
-    for (size_t i = 0; i < ARRAY_COUNT(words); i++) {
-        const char *w = words[i];
-        if (strlen(w) == len && !strncasecmp(w, word, len)) {
-            return true;
-        }
+    switch (len) {
+    case 3: return !memcmp(word, "XXX", 3);
+    case 4: return !memcmp(word, "TODO", 4);
+    case 5: return !memcmp(word, "FIXME", 5);
     }
     return false;
 }
 
 // Highlight certain words inside comments
-static void hl_words(LineInfo *info)
+static void hl_words(const LineInfo *info)
 {
     HlColor *cc = find_color("comment");
     HlColor *nc = find_color("notice");
-    size_t i, j, si, max;
 
     if (info->colors == NULL || cc == NULL || nc == NULL) {
         return;
     }
 
-    i = info->pos;
+    size_t i = info->pos;
     if (i >= info->size) {
         return;
     }
@@ -238,8 +235,9 @@ static void hl_words(LineInfo *info)
 
     // This should be more than enough. I'm too lazy to iterate characters
     // instead of bytes and calculate text width.
-    max = info->pos + terminal.width * 4 + 8;
+    const size_t max = info->pos + terminal.width * 4 + 8;
 
+    size_t si;
     while (i < info->size) {
         if (info->colors[i] != cc || !is_word_byte(info->line[i])) {
             if (i > max) {
@@ -256,7 +254,7 @@ static void hl_words(LineInfo *info)
                 i++;
             }
             if (is_notice(info->line + si, i - si)) {
-                for (j = si; j < i; j++) {
+                for (size_t j = si; j < i; j++) {
                     info->colors[j] = nc;
                 }
             }
@@ -264,8 +262,12 @@ static void hl_words(LineInfo *info)
     }
 }
 
-static void line_info_init(LineInfo *info, View *v, BlockIter *bi, long line_nr)
-{
+static void line_info_init (
+    LineInfo *info,
+    const View *v,
+    const BlockIter *bi,
+    size_t line_nr
+) {
     memset(info, 0, sizeof(*info));
     info->view = v;
     info->line_nr = line_nr;
@@ -281,15 +283,17 @@ static void line_info_init(LineInfo *info, View *v, BlockIter *bi, long line_nr)
         BUG_ON(info->sel_so > info->sel_eo);
     } else {
         SelectionInfo sel;
-
         init_selection(v, &sel);
         info->sel_so = sel.so;
         info->sel_eo = sel.eo;
     }
 }
 
-static void line_info_set_line(LineInfo *info, LineRef *lr, HlColor **colors)
-{
+static void line_info_set_line (
+    LineInfo *info,
+    const LineRef *lr,
+    HlColor **colors
+) {
     BUG_ON(lr->size == 0);
     BUG_ON(lr->line[lr->size - 1] != '\n');
 
@@ -299,8 +303,8 @@ static void line_info_set_line(LineInfo *info, LineRef *lr, HlColor **colors)
     info->colors = colors;
 
     {
-        int i;
-        for (i = 0; i < info->size; i++) {
+        size_t i, n;
+        for (i = 0, n = info->size; i < n; i++) {
             char ch = info->line[i];
             if (ch != '\t' && ch != ' ') {
                 break;
@@ -310,7 +314,7 @@ static void line_info_set_line(LineInfo *info, LineRef *lr, HlColor **colors)
     }
 
     info->trailing_ws_offset = INT_MAX;
-    for (int i = info->size - 1; i >= 0; i--) {
+    for (ssize_t i = info->size - 1; i >= 0; i--) {
         char ch = info->line[i];
         if (ch != '\t' && ch != ' ') {
             break;
@@ -321,14 +325,11 @@ static void line_info_set_line(LineInfo *info, LineRef *lr, HlColor **colors)
 
 static void print_line(LineInfo *info)
 {
-    TermColor color;
-    unsigned int u;
-
     // Screen might be scrolled horizontally. Skip most invisible
-    // characters using screen_skip_char() which is much faster than
+    // characters using screen_skip_char(), which is much faster than
     // buf_skip(screen_next_char(info)).
     //
-    // There can be a wide character (tab, control code etc.) which is
+    // There can be a wide character (tab, control code etc.) that is
     // partially visible and can't be skipped using screen_skip_char().
     while (obuf.x + 8 < obuf.scroll_x && info->pos < info->size) {
         screen_skip_char(info);
@@ -338,7 +339,7 @@ static void print_line(LineInfo *info)
 
     while (info->pos < info->size) {
         BUG_ON(obuf.x > obuf.scroll_x + obuf.width);
-        u = screen_next_char(info);
+        CodePoint u = screen_next_char(info);
         if (!buf_put_char(u)) {
             // +1 for newline
             info->offset += info->size - info->pos + 1;
@@ -346,57 +347,60 @@ static void print_line(LineInfo *info)
         }
     }
 
+    TermColor color;
     if (editor.options.display_special && obuf.x >= obuf.scroll_x) {
         // Syntax highlighter highlights \n but use default color anyway
-        color = *editor.builtin_colors[BC_DEFAULT];
-        mask_color(&color, editor.builtin_colors[BC_NONTEXT]);
+        color = *builtin_colors[BC_DEFAULT];
+        mask_color(&color, builtin_colors[BC_NONTEXT]);
         mask_selection_and_current_line(info, &color);
         set_color(&color);
         buf_put_char('$');
     }
 
-    color = *editor.builtin_colors[BC_DEFAULT];
+    color = *builtin_colors[BC_DEFAULT];
     mask_selection_and_current_line(info, &color);
     set_color(&color);
     info->offset++;
     buf_clear_eol();
 }
 
-void update_range(View *v, int y1, int y2)
+void update_range(const View *v, int y1, int y2)
 {
-    LineInfo info;
-    BlockIter bi = v->cursor;
-    int i, got_line;
+    const int edit_x = v->window->edit_x;
+    const int edit_y = v->window->edit_y;
+    const int edit_w = v->window->edit_w;
+    const int edit_h = v->window->edit_h;
 
-    buf_reset(v->window->edit_x, v->window->edit_w, v->vx);
+    buf_reset(edit_x, edit_w, v->vx);
     obuf.tab_width = v->buffer->options.tab_width;
     obuf.tab = editor.options.display_special ? TAB_SPECIAL : TAB_NORMAL;
 
-    for (i = 0; i < v->cy - y1; i++) {
+    BlockIter bi = v->cursor;
+    for (int i = 0, n = v->cy - y1; i < n; i++) {
         block_iter_prev_line(&bi);
     }
-    for (i = 0; i < y1 - v->cy; i++) {
+    for (int i = 0, n = y1 - v->cy; i < n; i++) {
         block_iter_eat_line(&bi);
     }
     block_iter_bol(&bi);
 
+    LineInfo info;
     line_info_init(&info, v, &bi, y1);
 
     y1 -= v->vy;
     y2 -= v->vy;
 
-    got_line = !block_iter_is_eof(&bi);
+    bool got_line = !block_iter_is_eof(&bi);
     hl_fill_start_states(v->buffer, info.line_nr);
+    int i;
     for (i = y1; got_line && i < y2; i++) {
-        LineRef lr;
-        HlColor **colors;
-        int next_changed;
-
         obuf.x = 0;
-        buf_move_cursor(v->window->edit_x, v->window->edit_y + i);
+        terminal.move_cursor(edit_x, edit_y + i);
 
+        LineRef lr;
         fill_line_nl_ref(&bi, &lr);
-        colors = hl_line (
+        bool next_changed;
+        HlColor **colors = hl_line (
             v->buffer,
             lr.line,
             lr.size,
@@ -406,10 +410,10 @@ void update_range(View *v, int y1, int y2)
         line_info_set_line(&info, &lr, colors);
         print_line(&info);
 
-        got_line = block_iter_next_line(&bi);
+        got_line = !!block_iter_next_line(&bi);
         info.line_nr++;
 
-        if (next_changed && i + 1 == y2 && y2 < v->window->edit_h) {
+        if (next_changed && i + 1 == y2 && y2 < edit_h) {
             // More lines need to be updated not because their
             // contents have changed but because their highlight
             // state has.
@@ -419,13 +423,13 @@ void update_range(View *v, int y1, int y2)
 
     if (i < y2 && info.line_nr == v->cy) {
         // Dummy empty line is shown only if cursor is on it
-        TermColor color = *editor.builtin_colors[BC_DEFAULT];
+        TermColor color = *builtin_colors[BC_DEFAULT];
 
         obuf.x = 0;
-        mask_color2(&color, editor.builtin_colors[BC_CURRENTLINE]);
+        mask_color2(&color, builtin_colors[BC_CURRENTLINE]);
         set_color(&color);
 
-        buf_move_cursor(v->window->edit_x, v->window->edit_y + i++);
+        terminal.move_cursor(edit_x, edit_y + i++);
         buf_clear_eol();
     }
 
@@ -434,7 +438,7 @@ void update_range(View *v, int y1, int y2)
     }
     for (; i < y2; i++) {
         obuf.x = 0;
-        buf_move_cursor(v->window->edit_x, v->window->edit_y + i);
+        terminal.move_cursor(edit_x, edit_y + i);
         buf_put_char('~');
         buf_clear_eol();
     }

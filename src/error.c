@@ -1,11 +1,14 @@
+#include <stdio.h>
 #include "error.h"
-#include "editor.h"
-#include "config.h"
 #include "common.h"
+#include "config.h"
+#include "editor.h"
+#include "util/xmalloc.h"
 
-int nr_errors;
+static char error_buf[256];
+const char *const error_ptr = error_buf;
+unsigned int nr_errors;
 bool msg_is_error;
-char error_buf[256];
 
 static Error *error_new(char *msg)
 {
@@ -20,7 +23,7 @@ Error *error_create(const char *format, ...)
     va_list ap;
 
     va_start(ap, format);
-    err = error_new(xvsprintf(format, ap));
+    err = error_new(xvasprintf(format, ap));
     va_end(ap);
     return err;
 }
@@ -31,7 +34,7 @@ Error *error_create_errno(int code, const char *format, ...)
     va_list ap;
 
     va_start(ap, format);
-    err = error_new(xvsprintf(format, ap));
+    err = error_new(xvasprintf(format, ap));
     va_end(ap);
     err->code = code;
     return err;
@@ -52,33 +55,35 @@ void clear_error(void)
 
 void error_msg(const char *format, ...)
 {
-    va_list ap;
-    size_t pos = 0;
+    int pos = 0;
 
-    // Some implementations of *printf return -1 if output was truncated
     if (config_file) {
-        snprintf (
-            error_buf,
-            sizeof(error_buf),
-            "%s:%d: ",
-            config_file,
-            config_line
-        );
-        pos = strlen(error_buf);
         if (current_command) {
-            snprintf (
-                error_buf + pos,
-                sizeof(error_buf) - pos,
-                "%s: ",
+            pos = snprintf (
+                error_buf,
+                sizeof(error_buf),
+                "%s:%d: %s: ",
+                config_file,
+                config_line,
                 current_command->name
             );
-            pos += strlen(error_buf + pos);
+        } else {
+            pos = snprintf (
+                error_buf,
+                sizeof(error_buf),
+                "%s:%d: ",
+                config_file,
+                config_line
+            );
         }
     }
 
-    va_start(ap, format);
-    vsnprintf(error_buf + pos, sizeof(error_buf) - pos, format, ap);
-    va_end(ap);
+    if (pos >= 0 && pos < (sizeof(error_buf) - 3)) {
+        va_list ap;
+        va_start(ap, format);
+        vsnprintf(error_buf + pos, sizeof(error_buf) - pos, format, ap);
+        va_end(ap);
+    }
 
     msg_is_error = true;
     nr_errors++;
@@ -92,7 +97,6 @@ void error_msg(const char *format, ...)
 void info_msg(const char *format, ...)
 {
     va_list ap;
-
     va_start(ap, format);
     vsnprintf(error_buf, sizeof(error_buf), format, ap);
     va_end(ap);

@@ -1,7 +1,11 @@
 #include "view.h"
-#include "window.h"
-#include "uchar.h"
 #include "buffer.h"
+#include "common.h"
+#include "debug.h"
+#include "util/ascii.h"
+#include "util/utf8.h"
+#include "util/xmalloc.h"
+#include "window.h"
 
 View *view;
 
@@ -9,7 +13,7 @@ void view_update_cursor_y(View *v)
 {
     Buffer *b = v->buffer;
     Block *blk;
-    unsigned int nl = 0;
+    size_t nl = 0;
 
     list_for_each_entry(blk, &b->blocks, node) {
         if (blk == v->cursor.blk) {
@@ -32,11 +36,11 @@ void view_update_cursor_x(View *v)
 
     v->cx = fetch_this_line(&v->cursor, &lr);
     while (idx < v->cx) {
-        unsigned int u = lr.line[idx++];
+        CodePoint u = lr.line[idx++];
 
         c++;
-        if (likely(u < 0x80)) {
-            if (!u_is_ctrl(u)) {
+        if (u < 0x80) {
+            if (!ascii_iscntrl(u)) {
                 w++;
             } else if (u == '\t') {
                 w = (w + tw) / tw * tw;
@@ -60,7 +64,7 @@ static bool view_is_cursor_visible(const View *v)
 
 static void view_center_to_cursor(View *v)
 {
-    long lines = v->buffer->nl;
+    size_t lines = v->buffer->nl;
     Window *w = v->window;
     unsigned int hh = w->edit_h / 2;
 
@@ -130,7 +134,7 @@ int view_get_preferred_x(View *v)
     return v->preferred_x;
 }
 
-bool view_can_close(View *v)
+bool view_can_close(const View *v)
 {
     if (!buffer_modified(v->buffer)) {
         return true;
@@ -139,7 +143,7 @@ bool view_can_close(View *v)
     return v->buffer->views.count > 1;
 }
 
-char *view_get_word_under_cursor(View *v)
+char *view_get_word_under_cursor(const View *v)
 {
     LineRef lr;
     size_t i, ei, si = fetch_this_line(&v->cursor, &lr);

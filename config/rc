@@ -1,20 +1,60 @@
 include -b binding/default
-include -b color/dark
+include -b color/default
 include -b compiler/gcc
 include -b compiler/go
-include -b filetype
 
-alias help "run man dte"
-alias man "run man"
-alias make "compile gcc make"
-alias read "pass-through cat"
-alias builtin "include -b"
+alias help 'run man dte'
+alias man 'run man'
+alias make 'compile gcc make'
+alias read 'pass-through cat'
+alias builtin 'include -b'
 alias trim 'replace "[ \t]+$" ""'
 
-errorfmt gitgrep "^([^:]+):([0-9]+):" file line
+errorfmt gitgrep '^([^:]+):([0-9]+):' file line
 alias git-grep 'compile -1s gitgrep git grep -n'
+
+errorfmt gitchanges '^([^:]+): \+([0-9]+).*' file line
+alias git-changes "compile -1s gitchanges sh -c \"git diff -U0 | \
+    awk '/^[+]{3} b\\// {f = substr($2, 3)} /^@@/ {print f \\\": \\\" $3}'\""
 
 # Remove possible 'F' from $LESS so that less will always wait
 # for keypress and "run" can be used without "-p".
 # ('R' = allow ANSI colors, 'S' = chop long lines)
 setenv LESS RS
+
+ft -f dte '/\.?dte/(config/)?(rc|((syntax|color|binding|compiler)/.*))$'
+ft -f ini '/\.git/config$'
+ft -f mail '/tmpmsg-.*\.txt$|pico\.[0-9]+|mutt(ng)?-*-\w+|mutt[a-zA-Z0-9_-]{6}'
+
+# Don't remember cursor position for git temporary files
+option gitcommit,gitrebase file-history false
+option -r '/\.git/.*\.diff$' file-history false
+
+# Try to detect indent settings based on existing file contents
+option c,css,d,java,javascript,lua,nginx,php,sh,vala detect-indent 2,4,8
+
+# Scan for braces to determine next auto-ident size
+option c,css,d,go,java,javascript,lua,nginx,php,sh,vala brace-indent true
+
+# Override indent options for Makefiles, since they almost always require tabs
+option make indent-width 8 expand-tab false emulate-tab false
+
+# Use space indents in YAML files, since the language spec doesn't allow tabs
+option yaml \
+    expand-tab true \
+    emulate-tab true \
+    ws-error tab-indent,tab-after-indent,trailing,special
+
+# Patterns used to detect indent size when "auto-indent" option is enabled
+option c indent-regex '^[ \t]*(case|default|do|else|for|if|while)\b'
+option java indent-regex '^[ \t]*(case|default|do|else|for|if|while)\b'
+option lua indent-regex '(then|do|repeat|else) *$|function *[A-Za-z0-9_.:]* *\([A-Za-z0-9_, ]*\) *$'
+option php indent-regex '^[ \t]*(case|default|do|else|for|foreach|if|while)\b'
+option python indent-regex ':[ \t]*(#.*)?$'
+option sh indent-regex '(^|;)[ \t]*(do|else|then)\b'
+
+# Don't highlight whitespace errors in diff and mail files
+option diff,mail ws-error 0
+
+# Alias for old, built-in command (for backwards compatibility)
+alias format-paragraph wrap-paragraph

@@ -12,11 +12,33 @@ bind C-left 'word-bwd -s'
 bind C-right 'word-fwd -s'
 bind C-up up
 bind C-down down
-
 bind M-left bol
 bind M-right eol
 bind M-up pgup
 bind M-down pgdown
+
+bind S-left 'left -c'
+bind S-right 'right -c'
+bind S-up 'up -c'
+bind S-down 'down -c'
+bind S-home 'bol -c'
+bind S-end 'eol -c'
+bind S-pgup 'pgup -c'
+bind S-pgdown 'pgdown -c'
+
+bind C-S-left 'word-bwd -cs'
+bind C-S-right 'word-fwd -cs'
+bind C-S-up 'up -l'
+bind C-S-down 'down -l'
+bind M-S-left 'bol -c'
+bind M-S-right 'eol -c'
+bind M-S-up 'pgup -c'
+bind M-S-down 'pgdown -c'
+
+bind C-M-S-up 'pgup -l'
+bind C-M-S-down 'pgdown -l'
+bind C-S-pgup 'pgup -l'
+bind C-S-pgdown 'pgdown -l'
 
 # Either of these 2 may be equivalent to Backspace, depending on the
 # terminal, so they're both bound to erase by default for portability.
@@ -28,11 +50,11 @@ bind ^C copy
 bind ^F search
 bind ^G 'search -n'
 # ^I == Tab
-bind ^L "command 'line '"
+bind ^L 'command line\ '
 # ^M == Enter
 bind ^N open
 bind ^O 'command open\ '
-bind ^Q quit
+bind ^Q 'quit -p'
 bind ^R 'command replace\ '
 bind ^S 'save -p'
 bind ^T open
@@ -49,26 +71,23 @@ bind M-c 'toggle -v case-sensitive-search'
 bind M-e eof
 bind M-f 'search -w'
 bind M-F 'search -wr'
-bind M-j format-paragraph
-bind M-l 'select -l'
+bind M-j wrap-paragraph
 bind M-n 'msg -n'
 bind M-p 'msg -p'
-bind M-s select
 bind M-t 'insert -m "\t"'
-bind M-u unselect
 bind M-x command
 bind M-z suspend
 
-bind M-1 "view 1"
-bind M-2 "view 2"
-bind M-3 "view 3"
-bind M-4 "view 4"
-bind M-5 "view 5"
-bind M-6 "view 6"
-bind M-7 "view 7"
-bind M-8 "view 8"
-bind M-9 "view 9"
-bind M-0 "view last"
+bind M-1 'view 1'
+bind M-2 'view 2'
+bind M-3 'view 3'
+bind M-4 'view 4'
+bind M-5 'view 5'
+bind M-6 'view 6'
+bind M-7 'view 7'
+bind M-8 'view 8'
+bind M-9 'view 9'
+bind M-0 'view last'
 
 bind M-, prev
 bind M-. next
@@ -76,15 +95,17 @@ bind M-< wprev
 bind M-> wnext
 bind M-- 'shift -- -1'
 bind M-= 'shift +1'
-bind 'M-^?' 'erase-word -s'
+bind M-C-? 'erase-word -s'
+bind M-delete 'delete-word -s'
 bind M-\; command
 bind M-: command
 bind M-/ search
-bind M-? "search -r"
+bind M-? 'search -r'
 
-bind M-! "move-tab left"
-bind M-@ "move-tab right"
+bind M-! 'move-tab left'
+bind M-@ 'move-tab right'
 
-bind F1 "run man dte"
+bind F1 'run man dte'
 bind F3 'search -n'
 bind F4 'search -p'
+bind F5 refresh

@@ -1,3 +1,10 @@
+syntax .markdown-escape
+
+state char special
+    char !-/:-@[-`{-~ END special
+    recolor text 1
+    noeat END
+
 syntax .markdown-fenced-code-block
 
 state body code-block
@@ -30,33 +37,28 @@ state yaml
 state line-start
     str "\t" code-block
     str "    " code-block
-    char " " line-start
+    char " " this
     char # hash-heading
     char > block-quote
+    char [ maybe-link-def
     char -b 0-9 digit
     str "**" double-asterisk
     char * bullet-asterisk emphasis
     char +- bullet
     char -b "~" tilde
     char -b "`" backtick
-    char "\\" escape
     noeat text
 
 state text
     char "\n" line-start
-    char "`" code-span
+    char '`' code-span
     char [ reference
-    str "**" double-asterisk
-    str "__" double-underline
+    str '**' double-asterisk
+    str '__' double-underline
     char * asterisk
     char _ underscore
-    char "\\" escape
+    char "\\" .markdown-escape:this
     eat this
-
-state escape special
-    char "\x21-\x2f\x3a-\x40\x5b-\x60\x7b-\x7e" text special
-    recolor text 1
-    noeat text
 
 state bullet
     char "\n" line-start
@@ -75,15 +77,15 @@ state code-block
     eat this
 
 state backtick code-block
-    char -b "`" this
-    bufis "`" code-span
-    bufis "``" text code-span
+    char -b '`' this
+    bufis '`' code-span
+    bufis '``' text code-span
     heredocbegin .markdown-fenced-code-block line-start
 
 state tilde code-block
-    char -b "~" this
-    bufis "~" text
-    bufis "~~" text
+    char -b '~' this
+    bufis '~' text
+    bufis '~~' text
     heredocbegin .markdown-fenced-code-block line-start
 
 state block-quote
@@ -113,7 +115,7 @@ state asterisk emphasis
 
 state double-asterisk strong-emphasis
     char "\n" line-start
-    str "**" text strong-emphasis
+    str '**' text strong-emphasis
     eat this
 
 state underscore emphasis
@@ -123,25 +125,42 @@ state underscore emphasis
 
 state double-underline strong-emphasis
     char "\n" line-start
-    str "__" text strong-emphasis
+    str '__' text strong-emphasis
     eat this
 
 state reference
-    char "\\" reference-escape
+    char "\\" .markdown-escape:this
     char ] reference-close reference
     eat this
-
-state reference-escape special
-    char "\x21-\x2f\x3a-\x40\x5b-\x60\x7b-\x7e" reference special
-    recolor reference 1
-    noeat reference
 
 state reference-close
     char "\n" line-start
 #    char ( reference-link
 #    char [ reference-pointer
-#    char : reference-backref
     noeat text
+
+state maybe-link-def reference
+    char "\\" .markdown-escape:this
+    char ] maybe-link-def-close
+    eat this
+
+state maybe-link-def-close reference
+    char : link-def reference
+    noeat reference-close
+
+state link-def
+    char " \t" this
+    char "\n" line-start
+    noeat link-def-url
+
+state link-def-url url
+    char "\n" line-start
+    char " \t" link-def-after-url
+    eat this
+
+state link-def-after-url text
+    char "\n" line-start
+    eat this
 
 default comment yaml
 default special unordered-list
