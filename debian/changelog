@@ -1,5 +1,5 @@
-dte (1.7-1) unstable; urgency=medium
+dte (1.8.2-1) unstable; urgency=medium
 
-  * Initial release (Closes: #927238)
+  * Initial release of upstream version 1.8.2 (Closes: #927238)
 
- -- Mirek Kratochvil <exa.exa@gmail.com>  Tue, 16 Apr 2019 20:13:32 +0200
+ -- Mirek Kratochvil <exa.exa@gmail.com>  Sat, 27 Apr 2019 12:31:05 +0200
