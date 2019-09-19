@@ -1,3 +1,9 @@
+dte (1.8.2-2) unstable; urgency=medium
+
+  * Fix compiler-flags-hidden (force make V=1)
+
+ -- Mirek Kratochvil <exa.exa@gmail.com>  Thu, 19 Sep 2019 16:32:43 +0200
+
 dte (1.8.2-1) unstable; urgency=medium
 
   * Initial release of upstream version 1.8.2 (Closes: #927238)

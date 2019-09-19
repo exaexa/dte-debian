@@ -7,7 +7,7 @@ export DEB_BUILD_MAINT_OPTIONS = hardening=+all
 
 # dte defaults to /usr/local if prefix is not explicitly overridden
 override_dh_auto_build:
-	prefix=/usr dh_auto_build
+	prefix=/usr V=1 dh_auto_build
 
 override_dh_auto_install:
 	prefix=/usr dh_auto_install
