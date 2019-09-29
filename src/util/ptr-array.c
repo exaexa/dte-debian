@@ -3,14 +3,16 @@
 
 void ptr_array_add(PointerArray *array, void *ptr)
 {
-    if (array->count == array->alloc) {
+    size_t alloc = array->alloc;
+    if (alloc == array->count) {
         // NOTE: if alloc was 1 then new alloc would be 1*3/2 = 1!
-        array->alloc *= 3;
-        array->alloc /= 2;
-        if (array->alloc < 8) {
-            array->alloc = 8;
+        alloc *= 3;
+        alloc /= 2;
+        if (alloc < 8) {
+            alloc = 8;
         }
-        xrenew(array->ptrs, array->alloc);
+        xrenew(array->ptrs, alloc);
+        array->alloc = alloc;
     }
     array->ptrs[array->count++] = ptr;
 }
@@ -29,10 +31,7 @@ void ptr_array_free_cb(PointerArray *array, FreeFunction free_ptr)
         free_ptr(array->ptrs[i]);
         array->ptrs[i] = NULL;
     }
-    free(array->ptrs);
-    array->ptrs = NULL;
-    array->alloc = 0;
-    array->count = 0;
+    ptr_array_free_array(array);
 }
 
 void ptr_array_remove(PointerArray *array, void *ptr)
@@ -64,4 +63,35 @@ void *ptr_array_rel(const PointerArray *array, const void *ptr, size_t offset)
 {
     size_t i = ptr_array_idx(array, ptr);
     return array->ptrs[(i + offset + array->count) % array->count];
+}
+
+// Trim all leading NULLs and all but one trailing NULL (if any)
+void ptr_array_trim_nulls(PointerArray *array)
+{
+    size_t n = array->count;
+    if (n == 0) {
+        return;
+    }
+
+    void **ptrs = array->ptrs;
+    while (n > 0 && ptrs[n - 1] == NULL) {
+        n--;
+    }
+
+    if (n != array->count) {
+        // Leave 1 trailing NULL
+        n++;
+    }
+
+    size_t i = 0;
+    while (i < n && ptrs[i] == NULL) {
+        i++;
+    }
+
+    if (i > 0) {
+        n -= i;
+        memmove(ptrs, ptrs + i, n * sizeof(void*));
+    }
+
+    array->count = n;
 }

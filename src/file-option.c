@@ -1,17 +1,17 @@
 #include <unistd.h>
 #include "file-option.h"
-#include "common.h"
 #include "editorconfig/editorconfig.h"
 #include "options.h"
+#include "regexp.h"
 #include "spawn.h"
 #include "util/ptr-array.h"
-#include "util/regexp.h"
+#include "util/str-util.h"
 #include "util/string-view.h"
 #include "util/strtonum.h"
 #include "util/xmalloc.h"
 
 typedef struct {
-    enum file_options_type type;
+    FileOptionType type;
     char *type_or_pattern;
     char **strs;
 } FileOption;
@@ -88,39 +88,28 @@ void set_file_options(Buffer *b)
 {
     for (size_t i = 0; i < file_options.count; i++) {
         const FileOption *opt = file_options.ptrs[i];
-
         if (opt->type == FILE_OPTIONS_FILETYPE) {
             if (streq(opt->type_or_pattern, b->options.filetype)) {
                 set_options(opt->strs);
             }
-        } else if (
-            b->abs_filename
-            && regexp_match_nosub (
-                opt->type_or_pattern,
-                b->abs_filename,
-                strlen(b->abs_filename)
-            )
-        ) {
+            continue;
+        }
+        const char *f = b->abs_filename;
+        if (f && regexp_match_nosub(opt->type_or_pattern, f, strlen(f))) {
             set_options(opt->strs);
         }
     }
 }
 
-void add_file_options(enum file_options_type type, char *to, char **strs)
+void add_file_options(FileOptionType type, char *to, char **strs)
 {
-    FileOption *opt;
-    regex_t re;
-
-    if (type == FILE_OPTIONS_FILENAME) {
-        if (!regexp_compile(&re, to, REG_NEWLINE | REG_NOSUB)) {
-            free(to);
-            free_strings(strs);
-            return;
-        }
-        regfree(&re);
+    if (type == FILE_OPTIONS_FILENAME && !regexp_is_valid(to, REG_NEWLINE)) {
+        free(to);
+        free_string_array(strs);
+        return;
     }
 
-    opt = xnew(FileOption, 1);
+    FileOption *opt = xnew(FileOption, 1);
     opt->type = type;
     opt->type_or_pattern = to;
     opt->strs = strs;

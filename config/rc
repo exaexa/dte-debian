@@ -3,19 +3,19 @@ include -b color/default
 include -b compiler/gcc
 include -b compiler/go
 
-alias help 'run man dte'
-alias man 'run man'
-alias make 'compile gcc make'
-alias read 'pass-through cat'
 alias builtin 'include -b'
-alias trim 'replace "[ \t]+$" ""'
+alias help 'run man dte'
+alias make 'compile gcc make'
+alias man 'run man'
+alias read 'pipe-from cat'
+alias reverse-lines 'filter tac'
+alias sort-lines 'filter sh -c "LC_COLLATE=C sort"'
+alias split-words 'replace -g "[ \t]+" "\n"'
+alias trim-lines 'replace "[ \t]+$" ""'
+alias xsel 'pipe-to xsel -b'
 
 errorfmt gitgrep '^([^:]+):([0-9]+):' file line
 alias git-grep 'compile -1s gitgrep git grep -n'
-
-errorfmt gitchanges '^([^:]+): \+([0-9]+).*' file line
-alias git-changes "compile -1s gitchanges sh -c \"git diff -U0 | \
-    awk '/^[+]{3} b\\// {f = substr($2, 3)} /^@@/ {print f \\\": \\\" $3}'\""
 
 # Remove possible 'F' from $LESS so that less will always wait
 # for keypress and "run" can be used without "-p".
@@ -23,7 +23,6 @@ alias git-changes "compile -1s gitchanges sh -c \"git diff -U0 | \
 setenv LESS RS
 
 ft -f dte '/\.?dte/(config/)?(rc|((syntax|color|binding|compiler)/.*))$'
-ft -f ini '/\.git/config$'
 ft -f mail '/tmpmsg-.*\.txt$|pico\.[0-9]+|mutt(ng)?-*-\w+|mutt[a-zA-Z0-9_-]{6}'
 
 # Don't remember cursor position for git temporary files
@@ -56,5 +55,6 @@ option sh indent-regex '(^|;)[ \t]*(do|else|then)\b'
 # Don't highlight whitespace errors in diff and mail files
 option diff,mail ws-error 0
 
-# Alias for old, built-in command (for backwards compatibility)
+# Aliases for renamed built-in commands (for backwards compatibility)
 alias format-paragraph wrap-paragraph
+alias pass-through pipe-from

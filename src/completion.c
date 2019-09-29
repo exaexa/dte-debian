@@ -1,9 +1,9 @@
 #include <dirent.h>
+#include <sys/stat.h>
 #include "completion.h"
 #include "alias.h"
 #include "cmdline.h"
 #include "command.h"
-#include "common.h"
 #include "debug.h"
 #include "config.h"
 #include "editor.h"
@@ -14,6 +14,7 @@
 #include "util/ascii.h"
 #include "util/path.h"
 #include "util/ptr-array.h"
+#include "util/str-util.h"
 #include "util/string.h"
 #include "util/xmalloc.h"
 
@@ -33,20 +34,16 @@ static struct {
     bool tilde_expanded;
 } completion;
 
-static int strptrcmp(const void *ap, const void *bp)
+static int strptrcmp(const void *v1, const void *v2)
 {
-    const char *a = *(const char **)ap;
-    const char *b = *(const char **)bp;
-    return strcmp(a, b);
+    const char *const *s1 = v1;
+    const char *const *s2 = v2;
+    return strcmp(*s1, *s2);
 }
 
 static void sort_completions(void)
 {
-    PointerArray *a = &completion.completions;
-    if (a->count > 1) {
-        BUG_ON(!a->ptrs);
-        qsort(a->ptrs, a->count, sizeof(*a->ptrs), strptrcmp);
-    }
+    ptr_array_sort(&completion.completions, strptrcmp);
 }
 
 void add_completion(char *str)
@@ -227,7 +224,7 @@ static void collect_colors_and_attributes(const char *prefix)
     }
 }
 
-static void collect_completions(char **args, int argc)
+static void collect_completions(char **args, size_t argc)
 {
     if (!argc) {
         collect_commands(completion.parsed);
@@ -246,7 +243,8 @@ static void collect_completions(char **args, int argc)
         || string_view_equal_literal(&cmd_name, "save")
         || string_view_equal_literal(&cmd_name, "compile")
         || string_view_equal_literal(&cmd_name, "run")
-        || string_view_equal_literal(&cmd_name, "pass-through")
+        || string_view_equal_literal(&cmd_name, "pipe-from")
+        || string_view_equal_literal(&cmd_name, "pipe-to")
     ) {
         collect_files(false);
         return;
@@ -304,11 +302,37 @@ static void collect_completions(char **args, int argc)
         }
         return;
     }
+    if (string_view_equal_literal(&cmd_name, "show")) {
+        switch (argc) {
+        case 1:
+            if (str_has_prefix("alias", completion.parsed)) {
+                add_completion(xstrdup("alias"));
+            }
+            if (str_has_prefix("bind", completion.parsed)) {
+                add_completion(xstrdup("bind"));
+            }
+            break;
+        case 2:
+            if (streq(args[1], "alias")) {
+                collect_aliases(completion.parsed);
+            }
+            break;
+        case 3:
+            if (
+                (streq(args[1], "alias") && streq(args[2], "-c"))
+                || (streq(args[1], "-c") && streq(args[2], "alias"))
+            ) {
+                collect_aliases(completion.parsed);
+            }
+            break;
+        }
+        return;
+    }
 }
 
 static void init_completion(void)
 {
-    char *cmd = string_cstring(&editor.cmdline.buf);
+    const char *cmd = string_borrow_cstring(&editor.cmdline.buf);
     PointerArray array = PTR_ARRAY_INIT;
     ssize_t semicolon = -1;
     ssize_t completion_pos = -1;
@@ -335,10 +359,9 @@ static void init_completion(void)
             continue;
         }
 
-        Error *err = NULL;
+        CommandParseError err = 0;
         size_t end = find_end(cmd, pos, &err);
         if (err || end >= editor.cmdline.pos) {
-            error_free(err);
             completion_pos = pos;
             break;
         }
@@ -350,7 +373,6 @@ static void init_completion(void)
             if (value) {
                 size_t save = array.count;
                 if (!parse_commands(&array, value, &err)) {
-                    error_free(err);
                     for (size_t i = save; i < array.count; i++) {
                         free(array.ptrs[i]);
                         array.ptrs[i] = NULL;
@@ -399,7 +421,6 @@ static void init_completion(void)
             sort_completions();
             free(name);
             ptr_array_free(&array);
-            free(cmd);
             return;
         }
     }
@@ -411,12 +432,11 @@ static void init_completion(void)
     completion.add_space = true;
 
     collect_completions (
-        (char **)array.ptrs + semicolon + 1,
+        (char **)array.ptrs + 1 + semicolon,
         array.count - semicolon - 1
     );
     sort_completions();
     ptr_array_free(&array);
-    free(cmd);
 }
 
 static char *escape(const char *str)
@@ -424,7 +444,7 @@ static char *escape(const char *str)
     String buf = STRING_INIT;
 
     if (!str[0]) {
-        return xstrdup("\"\"");
+        return xmemdup_literal("\"\"");
     }
 
     if (str[0] == '~' && !completion.tilde_expanded) {
@@ -491,5 +511,5 @@ void reset_completion(void)
     free(completion.head);
     free(completion.tail);
     ptr_array_free(&completion.completions);
-    memzero(&completion);
+    MEMZERO(&completion);
 }

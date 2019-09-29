@@ -1,12 +1,13 @@
+#include <errno.h>
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #include "tag.h"
-#include "common.h"
 #include "completion.h"
 #include "debug.h"
 #include "error.h"
 #include "util/path.h"
+#include "util/str-util.h"
 #include "util/xmalloc.h"
 #include "util/xreadwrite.h"
 
@@ -174,7 +175,7 @@ TagFile *load_tag_file(void)
         return current_tag_file;
     }
 
-    char *buf = xnew(char, st.st_size);
+    char *buf = xmalloc(st.st_size);
     ssize_t size = xread(fd, buf, st.st_size);
     close(fd);
     if (size < 0) {
@@ -212,7 +213,7 @@ static char *path_relative(const char *filename, const char *dir)
     }
     if (filename[dlen] == '\0') {
         // Equal strings
-        return xstrdup(".");
+        return xmemdup_literal(".");
     }
     if (filename[dlen] != '/') {
         return NULL;
@@ -226,10 +227,8 @@ void tag_file_find_tags (
     const char *name,
     PointerArray *tags
 ) {
-    Tag *t;
+    Tag *t = xnew(Tag, 1);
     size_t pos = 0;
-
-    t = xnew(Tag, 1);
     while (next_tag(tf, &pos, name, true, t)) {
         ptr_array_add(tags, t);
         t = xnew(Tag, 1);
@@ -243,25 +242,20 @@ void tag_file_find_tags (
         current_filename = path_relative(filename, dir);
         free(dir);
     }
-    if (tags->count > 1) {
-        BUG_ON(!tags->ptrs);
-        qsort(tags->ptrs, tags->count, sizeof(tags->ptrs[0]), tag_cmp);
-    }
+    ptr_array_sort(tags, tag_cmp);
     free(current_filename);
     current_filename = NULL;
 }
 
-char *tag_file_get_tag_filename(const TagFile *tf, const Tag *t)
+char *tag_file_get_tag_filename(const TagFile *tagfile, const Tag *tag)
 {
-    char *dir = path_dirname(tf->filename);
-    size_t a = strlen(dir);
-    size_t b = strlen(t->filename);
-    char *filename = xnew(char, a + b + 2);
+    const StringView dir = path_slice_dirname(tagfile->filename);
+    const size_t tag_filename_len = strlen(tag->filename);
 
-    memcpy(filename, dir, a);
-    filename[a] = '/';
-    memcpy(filename + a + 1, t->filename, b + 1);
-    free(dir);
+    char *filename = xmalloc(dir.length + tag_filename_len + 2);
+    memcpy(filename, dir.data, dir.length);
+    filename[dir.length] = '/';
+    memcpy(filename + dir.length + 1, tag->filename, tag_filename_len + 1);
     return filename;
 }
 

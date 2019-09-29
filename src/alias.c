@@ -1,14 +1,15 @@
 #include <stdbool.h>
+#include <stdlib.h>
+#include <string.h>
 #include "alias.h"
 #include "command.h"
-#include "common.h"
 #include "completion.h"
 #include "editor.h"
 #include "error.h"
 #include "util/ascii.h"
 #include "util/macros.h"
 #include "util/ptr-array.h"
-#include "util/utf8.h"
+#include "util/str-util.h"
 #include "util/xmalloc.h"
 
 typedef struct {
@@ -71,16 +72,16 @@ void add_alias(const char *name, const char *value)
     }
 }
 
-static int alias_cmp(const void *const ap, const void *const bp)
+static int alias_cmp(const void *ap, const void *bp)
 {
-    const CommandAlias *a = *(const CommandAlias **)ap;
-    const CommandAlias *b = *(const CommandAlias **)bp;
-    return strcmp(a->name, b->name);
+    const CommandAlias *const *a = ap;
+    const CommandAlias *const *b = bp;
+    return strcmp((*a)->name, (*b)->name);
 }
 
 void sort_aliases(void)
 {
-    ptr_array_sort(aliases, alias_cmp);
+    ptr_array_sort(&aliases, alias_cmp);
 }
 
 const char *find_alias(const char *const name)
@@ -102,4 +103,14 @@ void collect_aliases(const char *const prefix)
             add_completion(xstrdup(alias->name));
         }
     }
+}
+
+String dump_aliases(void)
+{
+    String buf = string_new(4096);
+    for (size_t i = 0; i < aliases.count; i++) {
+        const CommandAlias *alias = aliases.ptrs[i];
+        string_sprintf(&buf, " %s  ->  %s\n", alias->name, alias->value);
+    }
+    return buf;
 }

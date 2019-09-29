@@ -85,6 +85,9 @@ static void test_find_ft_filename(void)
         {"test.c.dpkg-old", "c"},
         {"test.c.rpmnew", "c"},
         {"test.c.rpmsave", "c"},
+        {".c", NULL},
+        {"test.@", NULL},
+        {NULL, NULL},
     };
     const StringView empty_line = STRING_VIEW_INIT;
     FOR_EACH_I(i, tests) {
@@ -173,6 +176,8 @@ static void test_find_ft_firstline(void)
         IEXPECT_STREQ(result, t->expected_filetype);
     }
 }
+
+DISABLE_WARNING("-Wmissing-prototypes")
 
 void test_filetype(void)
 {

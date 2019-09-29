@@ -3,6 +3,7 @@
 #include <unistd.h>
 #undef CTRL // macro from sys/ttydefaults.h clashes with the one in key.h
 #include "ecma48.h"
+#include "no-op.h"
 #include "output.h"
 #include "terminfo.h"
 #include "xterm.h"
@@ -44,9 +45,17 @@ void term_cooked(void)
     tcsetattr(STDIN_FILENO, 0, &termios_save);
 }
 
+void ecma48_clear_screen(void)
+{
+    term_add_literal (
+        "\033[H"  // Move cursor to 1,1 (done only to mimic terminfo(5) "clear")
+        "\033[2J" // Clear whole screen (regardless of cursor position)
+    );
+}
+
 void ecma48_clear_to_eol(void)
 {
-    buf_add_literal("\033[K");
+    term_add_literal("\033[K");
 }
 
 void ecma48_move_cursor(int x, int y)
@@ -54,7 +63,7 @@ void ecma48_move_cursor(int x, int y)
     if (x < 0 || x >= 999 || y < 0 || y >= 999) {
         return;
     }
-    buf_sprintf (
+    term_sprintf (
         "\033[%u;%uH",
         // x and y are zero-based
         ((unsigned int)y) + 1,
@@ -95,28 +104,18 @@ void ecma48_set_color(const TermColor *const color)
     }
 
     buf[i++] = 'm';
-    buf_add_bytes(buf, i);
+    term_add_bytes(buf, i);
     obuf.color = *color;
 }
 
 void ecma48_repeat_byte(char ch, size_t count)
 {
     if (!ascii_isprint(ch) || count < 6 || count > 30000) {
-        buf_repeat_byte(ch, count);
+        term_repeat_byte(ch, count);
         return;
     }
-    buf_sprintf("%c\033[%zub", ch, count - 1);
+    term_sprintf("%c\033[%zub", ch, count - 1);
 }
-
-void put_control_code(StringView code)
-{
-    if (code.length) {
-        buf_add_bytes(code.data, code.length);
-    }
-}
-
-static void no_op(void) {}
-static void no_op_s(const char* UNUSED_ARG(s)) {}
 
 Terminal terminal = {
     .color_type = TERM_8_COLOR,
@@ -125,11 +124,12 @@ Terminal terminal = {
     .raw = &term_raw,
     .cooked = &term_cooked,
     .parse_key_sequence = &xterm_parse_key,
-    .put_control_code = &put_control_code,
+    .put_control_code = &term_add_string_view,
+    .clear_screen = &ecma48_clear_screen,
     .clear_to_eol = &ecma48_clear_to_eol,
     .set_color = &ecma48_set_color,
     .move_cursor = &ecma48_move_cursor,
-    .repeat_byte = &buf_repeat_byte,
+    .repeat_byte = &term_repeat_byte,
     .save_title = &no_op,
     .restore_title = &no_op,
     .set_title = &no_op_s,

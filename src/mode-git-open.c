@@ -126,7 +126,7 @@ static const char *selected_file(void)
 
 static void git_open_filter(void)
 {
-    char *str = string_cstring(&editor.cmdline.buf);
+    const char *str = string_borrow_cstring(&editor.cmdline.buf);
     char *ptr = git_open.all_files;
     char *end = git_open.all_files + git_open.size;
     bool (*match)(const char*, const PointerArray*) = words_match_icase;
@@ -137,7 +137,6 @@ static void git_open_filter(void)
         match = words_match;
     }
     split(&words, str);
-    free(str);
 
     git_open.files.count = 0;
     while (ptr < end) {
@@ -189,7 +188,7 @@ void git_open_reload(void)
     git_open_filter();
 }
 
-static inline size_t terminal_page_height(void)
+static size_t terminal_page_height(void)
 {
     if (terminal.height >= 6) {
         return terminal.height - 2;
@@ -271,10 +270,10 @@ static void git_open_update_screen(void)
         git_open.scroll += git_open.selected - max_y;
     }
 
-    buf_reset(x, w, 0);
+    term_output_reset(x, w, 0);
     terminal.move_cursor(0, 0);
     editor.cmdline_x = print_command('/');
-    buf_clear_eol();
+    term_clear_eol();
     y++;
 
     for (; i < h; i++) {
@@ -295,25 +294,25 @@ static void git_open_update_screen(void)
             mask_color(&color, builtin_colors[BC_SELECTION]);
         }
         terminal.set_color(&color);
-        buf_add_str(file);
-        buf_clear_eol();
+        term_add_str(file);
+        term_clear_eol();
     }
     set_builtin_color(BC_DEFAULT);
     for (; i < h; i++) {
         obuf.x = 0;
         terminal.move_cursor(x, y + i);
-        buf_clear_eol();
+        term_clear_eol();
     }
 }
 
 static void git_open_update(void)
 {
-    buf_hide_cursor();
+    term_hide_cursor();
     update_term_title(window->view->buffer);
     git_open_update_screen();
     terminal.move_cursor(editor.cmdline_x, 0);
-    buf_show_cursor();
-    buf_flush();
+    term_show_cursor();
+    term_output_flush();
 }
 
 const EditorModeOps git_open_ops = {

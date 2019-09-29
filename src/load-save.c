@@ -6,7 +6,6 @@
 #include <unistd.h>
 #include "load-save.h"
 #include "block.h"
-#include "common.h"
 #include "debug.h"
 #include "editor.h"
 #include "encoding/bom.h"
@@ -14,9 +13,12 @@
 #include "encoding/decoder.h"
 #include "encoding/encoder.h"
 #include "error.h"
+#include "util/macros.h"
 #include "util/path.h"
+#include "util/str-util.h"
 #include "util/xmalloc.h"
 #include "util/xreadwrite.h"
+#include "util/xsnprintf.h"
 
 static void add_block(Buffer *b, Block *blk)
 {
@@ -31,16 +33,13 @@ static Block *add_utf8_line (
     size_t len
 ) {
     size_t size = len + 1;
-
     if (blk) {
         size_t avail = blk->alloc - blk->size;
         if (size <= avail) {
             goto copy;
         }
-
         add_block(b, blk);
     }
-
     if (size < 8192) {
         size = 8192;
     }
@@ -63,33 +62,37 @@ static int decode_and_add_blocks (
     switch (b->encoding.type) {
     case ENCODING_AUTODETECT:
         if (bom_type != UNKNOWN_ENCODING) {
-            // UTF-16BE/LE or UTF-32BE/LE
             BUG_ON(b->encoding.name != NULL);
-            b->encoding.type = bom_type;
+            Encoding e = encoding_from_type(bom_type);
+            if (encoding_supported_by_iconv(e.name)) {
+                b->encoding = e;
+            } else {
+                b->encoding = encoding_from_type(UTF8);
+            }
         }
         break;
     case UTF16:
         switch (bom_type) {
         case UTF16LE:
         case UTF16BE:
-            b->encoding.type = bom_type;
+            b->encoding = encoding_from_type(bom_type);
             break;
         default:
             // "open -e UTF-16" but incompatible or no BOM.
             // Do what the user wants. Big-endian is default.
-            b->encoding.type = UTF16BE;
+            b->encoding = encoding_from_type(UTF16BE);
         }
         break;
     case UTF32:
         switch (bom_type) {
         case UTF32LE:
         case UTF32BE:
-            b->encoding.type = bom_type;
+            b->encoding = encoding_from_type(bom_type);
             break;
         default:
             // "open -e UTF-32" but incompatible or no BOM.
             // Do what the user wants. Big-endian is default.
-            b->encoding.type = UTF32BE;
+            b->encoding = encoding_from_type(UTF32BE);
         }
         break;
     default:
@@ -103,22 +106,19 @@ static int decode_and_add_blocks (
         size -= bom_len;
     }
 
-    FileDecoder *dec = new_file_decoder(encoding_to_string(&b->encoding), buf, size);
+    FileDecoder *dec = new_file_decoder(b->encoding.name, buf, size);
     if (dec == NULL) {
         return -1;
     }
 
     char *line;
-    ssize_t len;
+    size_t len;
     if (file_decoder_read_line(dec, &line, &len)) {
-        Block *blk = NULL;
-
         if (len && line[len - 1] == '\r') {
             b->newline = NEWLINE_DOS;
             len--;
         }
-        blk = add_utf8_line(b, blk, line, len);
-
+        Block *blk = add_utf8_line(b, NULL, line, len);
         while (file_decoder_read_line(dec, &line, &len)) {
             if (b->newline == NEWLINE_DOS && len && line[len - 1] == '\r') {
                 len--;
@@ -134,7 +134,7 @@ static int decode_and_add_blocks (
         if (dec->encoding) {
             b->encoding = encoding_from_name(dec->encoding);
         } else {
-            b->encoding = encoding_clone(&editor.charset);
+            b->encoding = editor.charset;
         }
     }
 
@@ -169,7 +169,6 @@ int read_blocks(Buffer *b, int fd)
     size_t map_size = 64 * 1024;
     unsigned char *buf = NULL;
     bool mapped = false;
-    ssize_t rc;
 
     // st_size is zero for some files in /proc.
     // Can't mmap files in /proc and /sys.
@@ -182,13 +181,14 @@ int read_blocks(Buffer *b, int fd)
             mapped = true;
         }
     }
-    if (!mapped) {
-        ssize_t alloc = map_size;
-        ssize_t pos = 0;
 
-        buf = xnew(char, alloc);
+    if (!mapped) {
+        size_t alloc = map_size;
+        size_t pos = 0;
+
+        buf = xmalloc(alloc);
         while (1) {
-            rc = xread(fd, buf + pos, alloc - pos);
+            ssize_t rc = xread(fd, buf + pos, alloc - pos);
             if (rc < 0) {
                 free(buf);
                 return -1;
@@ -204,15 +204,19 @@ int read_blocks(Buffer *b, int fd)
         }
         size = pos;
     }
-    rc = decode_and_add_blocks(b, buf, size);
+
+    int rc = decode_and_add_blocks(b, buf, size);
+
     if (mapped) {
         munmap(buf, size);
     } else {
         free(buf);
     }
+
     if (rc) {
         return rc;
     }
+
     fixup_blocks(b);
     return rc;
 }
@@ -261,20 +265,10 @@ int load_buffer(Buffer *b, bool must_exist, const char *filename)
     }
 
     if (b->encoding.type == ENCODING_AUTODETECT) {
-        b->encoding = encoding_clone(&editor.charset);
+        b->encoding = editor.charset;
     }
 
     return 0;
-}
-
-XMALLOC NONNULL_ARGS
-static char *tmp_filename(const char *filename)
-{
-    char *dir = path_dirname(filename);
-    const char *base = path_basename(filename);
-    char *tmp = xasprintf("%s/.tmp.%s.XXXXXX", dir, base);
-    free(dir);
-    return tmp;
 }
 
 static mode_t get_umask(void)
@@ -287,27 +281,28 @@ static mode_t get_umask(void)
 
 static int write_buffer(Buffer *b, FileEncoder *enc, EncodingType bom_type)
 {
-    ssize_t size = 0;
-    Block *blk;
-
+    size_t size = 0;
     if (bom_type != UTF8) {
         const ByteOrderMark *bom = get_bom_for_encoding(bom_type);
         if (bom) {
             size = bom->len;
             if (xwrite(enc->fd, bom->bytes, size) < 0) {
-                goto write_error;
+                error_msg("Write error: %s", strerror(errno));
+                return -1;
             }
         }
     }
 
-    list_for_each_entry(blk, &b->blocks, node) {
+    Block *blk;
+    block_for_each(blk, &b->blocks) {
         ssize_t rc = file_encoder_write(enc, blk->data, blk->size);
-
         if (rc < 0) {
-            goto write_error;
+            error_msg("Write error: %s", strerror(errno));
+            return -1;
         }
         size += rc;
     }
+
     if (enc->cconv != NULL && cconv_nr_errors(enc->cconv)) {
         // Any real error hides this message
         error_msg (
@@ -322,9 +317,6 @@ static int write_buffer(Buffer *b, FileEncoder *enc, EncodingType bom_type)
         return -1;
     }
     return 0;
-write_error:
-    error_msg("Write error: %s", strerror(errno));
-    return -1;
 }
 
 int save_buffer (
@@ -334,37 +326,33 @@ int save_buffer (
     LineEndingType newline
 ) {
     FileEncoder *enc;
-    char *tmp = NULL;
-    int fd;
+    int fd = -1;
+    char tmp[8192];
+    tmp[0] = '\0';
 
     // Don't use temporary file when saving file in /tmp because
     // crontab command doesn't like the file to be replaced.
     if (!str_has_prefix(filename, "/tmp/")) {
         // Try to use temporary file first (safer)
-        tmp = tmp_filename(filename);
+        const char *base = path_basename(filename);
+        const StringView dir = path_slice_dirname(filename);
+        const int dlen = (int)dir.length;
+        xsnprintf(tmp, sizeof tmp, "%.*s/.tmp.%s.XXXXXX", dlen, dir.data, base);
         fd = mkstemp(tmp);
         if (fd < 0) {
             // No write permission to the directory?
-            free(tmp);
-            tmp = NULL;
+            tmp[0] = '\0';
         } else if (b->st.st_mode) {
             // Preserve ownership and mode of the original file if possible.
-
-            // "ignoring return value of 'fchown', declared with attribute
-            // warn_unused_result"
-            //
-            // Casting to void does not hide this warning when
-            // using GCC and clang does not like this:
-            //     int ignore = fchown(...); ignore = ignore;
-            if (fchown(fd, b->st.st_uid, b->st.st_gid)) {
-            }
-            fchmod(fd, b->st.st_mode);
+            UNUSED int u1 = fchown(fd, b->st.st_uid, b->st.st_gid);
+            UNUSED int u2 = fchmod(fd, b->st.st_mode);
         } else {
             // New file
             fchmod(fd, 0666 & ~get_umask());
         }
     }
-    if (tmp == NULL) {
+
+    if (fd < 0) {
         // Overwrite the original file (if exists) directly.
         // Ownership is preserved automatically if the file exists.
         mode_t mode = b->st.st_mode;
@@ -394,21 +382,19 @@ int save_buffer (
         error_msg("Close failed: %s", strerror(errno));
         goto error;
     }
-    if (tmp != NULL && rename(tmp, filename)) {
+    if (*tmp && rename(tmp, filename)) {
         error_msg("Rename failed: %s", strerror(errno));
         goto error;
     }
     free_file_encoder(enc);
-    free(tmp);
     stat(filename, &b->st);
     return 0;
 error:
     if (enc != NULL) {
         free_file_encoder(enc);
     }
-    if (tmp != NULL) {
+    if (*tmp) {
         unlink(tmp);
-        free(tmp);
     } else {
         // Not using temporary file therefore mtime may have changed.
         // Update stat to avoid "File has been modified by someone else"

@@ -1,16 +1,19 @@
 #include "options.h"
-#include "common.h"
 #include "completion.h"
 #include "debug.h"
 #include "editor.h"
 #include "error.h"
 #include "file-option.h"
 #include "filetype.h"
+#include "regexp.h"
 #include "screen.h"
 #include "terminal/terminal.h"
-#include "util/regexp.h"
+#include "util/hashset.h"
+#include "util/str-util.h"
+#include "util/string-view.h"
 #include "util/strtonum.h"
 #include "util/xmalloc.h"
+#include "util/xsnprintf.h"
 #include "view.h"
 #include "window.h"
 
@@ -47,9 +50,9 @@ typedef struct {
     void (*on_change)(void);
 } OptionDesc;
 
-typedef union  {
+typedef union {
     // OPT_STR
-    char *str_val;
+    const char *str_val;
     // OPT_UINT, OPT_ENUM, OPT_FLAG
     unsigned int uint_val;
 } OptionValue;
@@ -58,7 +61,7 @@ typedef struct OptionOps {
     OptionValue (*get)(const OptionDesc *desc, void *ptr);
     void (*set)(const OptionDesc *desc, void *ptr, OptionValue value);
     bool (*parse)(const OptionDesc *desc, const char *str, OptionValue *value);
-    char *(*string)(const OptionDesc *desc, OptionValue value);
+    const char *(*string)(const OptionDesc *desc, OptionValue value);
     bool (*equals)(const OptionDesc *desc, void *ptr, OptionValue value);
 } OptionOps;
 
@@ -136,7 +139,7 @@ static void set_window_title_changed(void)
         if (editor.status == EDITOR_RUNNING) {
             update_term_title(window->view->buffer);
         }
-    } else if (terminal.restore_title && terminal.save_title) {
+    } else {
         terminal.restore_title();
         terminal.save_title();
     }
@@ -153,10 +156,8 @@ static bool validate_statusline_format(const char *value)
 {
     static const char chars[] = "fmryYxXpEMnstu%";
     size_t i = 0;
-
     while (value[i]) {
         char ch = value[i++];
-
         if (ch == '%') {
             ch = value[i++];
             if (!ch) {
@@ -174,7 +175,7 @@ static bool validate_statusline_format(const char *value)
 
 static bool validate_filetype(const char *value)
 {
-    if (!streq(value, "none") && !is_ft(value)) {
+    if (!is_ft(value)) {
         error_msg("No such file type %s", value);
         return false;
     }
@@ -183,20 +184,13 @@ static bool validate_filetype(const char *value)
 
 static bool validate_regex(const char *value)
 {
-    if (value[0]) {
-        regex_t re;
-        if (!regexp_compile(&re, value, REG_NEWLINE | REG_NOSUB)) {
-            return false;
-        }
-        regfree(&re);
-    }
-    return true;
+    return value[0] == '\0' || regexp_is_valid(value, REG_NEWLINE);
 }
 
 static OptionValue str_get(const OptionDesc* UNUSED_ARG(desc), void *ptr)
 {
     OptionValue v;
-    v.str_val = xstrdup(*(char **)ptr);
+    v.str_val = *(char**)ptr;
     return v;
 }
 
@@ -205,9 +199,8 @@ static void str_set (
     void *ptr,
     OptionValue value
 ) {
-    char **strp = ptr;
-    free(*strp);
-    *strp = xstrdup(value.str_val);
+    const char **strp = ptr;
+    *strp = str_intern(value.str_val);
 }
 
 static bool str_parse (
@@ -219,13 +212,14 @@ static bool str_parse (
         value->str_val = NULL;
         return false;
     }
-    value->str_val = xstrdup(str);
+    value->str_val = str;
     return true;
 }
 
-static char *str_string(const OptionDesc* UNUSED_ARG(desc), OptionValue value)
+static const char *str_string(const OptionDesc* UNUSED_ARG(desc), OptionValue value)
 {
-    return xstrdup(value.str_val);
+    const char *s = value.str_val;
+    return s ? s : "";
 }
 
 static bool str_equals (
@@ -233,13 +227,13 @@ static bool str_equals (
     void *ptr,
     OptionValue value
 ) {
-    return streq(*(char **)ptr, value.str_val);
+    return xstreq(*(char**)ptr, value.str_val);
 }
 
 static OptionValue uint_get(const OptionDesc* UNUSED_ARG(desc), void *ptr)
 {
     OptionValue v;
-    v.uint_val = *(unsigned int *)ptr;
+    v.uint_val = *(unsigned int*)ptr;
     return v;
 }
 
@@ -248,7 +242,7 @@ static void uint_set (
     void *ptr,
     OptionValue value
 ) {
-    *(unsigned int *)ptr = value.uint_val;
+    *(unsigned int*)ptr = value.uint_val;
 }
 
 static bool uint_parse (
@@ -274,14 +268,16 @@ static bool uint_parse (
     return true;
 }
 
-static char *uint_string(const OptionDesc* UNUSED_ARG(desc), OptionValue value)
+static const char *uint_string(const OptionDesc* UNUSED_ARG(desc), OptionValue value)
 {
-    return xasprintf("%u", value.uint_val);
+    static char buf[64];
+    xsnprintf(buf, sizeof buf, "%u", value.uint_val);
+    return buf;
 }
 
 static bool uint_equals(const OptionDesc* UNUSED_ARG(desc), void *ptr, OptionValue value)
 {
-    return *(unsigned int *)ptr == value.uint_val;
+    return *(unsigned int*)ptr == value.uint_val;
 }
 
 static bool enum_parse (
@@ -289,13 +285,14 @@ static bool enum_parse (
     const char *str,
     OptionValue *value
 ) {
-    unsigned int val, i;
+    unsigned int i;
     for (i = 0; desc->u.enum_opt.values[i]; i++) {
         if (streq(desc->u.enum_opt.values[i], str)) {
             value->uint_val = i;
             return true;
         }
     }
+    unsigned int val;
     if (!str_to_uint(str, &val) || val >= i) {
         error_msg("Invalid value for %s.", desc->name);
         return false;
@@ -304,9 +301,9 @@ static bool enum_parse (
     return true;
 }
 
-static char *enum_string(const OptionDesc *desc, OptionValue value)
+static const char *enum_string(const OptionDesc *desc, OptionValue value)
 {
-    return xstrdup(desc->u.enum_opt.values[value.uint_val]);
+    return desc->u.enum_opt.values[value.uint_val];
 }
 
 static bool flag_parse (
@@ -314,20 +311,19 @@ static bool flag_parse (
     const char *str,
     OptionValue *value
 ) {
-    const char **values = desc->u.flag_opt.values;
-    const char *ptr = str;
-    unsigned int val, flags = 0;
-
-    // "0" is allowed for compatibility and is same as ""
-    if (str_to_uint(str, &val) && val == 0) {
-        value->uint_val = val;
+    // "0" is allowed for compatibility and is the same as ""
+    if (str[0] == '0' && str[1] == '\0') {
+        value->uint_val = 0;
         return true;
     }
+
+    const char **values = desc->u.flag_opt.values;
+    const char *ptr = str;
+    unsigned int flags = 0;
+
     while (*ptr) {
         const char *end = strchr(ptr, ',');
-        char *buf;
         size_t len;
-
         if (end) {
             len = end - ptr;
             end++;
@@ -335,39 +331,41 @@ static bool flag_parse (
             len = strlen(ptr);
             end = ptr + len;
         }
-        buf = xmemdup(ptr, len + 1);
-        buf[len] = '\0';
+        const StringView flag = string_view(ptr, len);
         ptr = end;
-
         size_t i;
         for (i = 0; values[i]; i++) {
-            if (streq(buf, values[i])) {
+            if (string_view_equal_cstr(&flag, values[i])) {
                 flags |= 1u << i;
                 break;
             }
         }
         if (!values[i]) {
-            error_msg("Invalid flag '%s' for %s.", buf, desc->name);
-            free(buf);
+            error_msg (
+                "Invalid flag '%.*s' for %s.",
+                (int)flag.length,
+                flag.data,
+                desc->name
+            );
             return false;
         }
-        free(buf);
     }
     value->uint_val = flags;
     return true;
 }
 
-static char *flag_string(const OptionDesc *desc, OptionValue value)
+static const char *flag_string(const OptionDesc *desc, OptionValue value)
 {
-    const char **values = desc->u.flag_opt.values;
+    static char buf[256];
     unsigned int flags = value.uint_val;
-    char buf[1024];
-    char *ptr = buf;
-
     if (!flags) {
-        return xstrdup("0");
+        buf[0] = '0';
+        buf[1] = '\0';
+        return buf;
     }
 
+    char *ptr = buf;
+    const char **values = desc->u.flag_opt.values;
     for (size_t i = 0; values[i]; i++) {
         if (flags & (1 << i)) {
             size_t len = strlen(values[i]);
@@ -376,8 +374,9 @@ static char *flag_string(const OptionDesc *desc, OptionValue value)
             *ptr++ = ',';
         }
     }
+
     ptr[-1] = '\0';
-    return xstrdup(buf);
+    return buf;
 }
 
 static const OptionOps option_ops[] = {
@@ -426,6 +425,7 @@ static const OptionDesc option_desc[] = {
     BOOL_OPT("brace-indent", L(brace_indent), NULL),
     ENUM_OPT("case-sensitive-search", G(case_sensitive_search), case_sensitive_search_enum, NULL),
     FLAG_OPT("detect-indent", C(detect_indent), detect_indent_values, NULL),
+    BOOL_OPT("display-invisible", G(display_invisible), NULL),
     BOOL_OPT("display-special", G(display_special), NULL),
     BOOL_OPT("editorconfig", C(editorconfig), NULL),
     BOOL_OPT("emulate-tab", C(emulate_tab), NULL),
@@ -452,14 +452,14 @@ static const OptionDesc option_desc[] = {
     FLAG_OPT("ws-error", C(ws_error), ws_error_values, NULL),
 };
 
-static inline char *local_ptr(const OptionDesc *desc, const LocalOptions *opt)
+static char *local_ptr(const OptionDesc *desc, const LocalOptions *opt)
 {
-    return (char *)opt + desc->offset;
+    return (char*)opt + desc->offset;
 }
 
-static inline char *global_ptr(const OptionDesc *desc)
+static char *global_ptr(const OptionDesc *desc)
 {
-    return (char *)&editor.options + desc->offset;
+    return (char*)&editor.options + desc->offset;
 }
 
 static bool desc_is(const OptionDesc *desc, OptionType type)
@@ -474,13 +474,6 @@ static void desc_set(const OptionDesc *desc, void *ptr, OptionValue value)
         desc->on_change();
     } else {
         mark_everything_changed();
-    }
-}
-
-static void free_value(const OptionDesc *desc, OptionValue value)
-{
-    if (desc_is(desc, OPT_STR)) {
-        free(value.str_val);
     }
 }
 
@@ -520,8 +513,6 @@ static void do_set_option (
     bool local,
     bool global
 ) {
-    OptionValue val;
-
     if (local && !desc->local) {
         error_msg("Option %s is not local", desc->name);
         return;
@@ -530,6 +521,8 @@ static void do_set_option (
         error_msg("Option %s is not global", desc->name);
         return;
     }
+
+    OptionValue val;
     if (!desc->ops->parse(desc, value, &val)) {
         return;
     }
@@ -549,13 +542,11 @@ static void do_set_option (
     if (global) {
         desc_set(desc, global_ptr(desc), val);
     }
-    free_value(desc, val);
 }
 
 void set_option(const char *name, const char *value, bool local, bool global)
 {
     const OptionDesc *desc = must_find_option(name);
-
     if (!desc) {
         return;
     }
@@ -565,7 +556,6 @@ void set_option(const char *name, const char *value, bool local, bool global)
 void set_bool_option(const char *name, bool local, bool global)
 {
     const OptionDesc *desc = must_find_option(name);
-
     if (!desc) {
         return;
     }
@@ -578,13 +568,12 @@ void set_bool_option(const char *name, bool local, bool global)
 
 static const OptionDesc *find_toggle_option(const char *name, bool *global)
 {
-    const OptionDesc *desc;
-
     if (*global) {
         return must_find_global_option(name);
     }
+
     // Toggle local value by default if option has both values
-    desc = must_find_option(name);
+    const OptionDesc *desc = must_find_option(name);
     if (desc && !desc->local) {
         *global = true;
     }
@@ -602,9 +591,6 @@ static unsigned int toggle(unsigned int value, const char **values)
 void toggle_option(const char *name, bool global, bool verbose)
 {
     const OptionDesc *desc = find_toggle_option(name, &global);
-    OptionValue value;
-    char *ptr = NULL;
-
     if (!desc) {
         return;
     }
@@ -613,18 +599,20 @@ void toggle_option(const char *name, bool global, bool verbose)
         return;
     }
 
+    char *ptr;
     if (global) {
         ptr = global_ptr(desc);
     } else {
         ptr = local_ptr(desc, &buffer->options);
     }
+
+    OptionValue value;
     value.uint_val = toggle(*(unsigned int *)ptr, desc->u.enum_opt.values);
     desc_set(desc, ptr, value);
 
     if (verbose) {
-        char *str = desc->ops->string(desc, value);
+        const char *str = desc->ops->string(desc, value);
         info_msg("%s = %s", desc->name, str);
-        free(str);
     }
 }
 
@@ -632,14 +620,14 @@ void toggle_option_values (
     const char *name,
     bool global,
     bool verbose,
-    char **values
+    char **values,
+    size_t count
 ) {
     const OptionDesc *desc = find_toggle_option(name, &global);
     if (!desc) {
         return;
     }
 
-    size_t count = count_strings(values);
     BUG_ON(count == 0);
     size_t current = 0;
     bool error = false;
@@ -660,14 +648,9 @@ void toggle_option_values (
         size_t i = current % count;
         desc_set(desc, ptr, parsed_values[i]);
         if (verbose) {
-            char *str = desc->ops->string(desc, parsed_values[i]);
+            const char *str = desc->ops->string(desc, parsed_values[i]);
             info_msg("%s = %s", desc->name, str);
-            free(str);
         }
-    }
-
-    for (size_t i = 0; i < count; i++) {
-        free_value(desc, parsed_values[i]);
     }
 
     free(parsed_values);
@@ -690,9 +673,7 @@ bool validate_local_options(char **strs)
             valid = false;
         } else {
             OptionValue val;
-            if (desc->ops->parse(desc, value, &val)) {
-                free_value(desc, val);
-            } else {
+            if (!desc->ops->parse(desc, value, &val)) {
                 valid = false;
             }
         }
@@ -723,24 +704,20 @@ void collect_toggleable_options(const char *prefix)
 void collect_option_values(const char *name, const char *prefix)
 {
     const OptionDesc *desc = find_option(name);
-
     if (!desc) {
         return;
     }
 
     if (!*prefix) {
         // Complete value
-        OptionValue value;
         char *ptr;
-
         if (desc->local) {
             ptr = local_ptr(desc, &buffer->options);
         } else {
             ptr = global_ptr(desc);
         }
-        value = desc->ops->get(desc, ptr);
-        add_completion(desc->ops->string(desc, value));
-        free_value(desc, value);
+        OptionValue value = desc->ops->get(desc, ptr);
+        add_completion(xstrdup(desc->ops->string(desc, value)));
     } else if (desc_is(desc, OPT_ENUM)) {
         // Complete possible values
         for (size_t i = 0; desc->u.enum_opt.values[i]; i++) {
@@ -752,13 +729,11 @@ void collect_option_values(const char *name, const char *prefix)
         // Complete possible values
         const char *comma = strrchr(prefix, ',');
         size_t prefix_len = 0;
-
         if (comma) {
             prefix_len = ++comma - prefix;
         }
         for (size_t i = 0; desc->u.flag_opt.values[i]; i++) {
             const char *str = desc->u.flag_opt.values[i];
-
             if (str_has_prefix(str, prefix + prefix_len)) {
                 size_t str_len = strlen(str);
                 char *completion = xmalloc(prefix_len + str_len + 1);
@@ -766,18 +741,6 @@ void collect_option_values(const char *name, const char *prefix)
                 memcpy(completion + prefix_len, str, str_len + 1);
                 add_completion(completion);
             }
-        }
-    }
-}
-
-void free_local_options(LocalOptions *opt)
-{
-    for (size_t i = 0; i < ARRAY_COUNT(option_desc); i++) {
-        const OptionDesc *desc = &option_desc[i];
-        if (desc->local && desc_is(desc, OPT_STR)) {
-            char **local = (char **)local_ptr(desc, opt);
-            free(*local);
-            *local = NULL;
         }
     }
 }

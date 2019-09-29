@@ -9,6 +9,7 @@
 #define PASTE(a, b) a##b
 #define XPASTE(a, b) PASTE(a, b)
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
+#define IS_POWER_OF_2(x) (((x) > 0) && (((x) & ((x) - 1)) == 0))
 #define DO_PRAGMA(x) _Pragma(#x)
 
 // Calculate the number of elements in an array.
@@ -184,13 +185,21 @@
     #define NONSTRING
 #endif
 
+#if HAS_ATTRIBUTE(diagnose_if)
+    #define DIAGNOSE_IF(x) __attribute__((diagnose_if((x), (#x), "error")))
+#else
+    #define DIAGNOSE_IF(x)
+#endif
+
 #if defined(__x86_64__) && !defined(__SSE4_2__)
     #define FMV_SSE42 TARGET_CLONES("sse4.2,default")
 #else
     #define FMV_SSE42
 #endif
 
+#define XSTRDUP MALLOC RETURNS_NONNULL NONNULL_ARGS
 #define XMALLOC MALLOC RETURNS_NONNULL
+#define NONNULL_ARGS_AND_RETURN RETURNS_NONNULL NONNULL_ARGS
 
 #if __STDC_VERSION__ >= 201112L
     #define alignof(t) _Alignof(t)
@@ -207,6 +216,12 @@
     #define static_assert(x) _Static_assert((x), #x)
 #else
     #define static_assert(x)
+#endif
+
+#if GNUC_AT_LEAST(4, 2) || defined(__clang__)
+    #define DISABLE_WARNING(wflag) DO_PRAGMA(GCC diagnostic ignored wflag)
+#else
+    #define DISABLE_WARNING(wflag)
 #endif
 
 #ifdef __clang__

@@ -13,24 +13,102 @@ static void test_parse_term_color(void)
         const TermColor expected_color;
     } tests[] = {
         {{"bold", "red", "yellow"}, {COLOR_RED, COLOR_YELLOW, ATTR_BOLD}},
-        {{"#ff0000"}, {0xff0000 | COLOR_FLAG_RGB, -1, 0}},
-        {{"black", "#00ffff"}, {COLOR_BLACK, 0x00ffff | COLOR_FLAG_RGB, 0}},
+        {{"#ff0000"}, {COLOR_RGB(0xff0000), -1, 0}},
+        {{"#f00a9c", "reverse"}, {COLOR_RGB(0xf00a9c), -1, ATTR_REVERSE}},
+        {{"black", "#00ffff"}, {COLOR_BLACK, COLOR_RGB(0x00ffff), 0}},
+        {{"#123456", "#abcdef"}, {COLOR_RGB(0x123456), COLOR_RGB(0xabcdef), 0}},
         {{"red", "strikethrough"}, {COLOR_RED, -1, ATTR_STRIKETHROUGH}},
         {{"5/5/5"}, {231, COLOR_DEFAULT, 0}},
         {{"1/3/0", "0/5/2", "italic"}, {70, 48, ATTR_ITALIC}},
-        {{"-1", "-2"}, {COLOR_DEFAULT, -2, 0}},
+        {{"-1", "-2"}, {COLOR_DEFAULT, COLOR_KEEP, 0}},
         {{"keep", "red", "keep"}, {-2, COLOR_RED, ATTR_KEEP}},
         {{"bold", "blink"}, {-1, -1, ATTR_BOLD | ATTR_BLINK}},
-        {{"0", "255"}, {COLOR_BLACK, 255, 0}},
-        {{"white", "green", "underline"}, {15, COLOR_GREEN, ATTR_UNDERLINE}},
+        {{"0", "255", "underline"}, {COLOR_BLACK, 255, ATTR_UNDERLINE}},
+        {{"white", "green", "dim"}, {COLOR_WHITE, COLOR_GREEN, ATTR_DIM}},
+        {{"lightred", "lightyellow"}, {COLOR_LIGHTRED, COLOR_LIGHTYELLOW, 0}},
+        {{"darkgray", "lightgreen"}, {COLOR_DARKGRAY, COLOR_LIGHTGREEN, 0}},
+        {{"lightblue", "lightcyan"}, {COLOR_LIGHTBLUE, COLOR_LIGHTCYAN, 0}},
+        {{"lightmagenta"}, {COLOR_LIGHTMAGENTA, COLOR_DEFAULT, 0}},
+        {{"keep", "254", "keep"}, {COLOR_KEEP, 254, ATTR_KEEP}},
+        {{"red", "green", "keep"}, {COLOR_RED, COLOR_GREEN, ATTR_KEEP}},
+        {{"1", "2", "invisible"}, {COLOR_RED, COLOR_GREEN, ATTR_INVIS}},
     };
     FOR_EACH_I(i, tests) {
-        TermColor parsed_color;
-        bool ok = parse_term_color(&parsed_color, (char**)tests[i].strs);
+        TermColor parsed;
+        bool ok = parse_term_color(&parsed, (char**)tests[i].strs);
         IEXPECT_TRUE(ok);
         if (ok) {
-            IEXPECT_TRUE(same_color(&parsed_color, &tests[i].expected_color));
+            const TermColor expected = tests[i].expected_color;
+            IEXPECT_EQ(parsed.fg, expected.fg);
+            IEXPECT_EQ(parsed.bg, expected.bg);
+            IEXPECT_EQ(parsed.attr, expected.attr);
         }
+    }
+}
+
+static void test_color_to_nearest(void)
+{
+    static const struct {
+        int32_t input;
+        int32_t expected_rgb;
+        int32_t expected_256;
+        int32_t expected_16;
+    } tests[] = {
+        // ECMA-48 colors
+        {0, 0, 0, 0},
+        {5, 5, 5, 5},
+        {7, 7, 7, 7},
+
+        // aixterm-style colors
+        {8, 8, 8, 8},
+        {10, 10, 10, 10},
+        {15, 15, 15, 15},
+
+        // xterm 256 palette colors
+        {25, 25, 25, COLOR_BLUE},
+        {87, 87, 87, COLOR_LIGHTCYAN},
+        {88, 88, 88, COLOR_RED},
+        {90, 90, 90, COLOR_MAGENTA},
+        {96, 96, 96, COLOR_MAGENTA},
+        {178, 178, 178, COLOR_YELLOW},
+        {179, 179, 179, COLOR_YELLOW},
+
+        // RGB colors with exact xterm 6x6x6 cube equivalents
+        {COLOR_RGB(0x000000),  16,  16, COLOR_BLACK},
+        {COLOR_RGB(0x000087),  18,  18, COLOR_BLUE},
+        {COLOR_RGB(0x0000FF),  21,  21, COLOR_LIGHTBLUE},
+        {COLOR_RGB(0x00AF87),  36,  36, COLOR_GREEN},
+        {COLOR_RGB(0x00FF00),  46,  46, COLOR_LIGHTGREEN},
+        {COLOR_RGB(0x870000),  88,  88, COLOR_RED},
+        {COLOR_RGB(0xFF0000), 196, 196, COLOR_LIGHTRED},
+        {COLOR_RGB(0xFFD700), 220, 220, COLOR_YELLOW},
+        {COLOR_RGB(0xFFFF5F), 227, 227, COLOR_LIGHTYELLOW},
+        {COLOR_RGB(0xFFFFFF), 231, 231, COLOR_WHITE},
+
+        // RGB colors with exact xterm grayscale equivalents
+        {COLOR_RGB(0x080808), 232, 232, COLOR_BLACK},
+        {COLOR_RGB(0x121212), 233, 233, COLOR_BLACK},
+        {COLOR_RGB(0x6C6C6C), 242, 242, COLOR_DARKGRAY},
+        {COLOR_RGB(0xA8A8A8), 248, 248, COLOR_GRAY},
+        {COLOR_RGB(0xB2B2B2), 249, 249, COLOR_GRAY},
+        {COLOR_RGB(0xBCBCBC), 250, 250, COLOR_WHITE},
+        {COLOR_RGB(0xEEEEEE), 255, 255, COLOR_WHITE},
+
+        // RGB colors with NO exact xterm equivalents
+        {COLOR_RGB(0x00FF88), COLOR_RGB(0x00FF88),  48, COLOR_LIGHTGREEN},
+        {COLOR_RGB(0xFF0001), COLOR_RGB(0xFF0001), 196, COLOR_LIGHTRED},
+        {COLOR_RGB(0xAABBCC), COLOR_RGB(0xAABBCC), 146, COLOR_LIGHTBLUE},
+        {COLOR_RGB(0x080809), COLOR_RGB(0x080809), 232, COLOR_BLACK},
+        {COLOR_RGB(0xBABABA), COLOR_RGB(0xBABABA), 250, COLOR_WHITE},
+        {COLOR_RGB(0xEEEEED), COLOR_RGB(0xEEEEED), 255, COLOR_WHITE},
+    };
+    FOR_EACH_I(i, tests) {
+        const int32_t c = tests[i].input;
+        IEXPECT_EQ(color_to_nearest(c, TERM_TRUE_COLOR), tests[i].expected_rgb);
+        IEXPECT_EQ(color_to_nearest(c, TERM_256_COLOR), tests[i].expected_256);
+        IEXPECT_EQ(color_to_nearest(c, TERM_16_COLOR), tests[i].expected_16);
+        IEXPECT_EQ(color_to_nearest(c, TERM_8_COLOR), tests[i].expected_16 & 7);
+        IEXPECT_EQ(color_to_nearest(c, TERM_0_COLOR), COLOR_DEFAULT);
     }
 }
 
@@ -86,7 +164,7 @@ static void test_xterm_parse_key(void)
         {"\033OF", 3, KEY_END},
         {"\033OH", 3, KEY_HOME},
         {"\033OI", 3, '\t'},
-        {"\033OM", 3, '\r'},
+        {"\033OM", 3, KEY_ENTER},
         {"\033OP", 3, KEY_F1},
         {"\033OQ", 3, KEY_F2},
         {"\033OR", 3, KEY_F3},
@@ -144,16 +222,26 @@ static void test_xterm_parse_key(void)
         {"\033[d", 3, MOD_SHIFT | KEY_LEFT},
         // xterm + `modifyOtherKeys` option
         {"\033[27;5;9~", 9, MOD_CTRL | '\t'},
+        {"\033[27;5;13~", 10, MOD_CTRL | KEY_ENTER},
+        {"\033[27;6;13~", 10, MOD_CTRL | MOD_SHIFT |KEY_ENTER},
+        {"\033[27;2;127~", 11, MOD_CTRL | '?'},
+        {"\033[27;6;127~", 11, MOD_CTRL | '?'},
+        {"\033[27;8;127~", 11, MOD_CTRL | MOD_META | '?'},
+        {"\033[27;6;82~", 10, MOD_CTRL | 'R'},
+        {"\033[27;5;114~", 11, MOD_CTRL | 'R'},
+        {"\033[27;3;82~", 10, MOD_META | 'R'},
+        {"\033[27;3;114~", 11, MOD_META | 'r'},
+        {"\033[27;4;62~", 10, MOD_META | '>'},
+        {"\033[27;5;46~", 10, MOD_CTRL | '.'},
         {"\033[27;3;1114111~", 15, MOD_META | UNICODE_MAX_VALID_CODEPOINT},
         {"\033[27;3;1114112~", 0, 0},
         {"\033[27;999999999999999999999;123~", 0, 0},
         {"\033[27;123;99999999999999999~", 0, 0},
         // www.leonerd.org.uk/hacks/fixterms/
-        {"\033[0;3u", 6, MOD_META | 0},
-        {"\033[1;3u", 6, MOD_META | 1},
-        {"\033[2;3u", 6, MOD_META | 2},
+        {"\033[13;3u", 7, MOD_META | KEY_ENTER},
         {"\033[9;5u", 6, MOD_CTRL | '\t'},
         {"\033[65;3u", 7, MOD_META | 'A'},
+        {"\033[108;5u", 8, MOD_CTRL | 'L'},
         {"\033[127765;3u", 11, MOD_META | 127765ul},
         {"\033[1114111;3u", 12, MOD_META | UNICODE_MAX_VALID_CODEPOINT},
         {"\033[1114112;3u", 0, 0},
@@ -239,7 +327,7 @@ static void test_xterm_parse_key_combo(void)
             memcpy(seq, templates[i].escape_sequence, 8);
             BUG_ON(seq[7] != '\0');
             char *underscore = strchr(seq, '_');
-            BUG_ON(underscore == NULL);
+            ASSERT_NONNULL(underscore);
             *underscore = modifiers[j].ch;
             size_t seq_length = strlen(seq);
             KeyCode key;
@@ -302,7 +390,7 @@ static void test_xterm_parse_key_combo_rxvt(void)
             memcpy(seq, templates[i].escape_sequence, 8);
             BUG_ON(seq[7] != '\0');
             char *underscore = strchr(seq, '_');
-            BUG_ON(underscore == NULL);
+            ASSERT_NONNULL(underscore);
             *underscore = modifiers[j].ch;
             size_t seq_length = strlen(seq);
             KeyCode key;
@@ -355,9 +443,12 @@ static void test_key_to_string(void)
     }
 }
 
+DISABLE_WARNING("-Wmissing-prototypes")
+
 void test_terminal(void)
 {
     test_parse_term_color();
+    test_color_to_nearest();
     test_xterm_parse_key();
     test_xterm_parse_key_combo();
     test_xterm_parse_key_combo_rxvt();

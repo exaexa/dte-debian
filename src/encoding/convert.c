@@ -1,18 +1,21 @@
 #include <errno.h>
+#include "convert.h"
+#include "../debug.h"
+#include "../util/macros.h"
+
+#ifndef ICONV_DISABLE
+
 #include <iconv.h>
 #include <inttypes.h>
 #include <stdlib.h>
 #include <string.h>
-#include "convert.h"
 #include "encoding.h"
-#include "../common.h"
-#include "../debug.h"
 #include "../util/ascii.h"
+#include "../util/str-util.h"
 #include "../util/utf8.h"
 #include "../util/xmalloc.h"
 
 static unsigned char replacement[2] = "\xc2\xbf"; // U+00BF
-
 
 struct cconv {
     iconv_t cd;
@@ -41,7 +44,7 @@ static struct cconv *create(iconv_t cd)
     struct cconv *c = xnew0(struct cconv, 1);
     c->cd = cd;
     c->osize = 8192;
-    c->obuf = xnew(char, c->osize);
+    c->obuf = xmalloc(c->osize);
     return c;
 }
 
@@ -56,7 +59,7 @@ static size_t encoding_char_size(const char *encoding)
     return 1;
 }
 
-static inline size_t iconv_wrapper (
+static size_t iconv_wrapper (
     iconv_t cd,
     char **restrict inbuf,
     size_t *restrict inbytesleft,
@@ -300,7 +303,6 @@ char *cconv_consume_line(struct cconv *c, size_t *len)
 char *cconv_consume_all(struct cconv *c, size_t *len)
 {
     char *buf = c->obuf + c->consumed;
-
     *len = c->opos - c->consumed;
     c->consumed = c->opos;
     return buf;
@@ -322,3 +324,35 @@ bool encoding_supported_by_iconv(const char *encoding)
     iconv_close(cd);
     return true;
 }
+
+#else // Not using iconv -- replace conversion routines with stubs
+
+DISABLE_WARNING("-Wunused-parameter")
+
+bool encoding_supported_by_iconv(const char *encoding)
+{
+    return false;
+}
+
+struct cconv *cconv_to_utf8(const char *encoding)
+{
+    errno = EILSEQ;
+    return NULL;
+}
+
+struct cconv *cconv_from_utf8(const char *encoding)
+{
+    errno = EILSEQ;
+    return NULL;
+}
+
+#define FAIL() BUG("unsupported"); fatal_error(__func__, ENOTSUP)
+
+void cconv_process(struct cconv *c, const char *input, size_t len) {FAIL();}
+void cconv_flush(struct cconv *c) {FAIL();}
+size_t cconv_nr_errors(const struct cconv *c) {FAIL();}
+char *cconv_consume_line(struct cconv *c, size_t *len) {FAIL();}
+char *cconv_consume_all(struct cconv *c, size_t *len) {FAIL();}
+void cconv_free(struct cconv *c) {FAIL();}
+
+#endif

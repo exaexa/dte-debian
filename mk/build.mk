@@ -2,7 +2,7 @@ CC ?= gcc
 CFLAGS ?= -O2
 LDFLAGS ?=
 AWK = awk
-VERSION = 1.8.2
+VERSION = 1.9
 
 WARNINGS = \
     -Wall -Wextra -Wformat -Wformat-security \
@@ -19,12 +19,13 @@ WARNINGS_EXTRA = \
 BUILTIN_SYNTAX_FILES := \
     awk c config css d diff docker dte gitcommit gitrebase go html \
     ini java javascript lua mail make markdown meson nginx ninja php \
-    python robotstxt roff ruby sed sh sql tex texmfcnf vala xml
+    python robotstxt roff ruby sed sh sql tex texmfcnf vala xml \
+    xresources zig
 
 BUILTIN_CONFIGS := $(addprefix config/, \
     rc compiler/gcc compiler/go \
     binding/default binding/shift-select \
-    $(addprefix color/, reset reset-basic default light light256 darkgray) \
+    $(addprefix color/, reset reset-basic default darkgray) \
     $(addprefix syntax/, $(BUILTIN_SYNTAX_FILES)) )
 
 TEST_CONFIGS := $(addprefix test/data/, $(addsuffix .dterc, \
@@ -34,8 +35,8 @@ build_subdirs := $(addprefix build/, $(addsuffix /, \
     editorconfig encoding syntax terminal util test ))
 
 util_objects := $(call prefix-obj, build/util/, \
-    ascii exec path ptr-array regexp string strtonum unicode utf8 \
-    wbuf xmalloc xreadwrite xsnprintf )
+    ascii exec hashset path ptr-array readfile string strtonum \
+    unicode utf8 wbuf xmalloc xreadwrite xsnprintf )
 
 editorconfig_objects := $(call prefix-obj, build/editorconfig/, \
     editorconfig ini match )
@@ -44,17 +45,17 @@ encoding_objects := $(call prefix-obj, build/encoding/, \
     bom convert decoder encoder encoding )
 
 syntax_objects := $(call prefix-obj, build/syntax/, \
-    bitset color hashset highlight state syntax )
+    bitset color highlight state syntax )
 
 terminal_objects := $(call prefix-obj, build/terminal/, \
-    color ecma48 input key output terminal terminfo xterm xterm-keys )
+    color ecma48 input key no-op output terminal terminfo xterm xterm-keys )
 
 editor_objects := $(call prefix-obj, build/, \
-    alias bind block block-iter buffer buffer-iter change cmdline \
-    commands common compiler completion config ctags debug edit editor \
-    env error file-history file-option filetype frame history \
-    indent load-save lock main mode-command mode-git-open mode-normal \
-    mode-search move msg options parse-args parse-command run \
+    alias bind block block-iter buffer change cmdline command \
+    command-parse command-run compiler completion config ctags debug \
+    edit editor env error file-history file-option filetype frame \
+    history indent load-save lock main mode-command mode-git-open \
+    mode-normal mode-search move msg options parse-args regexp \
     screen screen-cmdline screen-status screen-tabbar screen-view \
     search selection spawn tag view window ) \
     $(editorconfig_objects) \
@@ -64,7 +65,8 @@ editor_objects := $(call prefix-obj, build/, \
     $(util_objects)
 
 test_objects := $(call prefix-obj, build/test/, \
-    cmdline config editorconfig encoding filetype main terminal test util )
+    cmdline command config editorconfig encoding filetype main \
+    syntax terminal test util )
 
 all_objects := $(editor_objects) $(test_objects)
 
@@ -75,32 +77,38 @@ ifdef WERROR
   WARNINGS += -Werror
 endif
 
-ifdef TERMINFO_DISABLE
-  build/terminal/terminfo.o: BASIC_CFLAGS += -DTERMINFO_DISABLE=1
-else
-  LDLIBS += $(or $(call pkg-libs, tinfo), $(call pkg-libs, ncurses), -lcurses)
-endif
-
 CWARNS = $(WARNINGS) $(foreach W,$(WARNINGS_EXTRA),$(call cc-option,$(W)))
 CSTD = $(call cc-option,-std=gnu11,-std=gnu99)
 $(call make-lazy,CWARNS)
 $(call make-lazy,CSTD)
 
 ifeq "$(KERNEL)" "Darwin"
-  LDLIBS += -liconv
+  LDLIBS_ICONV += -liconv
 else ifeq "$(OS)" "Cygwin"
-  LDLIBS += -liconv
+  LDLIBS_ICONV += -liconv
   EXEC_SUFFIX = .exe
 else ifeq "$(KERNEL)" "OpenBSD"
-  LDLIBS += -liconv
+  LDLIBS_ICONV += -liconv
   BASIC_CFLAGS += -I/usr/local/include
   BASIC_LDFLAGS += -L/usr/local/lib
 else ifeq "$(KERNEL)" "NetBSD"
   ifeq ($(shell expr "`uname -r`" : '[01]\.'),2)
-    LDLIBS += -liconv
+    LDLIBS_ICONV += -liconv
   endif
   BASIC_CFLAGS += -I/usr/pkg/include
   BASIC_LDFLAGS += -L/usr/pkg/lib
+endif
+
+ifdef ICONV_DISABLE
+  build/encoding/convert.o: BASIC_CFLAGS += -DICONV_DISABLE=1
+else
+  LDLIBS += $(LDLIBS_ICONV)
+endif
+
+ifdef TERMINFO_DISABLE
+  build/terminal/terminfo.o: BASIC_CFLAGS += -DTERMINFO_DISABLE=1
+else
+  LDLIBS += $(or $(call pkg-libs, tinfo), $(call pkg-libs, ncurses), -lcurses)
 endif
 
 dte = dte$(EXEC_SUFFIX)
@@ -121,7 +129,7 @@ else
   # 0: Disable debugging
   # 1: Enable BUG_ON() and light-weight sanity checks
   # 3: Enable expensive sanity checks
-  DEBUG = 0
+  DEBUG ?= 0
 endif
 
 ifeq "$(DEBUG)" "0"
@@ -159,8 +167,9 @@ build/config.o: build/builtin-config.h
 build/test/config.o: build/test/data.h
 build/editor.o: build/version.h
 build/terminal/terminfo.o: build/terminal/terminfo.cflags
+build/encoding/convert.o: build/encoding/convert.cflags
 build/terminal/terminfo.cflags: | build/terminal/
-build/filetype.o: BASIC_CFLAGS += -Wno-unused-label
+build/encoding/convert.cflags: | build/encoding/
 
 CFLAGS_ALL = $(CPPFLAGS) $(CFLAGS) $(BASIC_CFLAGS)
 LDFLAGS_ALL = $(CFLAGS) $(LDFLAGS) $(BASIC_LDFLAGS)

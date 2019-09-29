@@ -14,7 +14,7 @@ Features
 * Customizable key bindings
 * Support for all xterm Ctrl/Alt/Shift key codes
 * Command language with auto-completion
-* Unicode 11 compatible text rendering
+* Unicode 12.1 compatible text rendering
 * Support for multiple encodings (using [iconv])
 * Jump to definition (using [ctags])
 * Jump to compiler error
@@ -40,9 +40,9 @@ Installation
 To build `dte` from source, first install the requirements listed above,
 then use the following commands:
 
-    curl -LO https://craigbarnes.gitlab.io/dist/dte/dte-1.8.2.tar.gz
-    tar -xzf dte-1.8.2.tar.gz
-    cd dte-1.8.2
+    curl -LO https://craigbarnes.gitlab.io/dist/dte/dte-1.9.tar.gz
+    tar -xzf dte-1.9.tar.gz
+    cd dte-1.9
     make -j8 && sudo make install
 
 Documentation
@@ -77,8 +77,19 @@ require build system changes.
 Packaging
 ---------
 
-The following optional build variables may be useful when packaging
-`dte`:
+**Stable releases**:
+
+The [releases] page contains a short summary of changes for each
+stable version and links to the corresponding source tarballs.
+
+Note: auto-generated tarballs from GitHub/GitLab can (and
+[do][libgit issue #4343]) change over time and cannot be guaranteed to
+have long-term stable checksums. Use the tarballs from the [releases]
+page, unless you're prepared to deal with future checksum failures.
+
+**Build variables**:
+
+The following build variables may be useful when packaging `dte`:
 
 * `prefix`: Top-level installation prefix (defaults to `/usr/local`).
 * `bindir`: Installation prefix for program binary (defaults to
@@ -93,15 +104,19 @@ The following optional build variables may be useful when packaging
   terminal support currently works with `tmux`, `screen`, `st`, `xterm`
   (and many other `xterm`-compatible terminals) and falls back to
   [ECMA-48] mode for other terminals.
+* `ICONV_DISABLE=1`: Disable support for all file encodings except
+  UTF-8, to avoid the need to link with the system [iconv] library.
+  This can significantly reduce the size of statically linked builds,
+  but is generally not recommended.
 
-**Example usage**:
+Example usage:
 
     make V=1
     make install V=1 prefix=/usr DESTDIR=PKG
 
 **Persistent configuration**:
 
-Variables can also be configured persistently by adding them to
+Build variables can also be configured persistently by adding them to
 a `Config.mk` file, for example:
 
     prefix = /usr
@@ -111,6 +126,21 @@ a `Config.mk` file, for example:
 
 The `Config.mk` file should be in the project base directory alongside
 `GNUmakefile` and *must* be valid GNU make syntax.
+
+**Desktop menu entry**:
+
+A desktop menu entry for `dte` can be added by running:
+
+    make install-desktop-file
+
+Any variable overrides specified for `make install` must also be specified
+for `make install-desktop-file`. The easiest way to do this is simply to
+run both at the same time, e.g.:
+
+    make install install-desktop-file V=1 prefix=/usr DESTDIR=PKG
+
+**Note**: the `install-desktop-file` target requires [desktop-file-utils]
+to be installed.
 
 License
 -------
@@ -136,6 +166,7 @@ Public License version 2 for more details.
 [ncurses]: https://www.gnu.org/software/ncurses/
 [terminfo]: https://en.wikipedia.org/wiki/Terminfo
 [ECMA-48]: https://www.ecma-international.org/publications/standards/Ecma-048.htm "ANSI X3.64 / ECMA-48 / ISO/IEC 6429"
+[desktop-file-utils]: https://www.freedesktop.org/wiki/Software/desktop-file-utils
 [`GNUmakefile`]: https://gitlab.com/craigbarnes/dte/blob/master/GNUmakefile
 [syntax files]: https://gitlab.com/craigbarnes/dte/tree/master/config/syntax
 [staged installs]: https://www.gnu.org/prep/standards/html_node/DESTDIR.html
@@ -146,3 +177,5 @@ Public License version 2 for more details.
 [GitLab CI]: https://gitlab.com/craigbarnes/dte/pipelines
 [Travis CI]: https://travis-ci.org/craigbarnes/dte
 [General Public License version 2]: https://www.gnu.org/licenses/gpl-2.0.html
+[releases]: https://craigbarnes.gitlab.io/dte/releases.html
+[libgit issue #4343]: https://github.com/libgit2/libgit2/issues/4343

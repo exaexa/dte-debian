@@ -1,27 +1,25 @@
 #include <errno.h>
-#include <stdbool.h>
-#include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #include "path.h"
-#include "xmalloc.h"
 
 static bool make_absolute(char *dst, size_t size, const char *src)
 {
-    const size_t len = strlen(src);
     size_t pos = 0;
-
-    if (src[0] != '/') {
+    if (!path_is_absolute(src)) {
         if (!getcwd(dst, size)) {
             return false;
         }
         pos = strlen(dst);
         dst[pos++] = '/';
     }
+
+    const size_t len = strlen(src);
     if (pos + len + 1 > size) {
         errno = ENAMETOOLONG;
         return false;
     }
+
     memcpy(dst + pos, src, len + 1);
     return true;
 }
@@ -232,32 +230,10 @@ char *relative_filename(const char *f, const char *cwd)
     size_t tlen = strlen(f + clen);
     size_t len = dotdot * 3 + tlen;
 
-    char *filename = xnew(char, len + 1);
+    char *filename = xmalloc(len + 1);
     for (size_t i = 0; i < dotdot; i++) {
         memcpy(filename + i * 3, "../", 3);
     }
     memcpy(filename + dotdot * 3, f + clen, tlen + 1);
     return filename;
-}
-
-char *path_dirname(const char *filename)
-{
-    char *slash = strrchr(filename, '/');
-    if (slash == NULL) {
-        return xstrdup(".");
-    }
-    if (slash == filename) {
-        return xstrdup("/");
-    }
-    return xstrcut(filename, slash - filename);
-}
-
-// filename must not contain trailing slashes (but it can be "/")
-const char *path_basename(const char *filename)
-{
-    const char *slash = strrchr(filename, '/');
-    if (slash == NULL) {
-        return filename;
-    }
-    return slash + 1;
 }

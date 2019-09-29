@@ -1,8 +1,8 @@
 #include "view.h"
 #include "buffer.h"
-#include "common.h"
 #include "debug.h"
 #include "util/ascii.h"
+#include "util/str-util.h"
 #include "util/utf8.h"
 #include "util/xmalloc.h"
 #include "window.h"
@@ -15,7 +15,7 @@ void view_update_cursor_y(View *v)
     Block *blk;
     size_t nl = 0;
 
-    list_for_each_entry(blk, &b->blocks, node) {
+    block_for_each(blk, &b->blocks) {
         if (blk == v->cursor.blk) {
             nl += count_nl(blk->data, v->cursor.offset);
             v->cy = nl;
@@ -31,13 +31,12 @@ void view_update_cursor_x(View *v)
     unsigned int tw = v->buffer->options.tab_width;
     size_t idx = 0;
     LineRef lr;
-    int c = 0;
-    int w = 0;
+    long c = 0;
+    long w = 0;
 
     v->cx = fetch_this_line(&v->cursor, &lr);
     while (idx < v->cx) {
         CodePoint u = lr.line[idx++];
-
         c++;
         if (u < 0x80) {
             if (!ascii_iscntrl(u)) {
@@ -97,7 +96,7 @@ static void view_update_vy(View *v)
 {
     Window *w = v->window;
     int margin = window_get_scroll_margin(w);
-    int max_y = v->vy + w->edit_h - 1 - margin;
+    long max_y = v->vy + w->edit_h - 1 - margin;
 
     if (v->cy < v->vy + margin) {
         v->vy = v->cy - margin;
@@ -125,7 +124,7 @@ void view_update(View *v)
     v->center_on_scroll = false;
 }
 
-int view_get_preferred_x(View *v)
+long view_get_preferred_x(View *v)
 {
     if (v->preferred_x < 0) {
         view_update_cursor_x(v);
