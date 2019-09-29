@@ -55,7 +55,7 @@ static void add_status_pos(Formatter *f)
 {
     size_t lines = f->win->view->buffer->nl;
     int h = f->win->edit_h;
-    int pos = f->win->view->vy;
+    long pos = f->win->view->vy;
 
     if (lines <= h) {
         if (pos) {
@@ -68,8 +68,8 @@ static void add_status_pos(Formatter *f)
     } else if (pos + h - 1 >= lines) {
         add_status_str(f, "Bot");
     } else {
-        int d = lines - (h - 1);
-        add_status_format(f, "%2d%%", (pos * 100 + d / 2) / d);
+        const long d = lines - (h - 1);
+        add_status_format(f, "%2ld%%", (pos * 100 + d / 2) / d);
     }
 }
 
@@ -83,7 +83,7 @@ static void sf_format(Formatter *f, char *buf, size_t size, const char *format)
     f->separator = false;
 
     CodePoint u;
-    bool got_char = buffer_get_char(&v->cursor, &u) > 0;
+    bool got_char = block_iter_get_char(&v->cursor, &u) > 0;
     while (f->pos < f->size && *format) {
         char ch = *format++;
         if (ch != '%') {
@@ -107,25 +107,25 @@ static void sf_format(Formatter *f, char *buf, size_t size, const char *format)
             }
             break;
         case 'y':
-            add_status_format(f, "%d", v->cy + 1);
+            add_status_format(f, "%ld", v->cy + 1);
             break;
         case 'Y':
             add_status_format(f, "%zu", v->buffer->nl);
             break;
         case 'x':
-            add_status_format(f, "%d", v->cx_display + 1);
+            add_status_format(f, "%ld", v->cx_display + 1);
             break;
         case 'X':
-            add_status_format(f, "%d", v->cx_char + 1);
+            add_status_format(f, "%ld", v->cx_char + 1);
             if (v->cx_display != v->cx_char) {
-                add_status_format(f, "-%d", v->cx_display + 1);
+                add_status_format(f, "-%ld", v->cx_display + 1);
             }
             break;
         case 'p':
             add_status_pos(f);
             break;
         case 'E':
-            add_status_str(f, encoding_to_string(&v->buffer->encoding));
+            add_status_str(f, v->buffer->encoding.name);
             break;
         case 'M': {
             if (f->misc_status != NULL) {
@@ -217,31 +217,31 @@ void update_status_line(const Window *win)
     sf_format(&f, lbuf, sizeof(lbuf), editor.options.statusline_left);
     sf_format(&f, rbuf, sizeof(rbuf), editor.options.statusline_right);
 
-    buf_reset(win->x, win->w, 0);
+    term_output_reset(win->x, win->w, 0);
     terminal.move_cursor(win->x, win->y + win->h - 1);
     set_builtin_color(BC_STATUSLINE);
     size_t lw = u_str_width(lbuf);
     size_t rw = u_str_width(rbuf);
     if (lw + rw <= win->w) {
         // Both fit
-        buf_add_str(lbuf);
-        buf_set_bytes(' ', win->w - lw - rw);
-        buf_add_str(rbuf);
+        term_add_str(lbuf);
+        term_set_bytes(' ', win->w - lw - rw);
+        term_add_str(rbuf);
     } else if (lw <= win->w && rw <= win->w) {
         // Both would fit separately, draw overlapping
-        buf_add_str(lbuf);
+        term_add_str(lbuf);
         obuf.x = win->w - rw;
         terminal.move_cursor(win->x + win->w - rw, win->y + win->h - 1);
-        buf_add_str(rbuf);
+        term_add_str(rbuf);
     } else if (lw <= win->w) {
         // Left fits
-        buf_add_str(lbuf);
-        buf_clear_eol();
+        term_add_str(lbuf);
+        term_clear_eol();
     } else if (rw <= win->w) {
         // Right fits
-        buf_set_bytes(' ', win->w - rw);
-        buf_add_str(rbuf);
+        term_set_bytes(' ', win->w - rw);
+        term_add_str(rbuf);
     } else {
-        buf_clear_eol();
+        term_clear_eol();
     }
 }

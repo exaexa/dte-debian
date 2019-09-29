@@ -1,6 +1,10 @@
 #ifndef PARSE_ARGS_H
 #define PARSE_ARGS_H
 
-const char *parse_args(char **args, const char *flag_desc, int min, int max);
+#include <stdbool.h>
+#include "command.h"
+#include "util/macros.h"
+
+bool parse_args(const Command *cmd, CommandArgs *a) NONNULL_ARGS;
 
 #endif

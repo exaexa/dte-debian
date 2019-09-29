@@ -36,7 +36,7 @@ typedef struct {
     bool child_controls_terminal;
     bool everything_changed;
     bool term_utf8;
-    int cmdline_x;
+    size_t cmdline_x;
     PointerArray search_history;
     PointerArray command_history;
     const char *const version;
@@ -57,13 +57,12 @@ static inline void set_input_mode(InputMode mode)
 }
 
 void init_editor_state(void);
-char *editor_file(const char *name) XMALLOC NONNULL_ARGS;
+char *editor_file(const char *name) XSTRDUP;
 char get_confirmation(const char *choices, const char *format, ...) PRINTF(2);
 void any_key(void);
 void normal_update(void);
 void handle_sigwinch(int signum);
 void suspend(void);
-void set_signal_handler(int signum, void (*handler)(int signum));
 void main_loop(void);
 
 #endif

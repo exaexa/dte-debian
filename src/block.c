@@ -1,8 +1,8 @@
 #include "block.h"
 #include "buffer.h"
-#include "common.h"
 #include "debug.h"
 #include "syntax/highlight.h"
+#include "util/str-util.h"
 #include "util/xmalloc.h"
 #include "view.h"
 
@@ -14,7 +14,7 @@ static void sanity_check(void)
     BUG_ON(list_empty(&buffer->blocks));
     bool cursor_seen = false;
     Block *blk;
-    list_for_each_entry(blk, &buffer->blocks, node) {
+    block_for_each(blk, &buffer->blocks) {
         BUG_ON(!blk->size && buffer->blocks.next->next != &buffer->blocks);
         BUG_ON(blk->size > blk->alloc);
         BUG_ON(blk->size && blk->data[blk->size - 1] != '\n');
@@ -30,7 +30,7 @@ static void sanity_check(void)
 #endif
 }
 
-static inline size_t ALLOC_ROUND(size_t size)
+static size_t ALLOC_ROUND(size_t size)
 {
     return ROUND_UP(size, 64);
 }
@@ -39,7 +39,7 @@ Block *block_new(size_t alloc)
 {
     Block *blk = xnew0(Block, 1);
     alloc = ALLOC_ROUND(alloc);
-    blk->data = xnew(char, alloc);
+    blk->data = xmalloc(alloc);
     blk->alloc = alloc;
     return blk;
 }
@@ -188,7 +188,6 @@ static size_t split_and_insert(const char *buf, size_t len)
             size_t avail = size3 - offset;
             size_t count = size - copied;
 
-            DEBUG_VAR(avail);
             BUG_ON(count > avail);
             new->nl += copy_count_nl(new->data + copied, buf3 + offset, count);
             copied += count;
@@ -272,7 +271,7 @@ char *do_delete(size_t len)
         saved_prev_node = blk->node.prev;
     }
 
-    char *buf = xnew(char, len);
+    char *buf = xmalloc(len);
     while (pos < len) {
         ListHead *next = blk->node.next;
         size_t avail = blk->size - offset;

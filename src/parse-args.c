@@ -1,19 +1,28 @@
 #include <stdlib.h>
 #include "parse-args.h"
-#include "common.h"
+#include "debug.h"
 #include "error.h"
+#include "util/str-util.h"
 
 /*
  * Flags and first "--" are removed.
  * Flag arguments are moved to beginning.
  * Other arguments come right after flag arguments.
  *
- * Returns parsed flags (order is preserved).
+ * a->args field should be set before calling.
+ * If parsing succeeds, the other field are set and true is returned.
  */
-const char *parse_args(char **args, const char *flag_desc, int min, int max)
+bool parse_args(const Command *cmd, CommandArgs *a)
 {
-    static char flags[16];
-    size_t argc = count_strings(args);
+    char **args = a->args;
+    BUG_ON(!args);
+
+    size_t argc = 0;
+    while (args[argc]) {
+        argc++;
+    }
+
+    const char *flag_desc = cmd->flags;
     size_t nr_flags = 0;
     size_t nr_flag_args = 0;
     bool flags_after_arg = true;
@@ -49,12 +58,12 @@ const char *parse_args(char **args, const char *flag_desc, int min, int max)
 
             if (!flagp || flag == '=') {
                 error_msg("Invalid option -%c", flag);
-                return NULL;
+                return false;
             }
-            flags[nr_flags++] = flag;
-            if (nr_flags == ARRAY_COUNT(flags)) {
+            a->flags[nr_flags++] = flag;
+            if (nr_flags == ARRAY_COUNT(a->flags)) {
                 error_msg("Too many options given.");
-                return NULL;
+                return false;
             }
             if (flagp[1] != '=') {
                 continue;
@@ -66,12 +75,12 @@ const char *parse_args(char **args, const char *flag_desc, int min, int max)
                     " requires an argument.",
                     flag
                 );
-                return NULL;
+                return false;
             }
             flag_arg = args[i + 1];
             if (!flag_arg) {
                 error_msg("Option -%c requires on argument.", flag);
-                return NULL;
+                return false;
             }
 
             // Move flag argument before any other arguments
@@ -97,14 +106,17 @@ const char *parse_args(char **args, const char *flag_desc, int min, int max)
     // Don't count arguments to flags as arguments to command
     argc -= nr_flag_args;
 
-    if ((int)argc < min) {
+    if (argc < cmd->min_args) {
         error_msg("Not enough arguments");
-        return NULL;
+        return false;
     }
-    if (max >= 0 && (int)argc > max) {
+    if (argc > cmd->max_args) {
         error_msg("Too many arguments");
-        return NULL;
+        return false;
     }
-    flags[nr_flags] = '\0';
-    return flags;
+    a->flags[nr_flags] = '\0';
+
+    a->nr_args = argc;
+    a->nr_flags = nr_flags;
+    return true;
 }

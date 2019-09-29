@@ -1,11 +1,13 @@
 #include <stdio.h>
+#include <sys/types.h>
 #include "config.h"
-#include "common.h"
 #include "completion.h"
 #include "debug.h"
 #include "error.h"
 #include "terminal/terminal.h"
 #include "util/ascii.h"
+#include "util/readfile.h"
+#include "util/str-util.h"
 #include "util/string.h"
 #include "util/xmalloc.h"
 #include "../build/builtin-config.h"
@@ -27,10 +29,9 @@ static bool is_command(const char *str, size_t len)
 }
 
 // Odd number of backslashes at end of line?
-static bool has_line_continuation(const char *str, int len)
+static bool has_line_continuation(const char *str, size_t len)
 {
-    int pos = len - 1;
-
+    ssize_t pos = len - 1;
     while (pos >= 0 && str[pos] == '\\') {
         pos--;
     }
@@ -40,7 +41,6 @@ static bool has_line_continuation(const char *str, int len)
 void exec_config(const Command *cmds, const char *buf, size_t size)
 {
     const char *ptr = buf;
-    char *cmd;
     String line = STRING_INIT;
 
     while (ptr < buf + size) {
@@ -56,9 +56,7 @@ void exec_config(const Command *cmds, const char *buf, size_t size)
                 string_add_buf(&line, ptr, n - 1);
             } else {
                 string_add_buf(&line, ptr, n);
-                cmd = string_cstring(&line);
-                handle_command(cmds, cmd);
-                free(cmd);
+                handle_command(cmds, string_borrow_cstring(&line));
                 string_clear(&line);
             }
         }
@@ -66,9 +64,7 @@ void exec_config(const Command *cmds, const char *buf, size_t size)
         ptr += n + 1;
     }
     if (line.len) {
-        cmd = string_cstring(&line);
-        handle_command(cmds, cmd);
-        free(cmd);
+        handle_command(cmds, string_borrow_cstring(&line));
     }
     string_free(&line);
 }

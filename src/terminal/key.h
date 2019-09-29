@@ -57,23 +57,32 @@ enum {
 
 typedef uint32_t KeyCode;
 
-CONST_FN
 static inline KeyCode keycode_get_key(KeyCode k)
 {
     return k & ~MOD_MASK;
 }
 
-CONST_FN
 static inline KeyCode keycode_get_modifiers(KeyCode k)
 {
     return k & MOD_MASK;
 }
 
+static inline KeyCode keycode_normalize(KeyCode k)
+{
+    switch (k) {
+    case '\t': return k;
+    case '\r': return KEY_ENTER;
+    case 0x7F: return MOD_CTRL | '?';
+    }
+    if (k < 0x20) {
+        return MOD_CTRL | k | 0x40;
+    }
+    return k;
+}
+
 #define CTRL(x) (MOD_CTRL | (x))
 
 bool parse_key(KeyCode *key, const char *str);
-
-RETURNS_NONNULL
-const char *key_to_string(KeyCode key);
+const char *key_to_string(KeyCode key) RETURNS_NONNULL;
 
 #endif

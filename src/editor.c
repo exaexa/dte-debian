@@ -6,7 +6,6 @@
 #include "editor.h"
 #include "buffer.h"
 #include "command.h"
-#include "common.h"
 #include "config.h"
 #include "debug.h"
 #include "error.h"
@@ -17,6 +16,7 @@
 #include "terminal/output.h"
 #include "terminal/terminal.h"
 #include "util/ascii.h"
+#include "util/str-util.h"
 #include "util/xmalloc.h"
 #include "view.h"
 #include "window.h"
@@ -59,6 +59,7 @@ EditorState editor = {
 
         // Global-only options
         .case_sensitive_search = CSS_TRUE,
+        .display_invisible = false,
         .display_special = false,
         .esc_timeout = 100,
         .lock_files = true,
@@ -100,8 +101,8 @@ void init_editor_state(void)
     editor.charset = encoding_from_name(nl_langinfo(CODESET));
     editor.term_utf8 = (editor.charset.type == UTF8);
 
-    editor.options.statusline_left = xstrdup(" %f%s%m%r%s%M");
-    editor.options.statusline_right = xstrdup(" %y,%X   %u   %E %n %t   %p ");
+    editor.options.statusline_left = " %f%s%m%r%s%M";
+    editor.options.statusline_right = " %y,%X   %u   %E %n %t   %p ";
 }
 
 static void sanity_check(void)
@@ -109,7 +110,7 @@ static void sanity_check(void)
 #if DEBUG >= 1
     View *v = window->view;
     Block *blk;
-    list_for_each_entry(blk, &v->buffer->blocks, node) {
+    block_for_each(blk, &v->buffer->blocks) {
         if (blk == v->cursor.blk) {
             BUG_ON(v->cursor.offset > v->cursor.blk->size);
             return;
@@ -121,9 +122,8 @@ static void sanity_check(void)
 
 void any_key(void)
 {
-    KeyCode key;
-
     fputs("Press any key to continue\r\n", stderr);
+    KeyCode key;
     while (!term_read_key(&key)) {
         ;
     }
@@ -135,7 +135,6 @@ void any_key(void)
 static void update_window_full(Window *w)
 {
     View *v = w->view;
-
     view_update_cursor_x(v);
     view_update_cursor_y(v);
     view_update(v);
@@ -168,7 +167,7 @@ static void restore_cursor(void)
 
 static void start_update(void)
 {
-    buf_hide_cursor();
+    term_hide_cursor();
 }
 
 static void clear_update_tabbar(Window *w)
@@ -179,8 +178,8 @@ static void clear_update_tabbar(Window *w)
 static void end_update(void)
 {
     restore_cursor();
-    buf_show_cursor();
-    buf_flush();
+    term_show_cursor();
+    term_output_flush();
 
     window->view->buffer->changed_line_min = INT_MAX;
     window->view->buffer->changed_line_max = -1;
@@ -196,20 +195,18 @@ static void update_all_windows(void)
 
 static void update_window(Window *w)
 {
-    View *v = w->view;
-    int y1, y2;
-
     if (w->update_tabbar) {
         print_tabbar(w);
     }
 
+    View *v = w->view;
     if (editor.options.show_line_numbers) {
         // Force updating lines numbers if all lines changed
         update_line_numbers(w, v->buffer->changed_line_max == INT_MAX);
     }
 
-    y1 = v->buffer->changed_line_min;
-    y2 = v->buffer->changed_line_max;
+    long y1 = v->buffer->changed_line_min;
+    long y2 = v->buffer->changed_line_max;
     if (y1 < v->vy) {
         y1 = v->vy;
     }
@@ -275,14 +272,15 @@ static void ui_end(void)
 {
     terminal.put_control_code(terminal.control_codes.reset_colors);
     terminal.put_control_code(terminal.control_codes.reset_attrs);
+    terminal.clear_screen();
 
     terminal.move_cursor(0, terminal.height - 1);
-    buf_show_cursor();
+    term_show_cursor();
 
     terminal.put_control_code(terminal.control_codes.cup_mode_off);
     terminal.put_control_code(terminal.control_codes.keypad_off);
 
-    buf_flush();
+    term_output_flush();
     terminal.cooked();
 }
 
@@ -308,32 +306,30 @@ char *editor_file(const char *name)
 
 char get_confirmation(const char *choices, const char *format, ...)
 {
-    View *v = window->view;
     char buf[4096];
-    KeyCode key;
-    int pos, i, count = strlen(choices);
-    unsigned char def = 0;
     va_list ap;
-
     va_start(ap, format);
     vsnprintf(buf, sizeof(buf), format, ap);
     va_end(ap);
 
-    pos = strlen(buf);
+    size_t pos = strlen(buf);
     buf[pos++] = ' ';
     buf[pos++] = '[';
-    for (i = 0; i < count; i++) {
+
+    unsigned char def = 0;
+    for (size_t i = 0, n = strlen(choices); i < n; i++) {
         if (ascii_isupper(choices[i])) {
             def = ascii_tolower(choices[i]);
         }
         buf[pos++] = choices[i];
         buf[pos++] = '/';
     }
-    pos--;
-    buf[pos++] = ']';
+
+    buf[pos - 1] = ']';
     buf[pos] = '\0';
 
     // update_windows() assumes these have been called for the current view
+    View *v = window->view;
     view_update_cursor_x(v);
     view_update_cursor_y(v);
     view_update(v);
@@ -347,13 +343,14 @@ char get_confirmation(const char *choices, const char *format, ...)
     show_message(buf, false);
     end_update();
 
+    KeyCode key;
     while (1) {
         if (term_read_key(&key)) {
             if (key == KEY_PASTE) {
                 term_discard_paste();
                 continue;
             }
-            if (key == CTRL('C') || key == CTRL('G')) {
+            if (key == CTRL('C') || key == CTRL('G') || key == CTRL('[')) {
                 key = 0;
                 break;
             }
@@ -381,26 +378,25 @@ char get_confirmation(const char *choices, const char *format, ...)
 typedef struct {
     bool is_modified;
     unsigned int id;
-    int cy;
-    int vx;
-    int vy;
+    long cy;
+    long vx;
+    long vy;
 } ScreenState;
 
 static void update_screen(const ScreenState *const s)
 {
-    View *v = window->view;
-    Buffer *b = v->buffer;
-
     if (editor.everything_changed) {
         editor.mode_ops[editor.input_mode]->update();
         editor.everything_changed = false;
         return;
     }
 
+    View *v = window->view;
     view_update_cursor_x(v);
     view_update_cursor_y(v);
     view_update(v);
 
+    Buffer *b = v->buffer;
     if (s->id == b->id) {
         if (s->vx != v->vx || s->vy != v->vy) {
             mark_all_lines_changed(b);
@@ -430,23 +426,14 @@ static void update_screen(const ScreenState *const s)
     end_update();
 }
 
-void set_signal_handler(int signum, void (*handler)(int signum))
-{
-    struct sigaction act;
-    memzero(&act);
-    sigemptyset(&act.sa_mask);
-    act.sa_handler = handler;
-    sigaction(signum, &act, NULL);
-}
-
 void main_loop(void)
 {
     while (editor.status == EDITOR_RUNNING) {
-        KeyCode key;
-
         if (terminal_resized) {
             resize();
         }
+
+        KeyCode key;
         if (!term_read_key(&key)) {
             continue;
         }
@@ -467,7 +454,7 @@ void main_loop(void)
             editor.mode_ops[editor.input_mode]->keypress(key);
             sanity_check();
             if (editor.input_mode == INPUT_GIT_OPEN) {
-                editor.mode_ops[editor.input_mode]->update();
+                editor.mode_ops[INPUT_GIT_OPEN]->update();
             } else {
                 update_screen(&s);
             }

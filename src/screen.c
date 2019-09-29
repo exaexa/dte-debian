@@ -5,6 +5,7 @@
 #include "frame.h"
 #include "search.h"
 #include "terminal/input.h"
+#include "terminal/no-op.h"
 #include "terminal/output.h"
 #include "terminal/terminal.h"
 #include "util/path.h"
@@ -33,7 +34,7 @@ void set_builtin_color(enum builtin_color c)
 
 void update_term_title(const Buffer *b)
 {
-    if (!terminal.set_title || !editor.options.set_window_title) {
+    if (!editor.options.set_window_title || terminal.set_title == no_op_s) {
         return;
     }
 
@@ -71,7 +72,7 @@ static void print_separator(Window *win)
 
     for (int y = 0; y < win->h; y++) {
         terminal.move_cursor(win->x + win->w, win->y + y);
-        buf_add_ch('|');
+        term_add_byte('|');
     }
 }
 
@@ -89,8 +90,8 @@ void update_line_numbers(Window *win, bool force)
 
     calculate_line_numbers(win);
 
-    int first = v->vy + 1;
-    int last = v->vy + win->edit_h;
+    long first = v->vy + 1;
+    long last = v->vy + win->edit_h;
     if (last > lines) {
         last = lines;
     }
@@ -106,20 +107,20 @@ void update_line_numbers(Window *win, bool force)
     win->line_numbers.first = first;
     win->line_numbers.last = last;
 
-    buf_reset(win->x, win->w, 0);
+    term_output_reset(win->x, win->w, 0);
     set_builtin_color(BC_LINENUMBER);
     for (int i = 0; i < win->edit_h; i++) {
-        int line = v->vy + i + 1;
+        long line = v->vy + i + 1;
         int w = win->line_numbers.width - 1;
         char buf[32];
 
         if (line > lines) {
             xsnprintf(buf, sizeof(buf), "%*s ", w, "");
         } else {
-            xsnprintf(buf, sizeof(buf), "%*d ", w, line);
+            xsnprintf(buf, sizeof(buf), "%*ld ", w, line);
         }
         terminal.move_cursor(x, win->edit_y + i);
-        buf_add_bytes(buf, win->line_numbers.width);
+        term_add_bytes(buf, win->line_numbers.width);
     }
 }
 

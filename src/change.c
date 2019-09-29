@@ -34,8 +34,6 @@ static bool is_change_chain_barrier(const Change *change)
 
 static Change *new_change(void)
 {
-    Change *change;
-
     if (change_barrier) {
         /*
          * We are recording series of changes (:replace for example)
@@ -50,7 +48,7 @@ static Change *new_change(void)
         change_barrier = NULL;
     }
 
-    change = alloc_change();
+    Change *change = alloc_change();
     add_change(change);
     return change;
 }
@@ -81,10 +79,10 @@ static void record_insert(size_t len)
 
 static void record_delete(char *buf, size_t len, bool move_after)
 {
-    Change *change = buffer->cur_change;
-
     BUG_ON(!len);
     BUG_ON(!buf);
+
+    Change *change = buffer->cur_change;
     if (change_merge == prev_change_merge) {
         if (change_merge == CHANGE_MERGE_DELETE) {
             xrenew(change->buf, change->del_count + len);
@@ -371,7 +369,7 @@ static void buffer_delete_bytes_internal(size_t len, bool move_after)
     if (would_delete_last_bytes(len)) {
         BlockIter bi = view->cursor;
         CodePoint u;
-        if (buffer_prev_char(&bi, &u) && u != '\n') {
+        if (block_iter_prev_char(&bi, &u) && u != '\n') {
             // No newline before cursor
             if (--len == 0) {
                 begin_change(CHANGE_MERGE_NONE);

@@ -63,13 +63,14 @@ typedef struct {
     COMMON_OPTIONS;
     // Only local
     unsigned int brace_indent;
-    char *filetype;
-    char *indent_regex;
+    const char *filetype;
+    const char *indent_regex;
 } LocalOptions;
 
 typedef struct {
     COMMON_OPTIONS;
     // Only global
+    unsigned int display_invisible;
     unsigned int display_special;
     unsigned int esc_timeout;
     unsigned int filesize_limit;
@@ -93,11 +94,10 @@ typedef struct {
 void set_option(const char *name, const char *value, bool local, bool global);
 void set_bool_option(const char *name, bool local, bool global);
 void toggle_option(const char *name, bool global, bool verbose);
-void toggle_option_values(const char *name, bool global, bool verbose, char **values);
+void toggle_option_values(const char *name, bool global, bool verbose, char **values, size_t count);
 bool validate_local_options(char **strs);
 void collect_options(const char *prefix);
 void collect_toggleable_options(const char *prefix);
 void collect_option_values(const char *name, const char *prefix);
-void free_local_options(LocalOptions *opt);
 
 #endif

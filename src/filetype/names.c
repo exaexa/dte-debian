@@ -81,8 +81,10 @@ typedef enum {
     VHDL,
     VIML,
     XML,
+    XRESOURCES,
     YACC,
     YAML,
+    ZIG,
     NR_BUILTIN_FILETYPES
 } FileTypeEnum;
 
@@ -169,8 +171,10 @@ static const char builtin_filetype_names[NR_BUILTIN_FILETYPES][16] = {
     [VHDL] = "vhdl",
     [VIML] = "viml",
     [XML] = "xml",
+    [XRESOURCES] = "xresources",
     [YACC] = "yacc",
     [YAML] = "yaml",
+    [ZIG] = "zig",
 };
 
 UNITTEST {

@@ -12,23 +12,19 @@ datadir ?= $(prefix)/share
 mandir ?= $(datadir)/man
 man1dir ?= $(mandir)/man1
 man5dir ?= $(mandir)/man5
+appdir ?= $(datadir)/applications
 
 INSTALL = install
 INSTALL_PROGRAM = $(INSTALL)
 INSTALL_DATA = $(INSTALL) -m 644
+INSTALL_DESKTOP_FILE = desktop-file-install
 RM = rm -f
 
 all: $(dte)
 
 check: $(test) all
 	$(E) TEST $<
-	$(Q) ln -sf ../../README.md build/test/test-symlink
 	$(Q) ./$<
-	$(Q) diff -u build/test/env.txt test/data/env.txt
-	$(Q) diff -u build/test/thai-utf8.txt test/data/thai-utf8.txt
-# TODO: $(Q) diff -u build/test/thai-tis620.txt test/data/thai-tis620.txt
-	$(Q) diff -u build/test/crlf.txt test/data/crlf.txt
-	$(Q) $(RM) build/test/thai-*.txt
 
 install: all
 	$(Q) $(INSTALL) -d -m755 '$(DESTDIR)$(bindir)'
@@ -49,6 +45,19 @@ uninstall:
 	$(RM) '$(DESTDIR)$(man5dir)/dterc.5'
 	$(RM) '$(DESTDIR)$(man5dir)/dte-syntax.5'
 
+install-desktop-file:
+	$(E) INSTALL '$(DESTDIR)$(appdir)/dte.desktop'
+	$(Q) $(INSTALL_DESKTOP_FILE) \
+	  --dir='$(DESTDIR)$(appdir)' \
+	  --set-key=TryExec --set-value='$(bindir)/$(dte)' \
+	  --set-key=Exec --set-value='$(bindir)/$(dte) %F' \
+	  $(if $(DESTDIR),, --rebuild-mime-info-cache) \
+	  dte.desktop
+
+uninstall-desktop-file:
+	$(RM) '$(DESTDIR)$(appdir)/dte.desktop'
+	$(if $(DESTDIR),, update-desktop-database -q '$(appdir)' || :)
+
 tags:
 	ctags $$(find src/ test/ -type f -name '*.[ch]')
 
@@ -59,4 +68,5 @@ clean:
 
 .DEFAULT_GOAL = all
 .PHONY: all check install uninstall tags clean
+.PHONY: install-desktop-file uninstall-desktop-file
 .DELETE_ON_ERROR:

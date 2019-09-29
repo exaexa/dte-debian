@@ -1,11 +1,13 @@
 #include <stdint.h>
 #include "filetype.h"
-#include "common.h"
 #include "debug.h"
+#include "error.h"
+#include "regexp.h"
+#include "util/ascii.h"
 #include "util/macros.h"
 #include "util/path.h"
 #include "util/ptr-array.h"
-#include "util/regexp.h"
+#include "util/str-util.h"
 #include "util/string-view.h"
 #include "util/xmalloc.h"
 
@@ -31,18 +33,34 @@ static int ft_compare(const void *key, const void *elem)
 // Filetypes dynamically added via the `ft` command.
 // Not grouped by name to make it possible to order them freely.
 typedef struct {
-    char *name;
-    char *str;
-    enum detect_type type;
+    FileDetectionType type;
+    uint8_t name_len;
+    uint8_t str_len;
+    char data[]; // Contains name followed by str (both null-terminated)
 } UserFileTypeEntry;
 
 static PointerArray filetypes = PTR_ARRAY_INIT;
 
-void add_filetype(const char *name, const char *str, enum detect_type type)
+static const char *ft_get_name(const UserFileTypeEntry *ft)
 {
-    UserFileTypeEntry *ft;
-    regex_t re;
+    return ft->data;
+}
 
+static const char *ft_get_str(const UserFileTypeEntry *ft)
+{
+    return ft->data + ft->name_len + 1;
+}
+
+void add_filetype(const char *name, const char *str, FileDetectionType type)
+{
+    const size_t name_len = strlen(name);
+    const size_t str_len = strlen(str);
+    if (unlikely(name_len >= 256 || str_len >= 256)) {
+        error_msg("ft argument exceeds maximum length (255 bytes)");
+        return;
+    }
+
+    regex_t re;
     switch (type) {
     case FT_CONTENT:
     case FT_FILENAME:
@@ -55,17 +73,24 @@ void add_filetype(const char *name, const char *str, enum detect_type type)
         break;
     }
 
-    ft = xnew(UserFileTypeEntry, 1);
-    ft->name = xstrdup(name);
-    ft->str = xstrdup(str);
+    const size_t data_len = name_len + str_len + 2;
+    UserFileTypeEntry *ft = xmalloc(sizeof(UserFileTypeEntry) + data_len);
     ft->type = type;
+    ft->name_len = (uint8_t) name_len;
+    ft->str_len = (uint8_t) str_len;
+    memcpy(ft->data, name, name_len + 1);
+    memcpy(ft->data + name_len + 1, str, str_len + 1);
     ptr_array_add(&filetypes, ft);
 }
 
-static inline StringView get_ext(const StringView filename)
+static StringView get_ext(const StringView filename)
 {
     StringView ext = STRING_VIEW_INIT;
-    ext.data = memrchr_(filename.data, '.', filename.length);
+    if (filename.length < 3) {
+        return ext;
+    }
+
+    ext.data = string_view_memrchr(&filename, '.');
     if (ext.data == NULL) {
         return ext;
     }
@@ -102,6 +127,11 @@ static inline StringView get_ext(const StringView filename)
 // For example, if line is "#!/usr/bin/env python2", "python" is returned.
 static StringView get_interpreter(const StringView line)
 {
+    StringView sv = STRING_VIEW_INIT;
+    if (line.length < 4 || line.data[0] != '#' || line.data[1] != '!') {
+        return sv;
+    }
+
     static const char pat[] = "^#! */.*(/env +|/)([a-zA-Z0-9_-]+)[0-9.]*( |$)";
     static regex_t re;
     static bool compiled;
@@ -111,7 +141,6 @@ static StringView get_interpreter(const StringView line)
         BUG_ON(re.re_nsub < 2);
     }
 
-    StringView sv = STRING_VIEW_INIT;
     regmatch_t m[3];
     if (!regexp_exec(&re, line.data, line.length, ARRAY_COUNT(m), m, 0)) {
         return sv;
@@ -124,89 +153,84 @@ static StringView get_interpreter(const StringView line)
     return sv;
 }
 
+static bool ft_str_match(const UserFileTypeEntry *ft, const StringView sv)
+{
+    const char *str = ft_get_str(ft);
+    const size_t len = (size_t)ft->str_len;
+    return sv.length > 0 && string_view_equal_strn(&sv, str, len);
+}
+
+static bool ft_regex_match(const UserFileTypeEntry *ft, const StringView sv)
+{
+    const char *str = ft_get_str(ft);
+    return sv.length > 0 && regexp_match_nosub(str, sv.data, sv.length);
+}
+
 HOT const char *find_ft(const char *filename, StringView line)
 {
-    StringView path = STRING_VIEW_INIT;
-    StringView ext = STRING_VIEW_INIT;
-    StringView base = STRING_VIEW_INIT;
-    if (filename) {
-        const char *b = path_basename(filename);
-        base = string_view_from_cstring(b);
-        ext = get_ext(base);
-        path = string_view_from_cstring(filename);
-    }
-
-    StringView interpreter = STRING_VIEW_INIT;
-    if (line.length >= 4 && line.data[0] == '#' && line.data[1] == '!') {
-        interpreter = get_interpreter(line);
-    }
+    const char *b = filename ? path_basename(filename) : NULL;
+    const StringView base = string_view_from_cstring(b);
+    const StringView ext = get_ext(base);
+    const StringView path = string_view_from_cstring(filename);
+    const StringView interpreter = get_interpreter(line);
 
     // Search user `ft` entries
     for (size_t i = 0; i < filetypes.count; i++) {
         const UserFileTypeEntry *ft = filetypes.ptrs[i];
         switch (ft->type) {
         case FT_EXTENSION:
-            if (!ext.length || !string_view_equal_cstr(&ext, ft->str)) {
+            if (!ft_str_match(ft, ext)) {
                 continue;
             }
             break;
         case FT_BASENAME:
-            if (!base.length || !string_view_equal_cstr(&base, ft->str)) {
+            if (!ft_str_match(ft, base)) {
                 continue;
             }
             break;
         case FT_FILENAME:
-            if (
-                !path.length
-                || !regexp_match_nosub(ft->str, path.data, path.length)
-            ) {
+            if (!ft_regex_match(ft, path)) {
                 continue;
             }
             break;
         case FT_CONTENT:
-            if (
-                !line.length
-                || !regexp_match_nosub(ft->str, line.data, line.length)
-            ) {
+            if (!ft_regex_match(ft, line)) {
                 continue;
             }
             break;
         case FT_INTERPRETER:
-            if (
-                !interpreter.length
-                || !string_view_equal_cstr(&interpreter, ft->str)
-            ) {
+            if (!ft_str_match(ft, interpreter)) {
                 continue;
             }
             break;
         }
-        return ft->name;
+        return ft_get_name(ft);
     }
 
     // Search built-in lookup tables
     if (interpreter.length) {
-        FileTypeEnum ft = filetype_from_interpreter(interpreter.data, interpreter.length);
+        FileTypeEnum ft = filetype_from_interpreter(interpreter);
         if (ft) {
             return builtin_filetype_names[ft];
         }
     }
 
     if (base.length) {
-        FileTypeEnum ft = filetype_from_basename(base.data, base.length);
+        FileTypeEnum ft = filetype_from_basename(base);
         if (ft) {
             return builtin_filetype_names[ft];
         }
     }
 
     if (line.length) {
-        FileTypeEnum ft = filetype_from_signature(line.data, line.length);
+        FileTypeEnum ft = filetype_from_signature(line);
         if (ft) {
             return builtin_filetype_names[ft];
         }
     }
 
     if (ext.length) {
-        FileTypeEnum ft = filetype_from_extension(ext.data, ext.length);
+        FileTypeEnum ft = filetype_from_extension(ext);
         if (ft) {
             return builtin_filetype_names[ft];
         }
@@ -222,7 +246,11 @@ HOT const char *find_ft(const char *filename, StringView line)
     if (string_view_equal(&ext, &conf)) {
         if (string_view_has_literal_prefix(&path, "/etc/systemd/")) {
             return builtin_filetype_names[INI];
-        } else if (string_view_has_literal_prefix(&path, "/etc/")) {
+        } else if (
+            string_view_has_literal_prefix(&path, "/etc/")
+            || string_view_has_literal_prefix(&path, "/usr/share/")
+            || string_view_has_literal_prefix(&path, "/usr/local/share/")
+        ) {
             return builtin_filetype_names[CONFIG];
         }
     }
@@ -232,16 +260,13 @@ HOT const char *find_ft(const char *filename, StringView line)
 
 bool is_ft(const char *name)
 {
-    if (name[0] == '\0') {
-        return false;
-    }
     for (size_t i = 0; i < filetypes.count; i++) {
         const UserFileTypeEntry *ft = filetypes.ptrs[i];
-        if (streq(ft->name, name)) {
+        if (streq(ft_get_name(ft), name)) {
             return true;
         }
     }
-    for (size_t i = 1; i < ARRAY_COUNT(builtin_filetype_names); i++) {
+    for (size_t i = 0; i < ARRAY_COUNT(builtin_filetype_names); i++) {
         if (streq(builtin_filetype_names[i], name)) {
             return true;
         }

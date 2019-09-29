@@ -5,14 +5,14 @@
 #include "block-iter.h"
 #include "view.h"
 
-void move_to_preferred_x(int preferred_x);
+void move_to_preferred_x(long preferred_x);
 void move_cursor_left(void);
 void move_cursor_right(void);
 void move_bol(void);
 void move_bol_smart(void);
 void move_eol(void);
-void move_up(int count);
-void move_down(int count);
+void move_up(long count);
+void move_down(long count);
 void move_bof(void);
 void move_eof(void);
 void move_to_line(View *v, size_t line);

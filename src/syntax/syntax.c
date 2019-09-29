@@ -1,9 +1,9 @@
 #include <stdio.h>
 #include "syntax.h"
 #include "state.h"
-#include "../common.h"
 #include "../error.h"
 #include "../util/ascii.h"
+#include "../util/str-util.h"
 #include "../util/xmalloc.h"
 
 static PointerArray syntaxes = PTR_ARRAY_INIT;
@@ -202,7 +202,7 @@ static void free_syntax(Syntax *syn)
 {
     ptr_array_free_cb(&syn->states, FREE_FUNC(free_state));
     ptr_array_free_cb(&syn->string_lists, FREE_FUNC(free_string_list));
-    ptr_array_free_cb(&syn->default_colors, FREE_FUNC(free_strings));
+    ptr_array_free_cb(&syn->default_colors, FREE_FUNC(free_string_array));
 
     free(syn->name);
     free(syn);
@@ -236,7 +236,7 @@ void finalize_syntax(Syntax *syn, unsigned int saved_nr_errors)
         error_msg("Syntax %s already exists", syn->name);
     }
 
-    if (nr_errors != saved_nr_errors) {
+    if (get_nr_errors() != saved_nr_errors) {
         free_syntax(syn);
         return;
     }

@@ -10,8 +10,8 @@
 #include "output.h"
 #include "terminal.h"
 #include "xterm.h"
-#include "../common.h"
 #include "../util/ascii.h"
+#include "../util/str-util.h"
 #include "../util/string-view.h"
 
 #define KEY(c, k) { \
@@ -30,6 +30,7 @@
     KEY(p "8", key | MOD_SHIFT | MOD_META | MOD_CTRL)
 
 static struct {
+    const char *clear;
     const char *cup;
     const char *el;
     const char *setab;
@@ -148,7 +149,7 @@ static bool get_terminfo_flag(const char *capname)
 
 static int tputs_putc(int ch)
 {
-    buf_add_ch(ch);
+    term_add_byte(ch);
     return ch;
 }
 
@@ -156,6 +157,13 @@ static void tputs_control_code(StringView code)
 {
     if (code.length) {
         tputs(code.data, 1, tputs_putc);
+    }
+}
+
+static void tputs_clear_screen(void)
+{
+    if (terminfo.clear) {
+        tputs(terminfo.clear, terminal.height, tputs_putc);
     }
 }
 
@@ -176,7 +184,7 @@ static void tputs_move_cursor(int x, int y)
     }
 }
 
-static inline bool attr_is_set(const TermColor *color, unsigned short attr)
+static bool attr_is_set(const TermColor *color, unsigned int attr)
 {
     if (!(color->attr & attr)) {
         return false;
@@ -226,12 +234,39 @@ static void tputs_set_color(const TermColor *color)
     obuf.color = *color;
 }
 
+static unsigned int convert_ncv_flags_to_attrs(unsigned int ncv)
+{
+    // These flags should have values equal to their terminfo
+    // counterparts:
+    static_assert(ATTR_UNDERLINE == 2);
+    static_assert(ATTR_REVERSE == 4);
+    static_assert(ATTR_BLINK == 8);
+    static_assert(ATTR_DIM == 16);
+    static_assert(ATTR_BOLD == 32);
+    static_assert(ATTR_INVIS == 64);
+
+    // Mask flags to supported, common subset
+    unsigned int attrs = ncv & (
+        ATTR_UNDERLINE | ATTR_REVERSE | ATTR_BLINK
+        | ATTR_DIM | ATTR_BOLD | ATTR_INVIS
+    );
+
+    // Italic is a special case; it occupies bit 16 in terminfo
+    // but bit 7 here
+    if (ncv & 0x8000) {
+        attrs |= ATTR_ITALIC;
+    }
+
+    return attrs;
+}
+
 bool term_init_terminfo(const char *term)
 {
     // Initialize terminfo database (or call exit(3) on failure)
     setupterm(term, 1, (int*)0);
 
     terminal.put_control_code = &tputs_control_code;
+    terminal.clear_screen = &tputs_clear_screen;
     terminal.clear_to_eol = &tputs_clear_to_eol;
     terminal.set_color = &tputs_set_color;
     terminal.move_cursor = &tputs_move_cursor;
@@ -251,6 +286,7 @@ bool term_init_terminfo(const char *term)
         );
     }
 
+    terminfo.clear = get_terminfo_string("clear");
     terminfo.el = get_terminfo_string("el");
     terminfo.setab = get_terminfo_string("setab");
     terminfo.setaf = get_terminfo_string("setaf");
@@ -288,14 +324,7 @@ bool term_init_terminfo(const char *term)
     if (ncv <= 0) {
         terminal.ncv_attributes = 0;
     } else {
-        terminal.ncv_attributes = (unsigned short)ncv;
-        // The ATTR_* bitflag values used in this codebase are mostly
-        // the same as those used by terminfo, with the exception of
-        // ITALIC, which is bit 7 here, but bit 15 in terminfo. It
-        // must therefore be manually converted.
-        if ((ncv & (1 << 15)) && !(ncv & ATTR_ITALIC)) {
-            terminal.ncv_attributes |= ATTR_ITALIC;
-        }
+        terminal.ncv_attributes = convert_ncv_flags_to_attrs(ncv);
     }
 
     terminal.control_codes = (TermControlCodes) {

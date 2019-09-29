@@ -14,17 +14,19 @@ static const FileSignatureMap signatures[] = {
     SIG("<!DOCTYPE", XML),
     SIG("<?xml", XML),
     SIG("%YAML", YAML),
-    SIG("[wrap-file]", INI),
+    SIG("[core]", INI), // .git/config file
+    SIG("[wrap-file]", INI), // Meson wrap file
+    SIG("[Trigger]", INI), // libalpm hook
     SIG("diff --git", DIFF),
 };
 
-static PURE FileTypeEnum filetype_from_signature(const char *s, size_t len)
+static FileTypeEnum filetype_from_signature(const StringView sv)
 {
-    if (len < 5) {
+    if (sv.length < 5) {
         return NONE;
     }
 
-    switch (s[0]) {
+    switch (sv.data[0]) {
     case '<':
     case '%':
     case '[':
@@ -34,14 +36,13 @@ static PURE FileTypeEnum filetype_from_signature(const char *s, size_t len)
         return NONE;
     }
 
-    if (len >= 14 && strncasecmp(s, "<!DOCTYPE HTML", 14) == 0) {
+    if (string_view_has_literal_prefix_icase(&sv, "<!DOCTYPE HTML")) {
         return HTML;
     }
 
     for (size_t i = 0; i < ARRAY_COUNT(signatures); i++) {
         const FileSignatureMap *sig = &signatures[i];
-        const size_t sig_length = sig->length;
-        if (len >= sig_length && memcmp(s, sig->bytes, sig_length) == 0) {
+        if (string_view_has_prefix(&sv, sig->bytes, sig->length)) {
             return sig->filetype;
         }
     }

@@ -3,7 +3,7 @@
 
 #include <regex.h>
 #include <stdbool.h>
-#include "ptr-array.h"
+#include "util/ptr-array.h"
 
 bool regexp_match_nosub(const char *pattern, const char *buf, size_t size);
 bool regexp_match(const char *pattern, const char *buf, size_t size, PointerArray *m);
@@ -15,6 +15,16 @@ bool regexp_exec_sub(const regex_t *re, const char *buf, size_t size, PointerArr
 static inline bool regexp_compile(regex_t *re, const char *pattern, int flags)
 {
     return regexp_compile_internal(re, pattern, flags | REG_EXTENDED);
+}
+
+static inline bool regexp_is_valid(const char *pattern, int flags)
+{
+    regex_t re;
+    if (!regexp_compile(&re, pattern, flags | REG_NOSUB)) {
+        return false;
+    }
+    regfree(&re);
+    return true;
 }
 
 static inline bool regexp_compile_basic(regex_t *re, const char *pattern, int flags)

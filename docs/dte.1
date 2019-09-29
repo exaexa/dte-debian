@@ -9,7 +9,7 @@ dte \- A small and flexible text editor
 .SH SYNOPSIS
 .
 .B dte
-.RB [ \-hBKRV ]
+.RB [ \-hBHKRV ]
 [\fB\-c\fR \fIcommand\fR]
 [\fB\-t\fR \fIctag\fR]
 [\fB\-r\fR \fIrcfile\fR]
@@ -33,6 +33,12 @@ by \fBctags\fR(1).
 Read configuration from \fIrcfile\fR instead of \fB~/.dte/rc\fR.
 .
 .TP
+.BI \-s " file"
+Load \fIfile\fR as a \fBdte\-syntax\fR(5) file and exit. Any errors
+encountered are printed to \fBstderr\fR(3) and the exit status is
+set appropriately.
+.
+.TP
 .BI \-b " rcname"
 Dump the contents of the built\-in rc or syntax file named \fIrcname\fR
 and exit.
@@ -41,6 +47,12 @@ and exit.
 .B \-B
 Print a list of all built\-in config names that can be used with the
 \fB\-b\fR option and exit.
+.
+.TP
+.B \-H
+Don't load history files at startup or save history files on exit (see
+\fBFILES\fR section below). History features will work as usual but will
+be in-memory only and not persisted to the filesystem.
 .
 .TP
 .B \-R
@@ -61,16 +73,20 @@ Display the version number and exit.
 .
 .SH BASIC USAGE
 .
-Here are some of the default key bindings. \fBM\-x\fR means Alt+x and
-\fB^V\fR is Ctrl+v.
+Here are some of the default key bindings. \fBM\-x\fR is Alt+x,
+\fB^V\fR (or \fBC\-V\fR) is Ctrl+v and \fBS\-left\fR is Shift+left.
 .
 .TP
-.B M\-s
-Select
+.BR S\-up ", " S\-down ", " S\-left ", " S\-right
+Move cursor and select characters
 .
 .TP
-.B M\-l
-Select lines
+.BR C\-S\-left ", " C\-S\-right
+Move cursor and select whole words
+.
+.TP
+.BR C\-S\-up ", " C\-S\-down
+Move cursor and select whole lines
 .
 .TP
 .B ^C
@@ -139,7 +155,7 @@ available commands, see \fBdterc\fR(5).
 The default key bindings for command mode are:
 .
 .TP
-.BR up / down
+.BR up ", " down
 Browse previous command history.
 .
 .TP
@@ -177,10 +193,6 @@ Delete to end of command line
 .TP
 .B ^U
 Delete to beginning of command line
-.
-.TP
-.B ^V
-Insert special character
 .
 .TP
 .B ^W

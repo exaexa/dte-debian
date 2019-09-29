@@ -6,13 +6,14 @@
 #include <stdint.h>
 #include "bitset.h"
 #include "color.h"
-#include "hashset.h"
+#include "../util/hashset.h"
 #include "../util/ptr-array.h"
 
 typedef enum {
     COND_BUFIS,
     COND_CHAR,
     COND_CHAR_BUFFER,
+    COND_CHAR1,
     COND_INLIST,
     COND_RECOLOR,
     COND_RECOLOR_BUFFER,
@@ -50,6 +51,9 @@ typedef struct {
         struct {
             BitSet bitset;
         } cond_char;
+        struct {
+            unsigned char ch;
+        } cond_single_char;
         struct {
             StringList *list;
         } cond_inlist;

@@ -1,9 +1,8 @@
-#include <stddef.h>
-#include <strings.h>
+#include <stdlib.h>
 #include "encoding.h"
-#include "../common.h"
 #include "../util/ascii.h"
-#include "../util/macros.h"
+#include "../util/hashset.h"
+#include "../util/xmalloc.h"
 
 static const char encoding_names[][16] = {
     [UTF8] = "UTF-8",
@@ -41,22 +40,48 @@ static const struct {
 EncodingType lookup_encoding(const char *name)
 {
     for (size_t i = 0; i < ARRAY_COUNT(encoding_names); i++) {
-        if (strcasecmp(name, encoding_names[i]) == 0) {
+        if (ascii_streq_icase(name, encoding_names[i])) {
             return (EncodingType) i;
         }
     }
     for (size_t i = 0; i < ARRAY_COUNT(encoding_aliases); i++) {
-        if (strcasecmp(name, encoding_aliases[i].alias) == 0) {
+        if (ascii_streq_icase(name, encoding_aliases[i].alias)) {
             return encoding_aliases[i].encoding;
         }
     }
     return UNKNOWN_ENCODING;
 }
 
-const char *encoding_type_to_string(EncodingType type)
+static const char *encoding_type_to_string(EncodingType type)
 {
     if (type < NR_ENCODING_TYPES && type != UNKNOWN_ENCODING) {
-        return encoding_names[type];
+        return str_intern(encoding_names[type]);
     }
     return NULL;
+}
+
+Encoding encoding_from_name(const char *name)
+{
+    const EncodingType type = lookup_encoding(name);
+    const char *normalized_name;
+    if (type == UNKNOWN_ENCODING) {
+        char *upper = xstrdup_toupper(name);
+        normalized_name = str_intern(upper);
+        free(upper);
+    } else {
+        normalized_name = encoding_type_to_string(type);
+    }
+
+    return (Encoding) {
+        .type = type,
+        .name = normalized_name
+    };
+}
+
+Encoding encoding_from_type(EncodingType type)
+{
+    return (Encoding) {
+        .type = type,
+        .name = encoding_type_to_string(type)
+    };
 }

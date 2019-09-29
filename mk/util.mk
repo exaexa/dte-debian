@@ -7,6 +7,7 @@ cc-option = $(call try-run,$(CC) $(1) -Werror -c -x c -o /dev/null /dev/null,$(1
 prefix-obj = $(addprefix $(1), $(addsuffix .o, $(2)))
 pkg-libs = $(shell $(PKGCONFIG) --libs $(1) 2>/dev/null)
 
+MAKEFLAGS += -r
 KERNEL := $(shell sh -c 'uname -s 2>/dev/null || echo not')
 OS := $(shell sh -c 'uname -o 2>/dev/null || echo not')
 DISTRO = $(shell . /etc/os-release && echo "$$NAME $$VERSION_ID")
@@ -20,7 +21,7 @@ CC_VERSION = $(shell $(CC) --version 2>/dev/null | head -n1)
 MAKE_S = $(findstring s,$(firstword -$(MAKEFLAGS)))$(filter -s,$(MAKEFLAGS))
 PRINTVAR = printf '\033[1m%15s\033[0m = %s$(2)\n' '$(1)' '$(strip $($(1)))' $(3)
 PRINTVARX = $(call PRINTVAR,$(1), \033[32m(%s)\033[0m, '$(origin $(1))')
-USERVARS = CC CFLAGS LDFLAGS LDLIBS DEBUG
+USERVARS = CC CFLAGS CPPFLAGS LDFLAGS LDLIBS DEBUG
 
 AUTOVARS = \
     VERSION KERNEL \

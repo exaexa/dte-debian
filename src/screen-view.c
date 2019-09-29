@@ -1,4 +1,3 @@
-#include <strings.h>
 #include "screen.h"
 #include "debug.h"
 #include "editor.h"
@@ -203,7 +202,7 @@ static void screen_skip_char(LineInfo *info)
     }
 }
 
-static PURE bool is_notice(const char *word, size_t len)
+static bool is_notice(const char *word, size_t len)
 {
     switch (len) {
     case 3: return !memcmp(word, "XXX", 3);
@@ -340,7 +339,7 @@ static void print_line(LineInfo *info)
     while (info->pos < info->size) {
         BUG_ON(obuf.x > obuf.scroll_x + obuf.width);
         CodePoint u = screen_next_char(info);
-        if (!buf_put_char(u)) {
+        if (!term_put_char(u)) {
             // +1 for newline
             info->offset += info->size - info->pos + 1;
             return;
@@ -354,32 +353,32 @@ static void print_line(LineInfo *info)
         mask_color(&color, builtin_colors[BC_NONTEXT]);
         mask_selection_and_current_line(info, &color);
         set_color(&color);
-        buf_put_char('$');
+        term_put_char('$');
     }
 
     color = *builtin_colors[BC_DEFAULT];
     mask_selection_and_current_line(info, &color);
     set_color(&color);
     info->offset++;
-    buf_clear_eol();
+    term_clear_eol();
 }
 
-void update_range(const View *v, int y1, int y2)
+void update_range(const View *v, long y1, long y2)
 {
     const int edit_x = v->window->edit_x;
     const int edit_y = v->window->edit_y;
     const int edit_w = v->window->edit_w;
     const int edit_h = v->window->edit_h;
 
-    buf_reset(edit_x, edit_w, v->vx);
+    term_output_reset(edit_x, edit_w, v->vx);
     obuf.tab_width = v->buffer->options.tab_width;
     obuf.tab = editor.options.display_special ? TAB_SPECIAL : TAB_NORMAL;
 
     BlockIter bi = v->cursor;
-    for (int i = 0, n = v->cy - y1; i < n; i++) {
+    for (long i = 0, n = v->cy - y1; i < n; i++) {
         block_iter_prev_line(&bi);
     }
-    for (int i = 0, n = y1 - v->cy; i < n; i++) {
+    for (long i = 0, n = y1 - v->cy; i < n; i++) {
         block_iter_eat_line(&bi);
     }
     block_iter_bol(&bi);
@@ -392,7 +391,7 @@ void update_range(const View *v, int y1, int y2)
 
     bool got_line = !block_iter_is_eof(&bi);
     hl_fill_start_states(v->buffer, info.line_nr);
-    int i;
+    long i;
     for (i = y1; got_line && i < y2; i++) {
         obuf.x = 0;
         terminal.move_cursor(edit_x, edit_y + i);
@@ -400,13 +399,7 @@ void update_range(const View *v, int y1, int y2)
         LineRef lr;
         fill_line_nl_ref(&bi, &lr);
         bool next_changed;
-        HlColor **colors = hl_line (
-            v->buffer,
-            lr.line,
-            lr.size,
-            info.line_nr,
-            &next_changed
-        );
+        HlColor **colors = hl_line(v->buffer, &lr, info.line_nr, &next_changed);
         line_info_set_line(&info, &lr, colors);
         print_line(&info);
 
@@ -430,7 +423,7 @@ void update_range(const View *v, int y1, int y2)
         set_color(&color);
 
         terminal.move_cursor(edit_x, edit_y + i++);
-        buf_clear_eol();
+        term_clear_eol();
     }
 
     if (i < y2) {
@@ -439,7 +432,7 @@ void update_range(const View *v, int y1, int y2)
     for (; i < y2; i++) {
         obuf.x = 0;
         terminal.move_cursor(edit_x, edit_y + i);
-        buf_put_char('~');
-        buf_clear_eol();
+        term_put_char('~');
+        term_clear_eol();
     }
 }

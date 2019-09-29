@@ -1,16 +1,16 @@
 #include "alias.h"
 #include "change.h"
 #include "command.h"
-#include "common.h"
 #include "debug.h"
 #include "config.h"
 #include "error.h"
 #include "parse-args.h"
+#include "util/str-util.h"
 #include "util/xmalloc.h"
 
 const Command *current_command;
 
-static PURE bool allowed_command(const char *name)
+static bool allowed_command(const char *name)
 {
     size_t len = strlen(name);
     switch (len) {
@@ -58,22 +58,22 @@ const Command *find_command(const Command *cmds, const char *name)
     return NULL;
 }
 
-static void run_command(const Command *cmds, char **av)
+void run_command(const Command *cmds, char **av)
 {
     const Command *cmd = find_command(cmds, av[0]);
     if (!cmd) {
         PointerArray array = PTR_ARRAY_INIT;
         const char *alias_name = av[0];
         const char *alias_value = find_alias(alias_name);
-        Error *err = NULL;
+        CommandParseError err = 0;
 
         if (alias_value == NULL) {
             error_msg("No such command or alias: %s", alias_name);
             return;
         }
         if (!parse_commands(&array, alias_value, &err)) {
-            error_msg("Parsing alias %s: %s", alias_name, err->msg);
-            error_free(err);
+            const char *err_msg = command_parse_error_to_string(err);
+            error_msg("Parsing alias %s: %s", alias_name, err_msg);
             ptr_array_free(&array);
             return;
         }
@@ -100,11 +100,10 @@ static void run_command(const Command *cmds, char **av)
     // Any command can override this by calling begin_change() again.
     begin_change(CHANGE_MERGE_NONE);
 
+    CommandArgs a = {.args = av + 1};
     current_command = cmd;
-    char **args = av + 1;
-    const char *pf = parse_args(args, cmd->flags, cmd->min_args, cmd->max_args);
-    if (pf) {
-        cmd->cmd(pf, args);
+    if (parse_args(cmd, &a)) {
+        cmd->cmd(&a);
     }
     current_command = NULL;
 
@@ -130,12 +129,11 @@ void run_commands(const Command *cmds, const PointerArray *array)
 
 void handle_command(const Command *cmds, const char *cmd)
 {
-    Error *err = NULL;
+    CommandParseError err = 0;
     PointerArray array = PTR_ARRAY_INIT;
 
     if (!parse_commands(&array, cmd, &err)) {
-        error_msg("%s", err->msg);
-        error_free(err);
+        error_msg("%s", command_parse_error_to_string(err));
         ptr_array_free(&array);
         return;
     }

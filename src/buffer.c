@@ -1,17 +1,18 @@
+#include <stdlib.h>
+#include <string.h>
 #include <unistd.h>
+#include "block.h"
 #include "buffer.h"
-#include "common.h"
 #include "editor.h"
 #include "file-option.h"
 #include "filetype.h"
 #include "lock.h"
-#include "selection.h"
 #include "syntax/state.h"
+#include "util/hashset.h"
 #include "util/path.h"
-#include "util/regexp.h"
-#include "util/utf8.h"
+#include "util/str-util.h"
+#include "util/string-view.h"
 #include "util/xmalloc.h"
-#include "view.h"
 
 Buffer *buffer;
 PointerArray buffers = PTR_ARRAY_INIT;
@@ -31,10 +32,10 @@ static void set_display_filename(Buffer *b, char *name)
  * Syntax highlighter has different logic. It cares about contents of the
  * lines, not about selection or if the lines have been moved up or down.
  */
-void buffer_mark_lines_changed(Buffer *b, int min, int max)
+void buffer_mark_lines_changed(Buffer *b, long min, long max)
 {
     if (min > max) {
-        int tmp = min;
+        long tmp = min;
         min = max;
         max = tmp;
     }
@@ -63,14 +64,14 @@ Buffer *buffer_new(const Encoding *encoding)
     b->newline = editor.options.newline;
 
     if (encoding) {
-        b->encoding = encoding_clone(encoding);
+        b->encoding = *encoding;
     } else {
         b->encoding.type = ENCODING_AUTODETECT;
     }
 
     memcpy(&b->options, &editor.options, sizeof(CommonOptions));
     b->options.brace_indent = 0;
-    b->options.filetype = xstrdup("none");
+    b->options.filetype = str_intern("none");
     b->options.indent_regex = NULL;
 
     ptr_array_add(&buffers, b);
@@ -85,7 +86,7 @@ Buffer *open_empty_buffer(void)
     Block *blk = block_new(1);
     list_add_before(&blk->node, &b->blocks);
 
-    set_display_filename(b, xstrdup("(No name)"));
+    set_display_filename(b, xmemdup_literal("(No name)"));
     return b;
 }
 
@@ -111,8 +112,6 @@ void free_buffer(Buffer *b)
     free(b->views.ptrs);
     free(b->display_filename);
     free(b->abs_filename);
-    free_encoding(&b->encoding);
-    free_local_options(&b->options);
     free(b);
 }
 
@@ -140,7 +139,7 @@ Buffer *find_buffer(const char *abs_filename)
     return NULL;
 }
 
-Buffer *find_buffer_by_id(unsigned int id)
+Buffer *find_buffer_by_id(unsigned long id)
 {
     for (size_t i = 0; i < buffers.count; i++) {
         Buffer *b = buffers.ptrs[i];
@@ -154,21 +153,19 @@ Buffer *find_buffer_by_id(unsigned int id)
 bool buffer_detect_filetype(Buffer *b)
 {
     const char *ft = NULL;
-
     if (BLOCK(b->blocks.next)->size) {
         BlockIter bi = BLOCK_ITER_INIT(&b->blocks);
         LineRef lr;
         fill_line_ref(&bi, &lr);
-        StringView line = string_view(lr.line, lr.size);
+        const StringView line = string_view(lr.line, lr.size);
         ft = find_ft(b->abs_filename, line);
     } else if (b->abs_filename) {
-        StringView line = STRING_VIEW_INIT;
+        const StringView line = STRING_VIEW_INIT;
         ft = find_ft(b->abs_filename, line);
     }
 
     if (ft && !streq(ft, b->options.filetype)) {
-        free(b->options.filetype);
-        b->options.filetype = xstrdup(ft);
+        b->options.filetype = str_intern(ft);
         return true;
     }
     return false;
@@ -195,7 +192,7 @@ static char *short_filename_cwd(const char *absolute, const char *cwd)
     ) {
         size_t len = abs_len - home_len + 1;
         if (len < f_len) {
-            char *filename = xnew(char, len + 1);
+            char *filename = xmalloc(len + 1);
             filename[0] = '~';
             memcpy(filename + 1, absolute + home_len, len);
             free(f);

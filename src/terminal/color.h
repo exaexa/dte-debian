@@ -6,6 +6,7 @@
 #include "../util/macros.h"
 
 #define COLOR_FLAG_RGB INT32_C(0x01000000)
+#define COLOR_RGB(x) (COLOR_FLAG_RGB | (x))
 
 typedef enum {
     TERM_0_COLOR,
@@ -26,7 +27,15 @@ enum {
     COLOR_BLUE = 4,
     COLOR_MAGENTA = 5,
     COLOR_CYAN = 6,
-    COLOR_GRAY = 7
+    COLOR_GRAY = 7,
+    COLOR_DARKGRAY = 8,
+    COLOR_LIGHTRED = 9,
+    COLOR_LIGHTGREEN = 10,
+    COLOR_LIGHTYELLOW = 11,
+    COLOR_LIGHTBLUE = 12,
+    COLOR_LIGHTMAGENTA = 13,
+    COLOR_LIGHTCYAN = 14,
+    COLOR_WHITE = 15
 };
 
 enum {
@@ -44,7 +53,7 @@ enum {
 typedef struct {
     int32_t fg;
     int32_t bg;
-    unsigned short attr;
+    unsigned int attr;
 } TermColor;
 
 static inline void color_split_rgb(int32_t c, uint8_t *r, uint8_t *g, uint8_t *b)
@@ -54,7 +63,7 @@ static inline void color_split_rgb(int32_t c, uint8_t *r, uint8_t *g, uint8_t *b
     *b = c & 0xff;
 }
 
-static inline PURE bool same_color(const TermColor *c1, const TermColor *c2)
+static inline bool same_color(const TermColor *c1, const TermColor *c2)
 {
     return
         c1->attr == c2->attr
@@ -64,6 +73,6 @@ static inline PURE bool same_color(const TermColor *c1, const TermColor *c2)
 }
 
 bool parse_term_color(TermColor *color, char **strs);
-int32_t convert_color_to_nearest_supported(int32_t color);
+int32_t color_to_nearest(int32_t color, TermColorCapabilityType type);
 
 #endif

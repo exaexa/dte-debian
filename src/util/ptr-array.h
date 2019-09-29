@@ -2,6 +2,7 @@
 #define UTIL_PTR_ARRAY_H
 
 #include <stdlib.h>
+#include "macros.h"
 #include "xmalloc.h"
 
 typedef struct {
@@ -27,6 +28,7 @@ void ptr_array_remove(PointerArray *array, void *ptr) NONNULL_ARG(1);
 void *ptr_array_remove_idx(PointerArray *array, size_t pos) NONNULL_ARG(1);
 size_t ptr_array_idx(const PointerArray *array, const void *ptr) NONNULL_ARG(1);
 void *ptr_array_rel(const PointerArray *array, const void *ptr, size_t offset) NONNULL_ARG(1);
+void ptr_array_trim_nulls(PointerArray *array) NONNULL_ARGS;
 
 NONNULL_ARGS
 static inline void ptr_array_init(PointerArray *array, size_t capacity)
@@ -49,18 +51,28 @@ static inline void *ptr_array_prev(const PointerArray *array, const void *ptr)
     return ptr_array_rel(array, ptr, -1);
 }
 
-NONNULL_ARG(1)
+// Free each pointer and then free the array.
+NONNULL_ARGS
 static inline void ptr_array_free(PointerArray *array)
 {
     ptr_array_free_cb(array, free);
 }
 
+// Free the array itself but not the pointers. Useful when the pointers
+// are "borrowed" references.
+NONNULL_ARGS
+static inline void ptr_array_free_array(PointerArray *array)
+{
+    free(array->ptrs);
+    *array = (PointerArray) PTR_ARRAY_INIT;
+}
+
 static inline void ptr_array_sort (
-    const PointerArray array,
+    const PointerArray *array,
     CompareFunction compare
 ) {
-    if (array.count >= 2) {
-        qsort(array.ptrs, array.count, sizeof(*array.ptrs), compare);
+    if (array->count >= 2) {
+        qsort(array->ptrs, array->count, sizeof(*array->ptrs), compare);
     }
 }
 

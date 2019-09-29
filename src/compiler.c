@@ -1,7 +1,7 @@
 #include "compiler.h"
-#include "common.h"
 #include "error.h"
-#include "util/regexp.h"
+#include "regexp.h"
+#include "util/str-util.h"
 #include "util/xmalloc.h"
 
 static PointerArray compilers = PTR_ARRAY_INIT;
@@ -47,6 +47,9 @@ void add_error_fmt (
                 idx[j] = ((int)i) + 1;
                 break;
             }
+        }
+        if (streq(desc[i], "_")) {
+            continue;
         }
         if (j == ARRAY_COUNT(names)) {
             error_msg("Unknown substring name %s.", desc[i]);
