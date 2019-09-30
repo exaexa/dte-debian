@@ -2,7 +2,7 @@ CC ?= gcc
 CFLAGS ?= -O2
 LDFLAGS ?=
 AWK = awk
-VERSION = 1.9
+VERSION = 1.9.1
 
 WARNINGS = \
     -Wall -Wextra -Wformat -Wformat-security \
