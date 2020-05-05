@@ -1,6 +1,7 @@
 dte (1.9.1-2) UNRELEASED; urgency=medium
 
   * Bump debhelper from old 11 to 12.
+  * Set debhelper-compat version in Build-Depends.
 
  -- Debian Janitor <janitor@jelmer.uk>  Tue, 05 May 2020 00:23:55 +0000
 
