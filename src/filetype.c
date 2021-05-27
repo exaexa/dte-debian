@@ -1,14 +1,16 @@
-#include <stdint.h>
+#include <string.h>
 #include "filetype.h"
-#include "debug.h"
+#include "command/serialize.h"
+#include "completion.h"
 #include "error.h"
 #include "regexp.h"
 #include "util/ascii.h"
+#include "util/bsearch.h"
+#include "util/debug.h"
 #include "util/macros.h"
 #include "util/path.h"
 #include "util/ptr-array.h"
 #include "util/str-util.h"
-#include "util/string-view.h"
 #include "util/xmalloc.h"
 
 static int ft_compare(const void *key, const void *elem)
@@ -30,12 +32,20 @@ static int ft_compare(const void *key, const void *elem)
 #include "filetype/ignored-exts.c"
 #include "filetype/signatures.c"
 
+UNITTEST {
+    CHECK_BSEARCH_ARRAY(basenames, name, strcmp);
+    CHECK_BSEARCH_ARRAY(extensions, ext, strcmp);
+    CHECK_BSEARCH_ARRAY(interpreters, key, strcmp);
+    CHECK_BSEARCH_STR_ARRAY(builtin_filetype_names, strcmp);
+    CHECK_BSEARCH_STR_ARRAY(ignored_extensions, strcmp);
+}
+
 // Filetypes dynamically added via the `ft` command.
 // Not grouped by name to make it possible to order them freely.
 typedef struct {
-    FileDetectionType type;
-    uint8_t name_len;
-    uint8_t str_len;
+    FileDetectionType type : 8;
+    unsigned int name_len : 8;
+    unsigned int str_len : 16;
     char data[]; // Contains name followed by str (both null-terminated)
 } UserFileTypeEntry;
 
@@ -55,32 +65,25 @@ void add_filetype(const char *name, const char *str, FileDetectionType type)
 {
     const size_t name_len = strlen(name);
     const size_t str_len = strlen(str);
-    if (unlikely(name_len >= 256 || str_len >= 256)) {
-        error_msg("ft argument exceeds maximum length (255 bytes)");
+    if (unlikely(name_len > 0xFF || str_len > 0xFFFF)) {
+        error_msg("ft argument exceeds maximum length");
         return;
     }
 
-    regex_t re;
-    switch (type) {
-    case FT_CONTENT:
-    case FT_FILENAME:
-        if (!regexp_compile(&re, str, REG_NEWLINE | REG_NOSUB)) {
+    if (type == FT_CONTENT || type == FT_FILENAME) {
+        if (!regexp_is_valid(str, REG_NEWLINE)) {
             return;
         }
-        regfree(&re);
-        break;
-    default:
-        break;
     }
 
     const size_t data_len = name_len + str_len + 2;
-    UserFileTypeEntry *ft = xmalloc(sizeof(UserFileTypeEntry) + data_len);
+    UserFileTypeEntry *ft = xmalloc(sizeof(*ft) + data_len);
     ft->type = type;
-    ft->name_len = (uint8_t) name_len;
-    ft->str_len = (uint8_t) str_len;
+    ft->name_len = name_len;
+    ft->str_len = str_len;
     memcpy(ft->data, name, name_len + 1);
     memcpy(ft->data + name_len + 1, str, str_len + 1);
-    ptr_array_add(&filetypes, ft);
+    ptr_array_append(&filetypes, ft);
 }
 
 static StringView get_ext(const StringView filename)
@@ -90,8 +93,8 @@ static StringView get_ext(const StringView filename)
         return ext;
     }
 
-    ext.data = string_view_memrchr(&filename, '.');
-    if (ext.data == NULL) {
+    ext.data = strview_memrchr(&filename, '.');
+    if (!ext.data) {
         return ext;
     }
 
@@ -105,7 +108,7 @@ static StringView get_ext(const StringView filename)
         return ext;
     }
 
-    if (is_ignored_extension(ext.data, ext.length)) {
+    if (is_ignored_extension(ext)) {
         int idx = -2;
         while (ext.data + idx >= filename.data) {
             if (ext.data[idx] == '.') {
@@ -157,25 +160,25 @@ static bool ft_str_match(const UserFileTypeEntry *ft, const StringView sv)
 {
     const char *str = ft_get_str(ft);
     const size_t len = (size_t)ft->str_len;
-    return sv.length > 0 && string_view_equal_strn(&sv, str, len);
+    return sv.length > 0 && strview_equal_strn(&sv, str, len);
 }
 
 static bool ft_regex_match(const UserFileTypeEntry *ft, const StringView sv)
 {
     const char *str = ft_get_str(ft);
-    return sv.length > 0 && regexp_match_nosub(str, sv.data, sv.length);
+    return sv.length > 0 && regexp_match_nosub(str, &sv);
 }
 
 HOT const char *find_ft(const char *filename, StringView line)
 {
     const char *b = filename ? path_basename(filename) : NULL;
-    const StringView base = string_view_from_cstring(b);
+    const StringView base = strview_from_cstring(b);
     const StringView ext = get_ext(base);
-    const StringView path = string_view_from_cstring(filename);
+    const StringView path = strview_from_cstring(filename);
     const StringView interpreter = get_interpreter(line);
 
     // Search user `ft` entries
-    for (size_t i = 0; i < filetypes.count; i++) {
+    for (size_t i = 0, n = filetypes.count; i < n; i++) {
         const UserFileTypeEntry *ft = filetypes.ptrs[i];
         switch (ft->type) {
         case FT_EXTENSION:
@@ -203,6 +206,8 @@ HOT const char *find_ft(const char *filename, StringView line)
                 continue;
             }
             break;
+        default:
+            BUG("unhandled detection type");
         }
         return ft_get_name(ft);
     }
@@ -210,46 +215,56 @@ HOT const char *find_ft(const char *filename, StringView line)
     // Search built-in lookup tables
     if (interpreter.length) {
         FileTypeEnum ft = filetype_from_interpreter(interpreter);
-        if (ft) {
+        if (ft != NONE) {
             return builtin_filetype_names[ft];
         }
     }
 
     if (base.length) {
         FileTypeEnum ft = filetype_from_basename(base);
-        if (ft) {
+        if (ft != NONE) {
             return builtin_filetype_names[ft];
         }
     }
 
     if (line.length) {
         FileTypeEnum ft = filetype_from_signature(line);
-        if (ft) {
+        if (ft != NONE) {
             return builtin_filetype_names[ft];
         }
     }
 
     if (ext.length) {
         FileTypeEnum ft = filetype_from_extension(ext);
-        if (ft) {
+        if (ft != NONE) {
             return builtin_filetype_names[ft];
         }
     }
 
-    if (string_view_has_literal_prefix(&path, "/etc/default/")) {
-        return builtin_filetype_names[SHELL];
-    } else if (string_view_has_literal_prefix(&path, "/etc/nginx/")) {
+    if (strview_has_prefix(&path, "/etc/default/")) {
+        return builtin_filetype_names[SH];
+    } else if (strview_has_prefix(&path, "/etc/nginx/")) {
         return builtin_filetype_names[NGINX];
     }
 
-    const StringView conf = STRING_VIEW("conf");
-    if (string_view_equal(&ext, &conf)) {
-        if (string_view_has_literal_prefix(&path, "/etc/systemd/")) {
+    strview_trim_right(&line);
+    if (line.length >= 4) {
+        const char *s = line.data;
+        const size_t n = line.length;
+        if (s[0] == '[' && s[n - 1] == ']' && is_word_byte(s[1])) {
+            if (!strview_contains_char_type(&line, ASCII_CNTRL)) {
+                return builtin_filetype_names[INI];
+            }
+        }
+    }
+
+    if (strview_equal_cstring(&ext, "conf")) {
+        if (strview_has_prefix(&path, "/etc/systemd/")) {
             return builtin_filetype_names[INI];
         } else if (
-            string_view_has_literal_prefix(&path, "/etc/")
-            || string_view_has_literal_prefix(&path, "/usr/share/")
-            || string_view_has_literal_prefix(&path, "/usr/local/share/")
+            strview_has_prefix(&path, "/etc/")
+            || strview_has_prefix(&path, "/usr/share/")
+            || strview_has_prefix(&path, "/usr/local/share/")
         ) {
             return builtin_filetype_names[CONFIG];
         }
@@ -260,16 +275,62 @@ HOT const char *find_ft(const char *filename, StringView line)
 
 bool is_ft(const char *name)
 {
-    for (size_t i = 0; i < filetypes.count; i++) {
+    if (BSEARCH(name, builtin_filetype_names, (CompareFunction)strcmp)) {
+        return true;
+    }
+
+    for (size_t i = 0, n = filetypes.count; i < n; i++) {
         const UserFileTypeEntry *ft = filetypes.ptrs[i];
         if (streq(ft_get_name(ft), name)) {
             return true;
         }
     }
+
+    return false;
+}
+
+void collect_ft(const char *prefix)
+{
     for (size_t i = 0; i < ARRAY_COUNT(builtin_filetype_names); i++) {
-        if (streq(builtin_filetype_names[i], name)) {
-            return true;
+        const char *name = builtin_filetype_names[i];
+        if (str_has_prefix(name, prefix)) {
+            add_completion(xstrdup(name));
         }
     }
-    return false;
+    for (size_t i = 0, n = filetypes.count; i < n; i++) {
+        const UserFileTypeEntry *ft = filetypes.ptrs[i];
+        const char *name = ft_get_name(ft);
+        if (str_has_prefix(name, prefix)) {
+            add_completion(xstrdup(name));
+        }
+    }
+}
+
+String dump_ft(void)
+{
+    static const char flags[][4] = {
+        [FT_EXTENSION] = "",
+        [FT_FILENAME] = "-f ",
+        [FT_CONTENT] = "-c ",
+        [FT_INTERPRETER] = "-i ",
+        [FT_BASENAME] = "-b ",
+    };
+
+    String s = string_new(4096);
+    for (size_t i = 0, n = filetypes.count; i < n; i++) {
+        const UserFileTypeEntry *ft = filetypes.ptrs[i];
+        const char *name = ft_get_name(ft);
+        FileDetectionType type = ft->type;
+        BUG_ON(type >= ARRAY_COUNT(flags));
+        string_append_literal(&s, "ft ");
+        string_append_cstring(&s, flags[type]);
+        if (unlikely(name[0] == '-')) {
+            string_append_cstring(&s, "-- ");
+        }
+        string_append_escaped_arg(&s, name, true);
+        string_append_byte(&s, ' ');
+        string_append_escaped_arg(&s, ft_get_str(ft), true);
+        string_append_byte(&s, '\n');
+    }
+    return s;
 }

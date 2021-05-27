@@ -1,7 +1,6 @@
 #include "search.h"
 #include "buffer.h"
 #include "change.h"
-#include "edit.h"
 #include "editor.h"
 #include "error.h"
 #include "regexp.h"
@@ -11,7 +10,12 @@
 #include "util/xmalloc.h"
 #include "view.h"
 
-#define MAX_SUBSTRINGS 32
+static struct {
+    regex_t regex;
+    char *pattern;
+    SearchDirection direction;
+    int re_flags; // If zero, regex hasn't been compiled
+} current_search;
 
 static bool do_search_fwd(regex_t *regex, BlockIter *bi, bool skip)
 {
@@ -19,25 +23,25 @@ static bool do_search_fwd(regex_t *regex, BlockIter *bi, bool skip)
 
     do {
         regmatch_t match;
-        LineRef lr;
+        StringView line;
 
         if (block_iter_is_eof(bi)) {
             return false;
         }
 
-        fill_line_ref(bi, &lr);
+        fill_line_ref(bi, &line);
 
-        // NOTE: If this is the first iteration then lr.line contains
+        // NOTE: If this is the first iteration then line.data contains
         // partial line (text starting from the cursor position) and
         // if match.rm_so is 0 then match is at beginning of the text
         // which is same as the cursor position.
-        if (regexp_exec(regex, lr.line, lr.size, 1, &match, flags)) {
+        if (regexp_exec(regex, line.data, line.length, 1, &match, flags)) {
             if (skip && match.rm_so == 0) {
                 // Ignore match at current cursor position
                 regoff_t count = match.rm_eo;
                 if (count == 0) {
                     // It is safe to skip one byte because every line
-                    // has one extra byte (newline) that is not in lr.line
+                    // has one extra byte (newline) that is not in line.data
                     count = 1;
                 }
                 block_iter_skip_bytes(bi, (size_t)count);
@@ -64,15 +68,15 @@ static bool do_search_bwd(regex_t *regex, BlockIter *bi, ssize_t cx, bool skip)
 
     do {
         regmatch_t match;
-        LineRef lr;
+        StringView line;
         int flags = 0;
         regoff_t offset = -1;
         regoff_t pos = 0;
 
-        fill_line_ref(bi, &lr);
+        fill_line_ref(bi, &line);
         while (
-            pos <= lr.size
-            && regexp_exec(regex, lr.line + pos, lr.size - pos, 1, &match, flags)
+            pos <= line.length
+            && regexp_exec(regex, line.data + pos, line.length - pos, 1, &match, flags)
         ) {
             flags = REG_NOTBOL;
             if (cx >= 0) {
@@ -111,13 +115,15 @@ next:
 
 bool search_tag(const char *pattern, bool *err)
 {
-    BlockIter bi = BLOCK_ITER_INIT(&buffer->blocks);
     regex_t regex;
     bool found = false;
-
     if (!regexp_compile_basic(&regex, pattern, REG_NEWLINE)) {
         *err = true;
-    } else if (do_search_fwd(&regex, &bi, false)) {
+        return found;
+    }
+
+    BlockIter bi = BLOCK_ITER_INIT(&buffer->blocks);
+    if (do_search_fwd(&regex, &bi, false)) {
         view->center_on_scroll = true;
         found = true;
     } else {
@@ -126,27 +132,24 @@ bool search_tag(const char *pattern, bool *err)
         error_msg("Tag not found.");
         *err = true;
     }
+
     regfree(&regex);
     return found;
 }
 
-static struct {
-    regex_t regex;
-    char *pattern;
-    SearchDirection direction;
-
-    // If zero then regex hasn't been compiled
-    int re_flags;
-} current_search;
-
-void search_set_direction(SearchDirection dir)
+void set_search_direction(SearchDirection dir)
 {
     current_search.direction = dir;
 }
 
-SearchDirection current_search_direction(void)
+SearchDirection get_search_direction(void)
 {
     return current_search.direction;
+}
+
+void toggle_search_direction(void)
+{
+    current_search.direction ^= 1;
 }
 
 static void free_regex(void)
@@ -230,7 +233,7 @@ static void do_search_next(bool skip)
         if (do_search_fwd(&current_search.regex, &bi, false)) {
             info_msg("Continuing at top.");
         } else {
-            info_msg("Pattern '%s' not found.", current_search.pattern);
+            error_msg("Pattern '%s' not found.", current_search.pattern);
         }
     } else {
         size_t cursor_x = block_iter_bol(&bi);
@@ -242,7 +245,7 @@ static void do_search_next(bool skip)
         if (do_search_bwd(&current_search.regex, &bi, -1, false)) {
             info_msg("Continuing at bottom.");
         } else {
-            info_msg("Pattern '%s' not found.", current_search.pattern);
+            error_msg("Pattern '%s' not found.", current_search.pattern);
         }
     }
 }
@@ -271,27 +274,25 @@ static void build_replacement (
     regmatch_t *m
 ) {
     size_t i = 0;
-
     while (format[i]) {
-        int ch = format[i++];
-
+        char ch = format[i++];
         if (ch == '\\') {
             if (format[i] >= '1' && format[i] <= '9') {
                 int n = format[i++] - '0';
                 int len = m[n].rm_eo - m[n].rm_so;
                 if (len > 0) {
-                    string_add_buf(buf, line + m[n].rm_so, len);
+                    string_append_buf(buf, line + m[n].rm_so, len);
                 }
             } else if (format[i] != '\0') {
-                string_add_byte(buf, format[i++]);
+                string_append_byte(buf, format[i++]);
             }
         } else if (ch == '&') {
             int len = m[0].rm_eo - m[0].rm_so;
             if (len > 0) {
-                string_add_buf(buf, line + m[0].rm_so, len);
+                string_append_buf(buf, line + m[0].rm_so, len);
             }
         } else {
-            string_add_byte(buf, ch);
+            string_append_byte(buf, ch);
         }
     }
 }
@@ -305,13 +306,17 @@ static void build_replacement (
  * "foo x bar abc baz"   " bar abc baz"
  */
 static unsigned int replace_on_line (
-    LineRef *lr,
+    StringView *line,
     regex_t *re,
     const char *format,
     BlockIter *bi,
     ReplaceFlags *flagsp
 ) {
-    unsigned char *buf = (unsigned char *)lr->line;
+    enum {
+        MAX_SUBSTRINGS = 32
+    };
+
+    unsigned char *buf = (unsigned char *)line->data;
     ReplaceFlags flags = *flagsp;
     regmatch_t m[MAX_SUBSTRINGS];
     size_t pos = 0;
@@ -321,7 +326,7 @@ static unsigned int replace_on_line (
     while (regexp_exec (
         re,
         buf + pos,
-        lr->size - pos,
+        line->length - pos,
         MAX_SUBSTRINGS,
         m,
         eflags
@@ -334,7 +339,7 @@ static unsigned int replace_on_line (
         view->cursor = *bi;
 
         if (flags & REPLACE_CONFIRM) {
-            switch (get_confirmation("Ynaq", "Replace?")) {
+            switch (status_prompt("Replace? [Y/n/a/q]", "ynaq")) {
             case 'y':
                 break;
             case 'n':
@@ -359,12 +364,11 @@ static unsigned int replace_on_line (
             block_iter_skip_bytes(&view->cursor, match_len);
         } else {
             String b = STRING_INIT;
-
             build_replacement(&b, buf + pos, format, m);
 
-            // lineref is invalidated by modification
-            if (buf == lr->line && lr->size != 0) {
-                buf = xmemdup(buf, lr->size);
+            // line ref is invalidated by modification
+            if (buf == line->data && line->length != 0) {
+                buf = xmemdup(buf, line->length);
             }
 
             buffer_replace_bytes(match_len, b.buffer, b.len);
@@ -396,7 +400,7 @@ static unsigned int replace_on_line (
         eflags = REG_NOTBOL;
     }
 out:
-    if (buf != lr->line) {
+    if (buf != line->data) {
         free(buf);
     }
     return nr;
@@ -453,17 +457,17 @@ void reg_replace(const char *pattern, const char *format, ReplaceFlags flags)
     while (1) {
         // Number of bytes to process
         size_t count;
-        LineRef lr;
+        StringView line;
         unsigned int nr;
 
-        fill_line_ref(&bi, &lr);
-        count = lr.size;
-        if (lr.size > nr_bytes) {
+        fill_line_ref(&bi, &line);
+        count = line.length;
+        if (line.length > nr_bytes) {
             // End of selection is not full line
-            lr.size = nr_bytes;
+            line.length = nr_bytes;
         }
 
-        nr = replace_on_line(&lr, &re, format, &bi, &flags);
+        nr = replace_on_line(&line, &re, format, &bi, &flags);
         if (nr) {
             nr_substitutions += nr;
             nr_lines++;
@@ -488,7 +492,7 @@ void reg_replace(const char *pattern, const char *format, ReplaceFlags flags)
     if (nr_substitutions) {
         info_msg("%u substitutions on %zu lines.", nr_substitutions, nr_lines);
     } else if (!(flags & REPLACE_CANCEL)) {
-        info_msg("Pattern '%s' not found.", pattern);
+        error_msg("Pattern '%s' not found.", pattern);
     }
 
     if (view->selection) {

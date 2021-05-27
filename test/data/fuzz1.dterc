@@ -1,4 +1,4 @@
-run mkdir -p build/test/
+run -s mkdir -p build/test/
 cd build/test/
 insert -km "1\n2\n3\n"
 bof
@@ -22,8 +22,6 @@ erase-word
 filter sort -r
 ft ext filetype
 hi default red black bold
-include -b binding/shift-select
-insert-builtin syntax/dte
 bof
 select
 eof
@@ -46,21 +44,23 @@ refresh
 insert "hello world\n"
 repeat 2 replace l r
 right
-run true
+run -s true
 scroll-down
 scroll-pgdown
 scroll-pgup
 scroll-up
-search -H '^ *b'
+search -H '^ *h'
 search -n
 search -p
 select
 repeat 5 right
 cut
 paste -c
+set syntax true
 set set-window-title true
 setenv SETENVTEST 1111
 insert $SETENVTEST
+setenv SETENVTEST
 shift +2
 clear
 #tag
@@ -76,14 +76,12 @@ wresize
 wsplit
 wswap
 save -f out
-pipe-from echo pipe-from-test
 select
 pgdown
 unselect
 repeat 1000 undo
 redo
 undo
-compile -1s gitgrep sh -c 'grep -n ^# ../../mk/*'
 close
 wclose
 repeat 20 open

@@ -1,30 +1,20 @@
+#include <stdbool.h>
+#include <stdlib.h>
 #include "msg.h"
 #include "buffer.h"
+#include "edit.h"
 #include "error.h"
 #include "move.h"
 #include "search.h"
+#include "util/debug.h"
 #include "util/ptr-array.h"
-#include "util/str-util.h"
 #include "util/xmalloc.h"
+#include "view.h"
 #include "window.h"
 
 static PointerArray file_locations = PTR_ARRAY_INIT;
 static PointerArray msgs = PTR_ARRAY_INIT;
 static size_t msg_pos;
-
-FileLocation *file_location_create (
-    const char *filename,
-    unsigned long buffer_id,
-    unsigned long line,
-    unsigned long column
-) {
-    FileLocation *loc = xnew0(FileLocation, 1);
-    loc->filename = filename ? xstrdup(filename) : NULL;
-    loc->buffer_id = buffer_id;
-    loc->line = line;
-    loc->column = column;
-    return loc;
-}
 
 void file_location_free(FileLocation *loc)
 {
@@ -33,42 +23,36 @@ void file_location_free(FileLocation *loc)
     free(loc);
 }
 
-static bool file_location_equals(const FileLocation *a, const FileLocation *b)
+FileLocation *get_current_file_location(void)
 {
-    if (!xstreq(a->filename, b->filename)) {
-        return false;
-    }
-    if (a->buffer_id != b->buffer_id) {
-        return false;
-    }
-    if (!xstreq(a->pattern, b->pattern)) {
-        return false;
-    }
-    if (a->line != b->line) {
-        return false;
-    }
-    if (a->column != b->column) {
-        return false;
-    }
-    return true;
+    const char *filename = buffer->abs_filename;
+    FileLocation *loc = xmalloc(sizeof(*loc));
+    *loc = (FileLocation) {
+        .filename = filename ? xstrdup(filename) : NULL,
+        .buffer_id = buffer->id,
+        .line = view->cy + 1,
+        .column = view->cx_char + 1
+    };
+    return loc;
 }
 
 static bool file_location_go(const FileLocation *loc)
 {
     Window *w = window;
     View *v = window_open_buffer(w, loc->filename, true, NULL);
-    bool ok = true;
-
     if (!v) {
         // Failed to open file. Error message should be visible.
         return false;
     }
+
     if (w->view != v) {
         set_view(v);
         // Force centering view to the cursor because file changed
         v->force_center = true;
     }
-    if (loc->pattern != NULL) {
+
+    bool ok = true;
+    if (loc->pattern) {
         bool err = false;
         search_tag(loc->pattern, &err);
         ok = !err;
@@ -77,6 +61,9 @@ static bool file_location_go(const FileLocation *loc)
         if (loc->column > 0) {
             move_to_column(v, loc->column);
         }
+    }
+    if (ok) {
+        unselect();
     }
     return ok;
 }
@@ -87,21 +74,24 @@ static bool file_location_return(const FileLocation *loc)
     Buffer *b = find_buffer_by_id(loc->buffer_id);
     View *v;
 
-    if (b != NULL) {
+    if (b) {
         v = window_get_view(w, b);
     } else {
-        if (loc->filename == NULL) {
+        if (!loc->filename) {
             // Can't restore closed buffer that had no filename.
             // Try again.
             return false;
         }
         v = window_open_buffer(w, loc->filename, true, NULL);
     }
-    if (v == NULL) {
+
+    if (!v) {
         // Open failed. Don't try again.
         return true;
     }
+
     set_view(v);
+    unselect();
     move_to_line(v, loc->line);
     move_to_column(v, loc->column);
     return true;
@@ -109,7 +99,12 @@ static bool file_location_return(const FileLocation *loc)
 
 void push_file_location(FileLocation *loc)
 {
-    ptr_array_add(&file_locations, loc);
+    const size_t max_entries = 256;
+    if (file_locations.count == max_entries) {
+        file_location_free(ptr_array_remove_idx(&file_locations, 0));
+    }
+    BUG_ON(file_locations.count >= max_entries);
+    ptr_array_append(&file_locations, loc);
 }
 
 void pop_file_location(void)
@@ -125,50 +120,22 @@ void pop_file_location(void)
 static void free_message(Message *m)
 {
     free(m->msg);
-    if (m->loc != NULL) {
+    if (m->loc) {
         file_location_free(m->loc);
     }
     free(m);
 }
 
-static bool message_equals(const Message *a, const Message *b)
-{
-    if (!streq(a->msg, b->msg)) {
-        return false;
-    }
-    if (a->loc == NULL) {
-        return b->loc == NULL;
-    }
-    if (b->loc == NULL) {
-        return false;
-    }
-    return file_location_equals(a->loc, b->loc);
-}
-
-static bool is_duplicate(const Message *m)
-{
-    for (size_t i = 0; i < msgs.count; i++) {
-        if (message_equals(m, msgs.ptrs[i])) {
-            return true;
-        }
-    }
-    return false;
-}
-
-Message *new_message(const char *msg)
+Message *new_message(const char *msg, size_t len)
 {
     Message *m = xnew0(Message, 1);
-    m->msg = xstrdup(msg);
+    m->msg = xstrcut(msg, len);
     return m;
 }
 
 void add_message(Message *m)
 {
-    if (is_duplicate(m)) {
-        free_message(m);
-    } else {
-        ptr_array_add(&msgs, m);
-    }
+    ptr_array_append(&msgs, m);
 }
 
 void activate_current_message(void)
@@ -177,7 +144,7 @@ void activate_current_message(void)
         return;
     }
     const Message *m = msgs.ptrs[msg_pos];
-    if (m->loc != NULL && m->loc->filename != NULL) {
+    if (m->loc && m->loc->filename) {
         if (!file_location_go(m->loc)) {
             // Error message is visible
             return;
@@ -204,6 +171,20 @@ void activate_prev_message(void)
         msg_pos--;
     }
     activate_current_message();
+}
+
+void activate_current_message_save(void)
+{
+    const BlockIter save = view->cursor;
+    FileLocation *loc = get_current_file_location();
+    activate_current_message();
+
+    // Save position if file changed or cursor moved
+    if (view->cursor.blk != save.blk || view->cursor.offset != save.offset) {
+        push_file_location(loc);
+    } else {
+        file_location_free(loc);
+    }
 }
 
 void clear_messages(void)

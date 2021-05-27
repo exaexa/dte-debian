@@ -1,10 +1,9 @@
 #include "view.h"
 #include "buffer.h"
-#include "debug.h"
 #include "util/ascii.h"
+#include "util/debug.h"
 #include "util/str-util.h"
 #include "util/utf8.h"
-#include "util/xmalloc.h"
 #include "window.h"
 
 View *view;
@@ -14,7 +13,6 @@ void view_update_cursor_y(View *v)
     Buffer *b = v->buffer;
     Block *blk;
     size_t nl = 0;
-
     block_for_each(blk, &b->blocks) {
         if (blk == v->cursor.blk) {
             nl += count_nl(blk->data, v->cursor.offset);
@@ -23,23 +21,23 @@ void view_update_cursor_y(View *v)
         }
         nl += blk->nl;
     }
-    BUG_ON(1);
+    BUG("unreachable");
 }
 
 void view_update_cursor_x(View *v)
 {
     unsigned int tw = v->buffer->options.tab_width;
     size_t idx = 0;
-    LineRef lr;
+    StringView line;
     long c = 0;
     long w = 0;
 
-    v->cx = fetch_this_line(&v->cursor, &lr);
+    v->cx = fetch_this_line(&v->cursor, &line);
     while (idx < v->cx) {
-        CodePoint u = lr.line[idx++];
+        CodePoint u = line.data[idx++];
         c++;
-        if (u < 0x80) {
-            if (!ascii_iscntrl(u)) {
+        if (likely(u < 0x80)) {
+            if (likely(!ascii_iscntrl(u))) {
                 w++;
             } else if (u == '\t') {
                 w = (w + tw) / tw * tw;
@@ -48,7 +46,7 @@ void view_update_cursor_x(View *v)
             }
         } else {
             idx--;
-            u = u_get_nonascii(lr.line, lr.size, &idx);
+            u = u_get_nonascii(line.data, line.length, &idx);
             w += u_char_width(u);
         }
     }
@@ -142,36 +140,38 @@ bool view_can_close(const View *v)
     return v->buffer->views.count > 1;
 }
 
-char *view_get_word_under_cursor(const View *v)
+StringView view_get_word_under_cursor(const View *v)
 {
-    LineRef lr;
-    size_t i, ei, si = fetch_this_line(&v->cursor, &lr);
-
-    while (si < lr.size) {
-        i = si;
-        if (u_is_word_char(u_get_char(lr.line, lr.size, &i))) {
+    StringView line;
+    size_t si = fetch_this_line(&v->cursor, &line);
+    while (si < line.length) {
+        size_t i = si;
+        if (u_is_word_char(u_get_char(line.data, line.length, &i))) {
             break;
         }
         si = i;
     }
-    if (si == lr.size) {
-        return NULL;
+
+    if (si == line.length) {
+        return string_view(NULL, 0);
     }
 
-    ei = si;
+    size_t ei = si;
     while (si > 0) {
-        i = si;
-        if (!u_is_word_char(u_prev_char(lr.line, &i))) {
+        size_t i = si;
+        if (!u_is_word_char(u_prev_char(line.data, &i))) {
             break;
         }
         si = i;
     }
-    while (ei < lr.size) {
-        i = ei;
-        if (!u_is_word_char(u_get_char(lr.line, lr.size, &i))) {
+
+    while (ei < line.length) {
+        size_t i = ei;
+        if (!u_is_word_char(u_get_char(line.data, line.length, &i))) {
             break;
         }
         ei = i;
     }
-    return xstrslice(lr.line, si, ei);
+
+    return string_view(line.data + si, ei - si);
 }

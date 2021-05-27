@@ -4,16 +4,25 @@
 #include <limits.h>
 #include <stdbool.h>
 #include <stddef.h>
-#include <sys/stat.h>
-#include "block-iter.h"
+#include <sys/types.h>
 #include "change.h"
-#include "encoding/encoding.h"
+#include "encoding.h"
 #include "options.h"
 #include "syntax/syntax.h"
 #include "util/list.h"
 #include "util/macros.h"
 #include "util/ptr-array.h"
-#include "util/unicode.h"
+
+// Subset of stat(3) struct
+typedef struct {
+    off_t size;
+    mode_t mode;
+    gid_t gid;
+    uid_t uid;
+    dev_t dev;
+    ino_t ino;
+    time_t mtime;
+} FileInfo;
 
 typedef struct Buffer {
     ListHead blocks;
@@ -23,7 +32,7 @@ typedef struct Buffer {
     // Used to determine if buffer is modified
     Change *saved_change;
 
-    struct stat st;
+    FileInfo file;
 
     // Needed for identifying buffers whose filename is NULL
     unsigned long id;
@@ -37,12 +46,14 @@ typedef struct Buffer {
     char *abs_filename;
 
     bool readonly;
+    bool temporary;
+    bool stdout_buffer;
     bool locked;
     bool setup;
+    bool crlf_newlines;
+    bool bom;
 
-    LineEndingType newline;
-
-    // Encoding of the file. Buffer always contains UTF-8.
+    // Encoding of the file (buffer always contains UTF-8)
     Encoding encoding;
 
     LocalOptions options;
@@ -59,32 +70,33 @@ typedef struct Buffer {
 // buffer = view->buffer = window->view->buffer
 extern struct View *view;
 extern Buffer *buffer;
-extern PointerArray buffers;
 
 static inline void mark_all_lines_changed(Buffer *b)
 {
     b->changed_line_min = 0;
-    b->changed_line_max = INT_MAX;
+    b->changed_line_max = LONG_MAX;
 }
 
 static inline bool buffer_modified(const Buffer *b)
 {
-    return b->saved_change != b->cur_change;
+    return b->saved_change != b->cur_change && !b->temporary;
 }
 
-void buffer_mark_lines_changed(Buffer *b, long min, long max);
-const char *buffer_filename(const Buffer *b);
-
+void buffer_mark_lines_changed(Buffer *b, long min, long max) NONNULL_ARGS;
+void buffer_set_encoding(Buffer *b, Encoding encoding) NONNULL_ARGS;
+const char *buffer_filename(const Buffer *b) NONNULL_ARGS_AND_RETURN;
+void set_display_filename(Buffer *b, char *name) NONNULL_ARG(1);
 char *short_filename(const char *absolute) XSTRDUP;
-void update_short_filename_cwd(Buffer *b, const char *cwd);
-void update_short_filename(Buffer *b);
-Buffer *find_buffer(const char *abs_filename);
+void update_short_filename_cwd(Buffer *b, const char *cwd) NONNULL_ARG(1);
+void update_short_filename(Buffer *b) NONNULL_ARGS;
+Buffer *find_buffer(const char *abs_filename) NONNULL_ARGS;
 Buffer *find_buffer_by_id(unsigned long id);
-Buffer *buffer_new(const Encoding *encoding);
-Buffer *open_empty_buffer(void);
-void free_buffer(Buffer *b);
-bool buffer_detect_filetype(Buffer *b);
-void buffer_update_syntax(Buffer *b);
-void buffer_setup(Buffer *b);
+Buffer *buffer_new(const Encoding *encoding) RETURNS_NONNULL;
+Buffer *open_empty_buffer(void) RETURNS_NONNULL;
+void free_buffer(Buffer *b) NONNULL_ARGS;
+void free_blocks(Buffer *b) NONNULL_ARGS;
+bool buffer_detect_filetype(Buffer *b) NONNULL_ARGS;
+void buffer_update_syntax(Buffer *b) NONNULL_ARGS;
+void buffer_setup(Buffer *b) NONNULL_ARGS;
 
 #endif

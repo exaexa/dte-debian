@@ -1,55 +1,31 @@
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include "syntax.h"
-#include "state.h"
-#include "../error.h"
-#include "../util/ascii.h"
-#include "../util/str-util.h"
-#include "../util/xmalloc.h"
+#include "error.h"
+#include "util/str-util.h"
+#include "util/xmalloc.h"
 
-static PointerArray syntaxes = PTR_ARRAY_INIT;
+static HashMap syntaxes = HASHMAP_INIT;
 
 StringList *find_string_list(const Syntax *syn, const char *name)
 {
-    for (size_t i = 0, n = syn->string_lists.count; i < n; i++) {
-        StringList *list = syn->string_lists.ptrs[i];
-        if (streq(list->name, name)) {
-            return list;
-        }
-    }
-    return NULL;
+    return hashmap_get(&syn->string_lists, name);
 }
 
 State *find_state(const Syntax *syn, const char *name)
 {
-    for (size_t i = 0, n = syn->states.count; i < n; i++) {
-        State *s = syn->states.ptrs[i];
-        if (streq(s->name, name)) {
-            return s;
-        }
-    }
-    return NULL;
+    return hashmap_get(&syn->states, name);
 }
 
 static bool has_destination(ConditionType type)
 {
-    switch (type) {
-    case COND_RECOLOR:
-    case COND_RECOLOR_BUFFER:
-        return false;
-    default:
-        return true;
-    }
+    return !(type == COND_RECOLOR || type == COND_RECOLOR_BUFFER);
 }
 
 Syntax *find_any_syntax(const char *name)
 {
-    for (size_t i = 0; i < syntaxes.count; i++) {
-        Syntax *syn = syntaxes.ptrs[i];
-        if (streq(syn->name, name)) {
-            return syn;
-        }
-    }
-    return NULL;
+    return hashmap_get(&syntaxes, name);
 }
 
 static const char *fix_name(const char *name, const char *prefix)
@@ -59,7 +35,7 @@ static const char *fix_name(const char *name, const char *prefix)
     return buf;
 }
 
-static void fix_action(Syntax *syn, Action *a, const char *prefix)
+static void fix_action(const Syntax *syn, Action *a, const char *prefix)
 {
     if (a->destination) {
         const char *name = fix_name(a->destination->name, prefix);
@@ -71,73 +47,64 @@ static void fix_action(Syntax *syn, Action *a, const char *prefix)
 }
 
 static void fix_conditions (
-    Syntax *syn,
+    const Syntax *syn,
     State *s,
-    SyntaxMerge *m,
+    const SyntaxMerge *m,
     const char *prefix
 ) {
     for (size_t i = 0, n = s->conds.count; i < n; i++) {
         Condition *c = s->conds.ptrs[i];
         fix_action(syn, &c->a, prefix);
-        if (c->a.destination == NULL && has_destination(c->type)) {
+        if (!c->a.destination && has_destination(c->type)) {
             c->a.destination = m->return_state;
         }
 
         if (m->delim && c->type == COND_HEREDOCEND) {
-            c->u.cond_heredocend.str = xmemdup(m->delim, m->delim_len);
-            c->u.cond_heredocend.len = m->delim_len;
+            c->u.heredocend.data = xmemdup(m->delim, m->delim_len);
+            c->u.heredocend.length = m->delim_len;
         }
     }
 
     fix_action(syn, &s->a, prefix);
-    if (s->a.destination == NULL) {
+    if (!s->a.destination) {
         s->a.destination = m->return_state;
     }
 }
 
 static const char *get_prefix(void)
 {
-    static int counter;
+    static unsigned int counter;
     static char prefix[32];
-    snprintf(prefix, sizeof(prefix), "%d-", counter++);
+    snprintf(prefix, sizeof(prefix), "%u-", counter++);
     return prefix;
 }
 
-static void update_state_colors(Syntax *syn, State *s);
+static void update_state_colors(const Syntax *syn, State *s);
 
-State *merge_syntax(Syntax *syn, SyntaxMerge *m)
+State *merge_syntax(Syntax *syn, SyntaxMerge *merge)
 {
     // NOTE: string_lists is owned by Syntax so there's no need to
     // copy it. Freeing Condition does not free any string lists.
     const char *prefix = get_prefix();
-    PointerArray *states = &syn->states;
-    size_t old_count = states->count;
+    const HashMap *subsyn_states = &merge->subsyn->states;
+    HashMap *states = &syn->states;
 
-    states->count += m->subsyn->states.count;
-    if (states->count > states->alloc) {
-        states->alloc = states->count;
-        xrenew(states->ptrs, states->alloc);
-    }
-    memcpy (
-        states->ptrs + old_count,
-        m->subsyn->states.ptrs,
-        sizeof(*states->ptrs) * m->subsyn->states.count
-    );
-
-    for (size_t i = old_count; i < states->count; i++) {
-        State *s = xmemdup(states->ptrs[i], sizeof(State));
-
-        states->ptrs[i] = s;
+    for (HashMapIter it = hashmap_iter(subsyn_states); hashmap_next(&it); ) {
+        State *s = xmemdup(it.entry->value, sizeof(State));
         s->name = xstrdup(fix_name(s->name, prefix));
         s->emit_name = xstrdup(s->emit_name);
+        hashmap_insert(states, s->name, s);
+
         if (s->conds.count > 0) {
-            s->conds.ptrs = xmemdup (
-                s->conds.ptrs,
-                sizeof(void *) * s->conds.alloc
-            );
-            for (size_t j = 0; j < s->conds.count; j++) {
-                s->conds.ptrs[j] = xmemdup(s->conds.ptrs[j], sizeof(Condition));
+            // Deep copy conds PointerArray
+            BUG_ON(s->conds.alloc < s->conds.count);
+            void **ptrs = xnew(void*, s->conds.alloc);
+            for (size_t i = 0, n = s->conds.count; i < n; i++) {
+                ptrs[i] = xmemdup(s->conds.ptrs[i], sizeof(Condition));
             }
+            s->conds.ptrs = ptrs;
+        } else {
+            BUG_ON(s->conds.alloc != 0);
         }
 
         // Mark unvisited so that state that is used only as a return
@@ -148,15 +115,24 @@ State *merge_syntax(Syntax *syn, SyntaxMerge *m)
         s->copied = true;
     }
 
-    for (size_t i = old_count; i < states->count; i++) {
-        fix_conditions(syn, states->ptrs[i], m, prefix);
-        if (m->delim) {
-            update_state_colors(syn, states->ptrs[i]);
+    // Fix conditions and update colors for newly merged states
+    for (HashMapIter it = hashmap_iter(subsyn_states); hashmap_next(&it); ) {
+        const State *subsyn_state = it.entry->value;
+        BUG_ON(!subsyn_state);
+        const char *new_name = fix_name(subsyn_state->name, prefix);
+        State *new_state = hashmap_get(states, new_name);
+        BUG_ON(!new_state);
+        fix_conditions(syn, new_state, merge, prefix);
+        if (merge->delim) {
+            update_state_colors(syn, new_state);
         }
     }
 
-    m->subsyn->used = true;
-    return states->ptrs[old_count];
+    const char *name = fix_name(merge->subsyn->start_state->name, prefix);
+    State *start_state = hashmap_get(states, name);
+    BUG_ON(!start_state);
+    merge->subsyn->used = true;
+    return start_state;
 }
 
 static void visit(State *s)
@@ -166,7 +142,7 @@ static void visit(State *s)
     }
     s->visited = true;
     for (size_t i = 0, n = s->conds.count; i < n; i++) {
-        Condition *cond = s->conds.ptrs[i];
+        const Condition *cond = s->conds.ptrs[i];
         if (cond->a.destination) {
             visit(cond->a.destination);
         }
@@ -184,7 +160,6 @@ static void free_condition(Condition *cond)
 
 static void free_state(State *s)
 {
-    free(s->name);
     free(s->emit_name);
     ptr_array_free_cb(&s->conds, FREE_FUNC(free_condition));
     free(s->a.emit_name);
@@ -194,18 +169,34 @@ static void free_state(State *s)
 static void free_string_list(StringList *list)
 {
     hashset_free(&list->strings);
-    free(list->name);
     free(list);
+}
+
+static void free_syntax_contents(Syntax *syn)
+{
+    hashmap_free(&syn->states, FREE_FUNC(free_state));
+    hashmap_free(&syn->string_lists, FREE_FUNC(free_string_list));
+    hashmap_free(&syn->default_colors, NULL);
 }
 
 static void free_syntax(Syntax *syn)
 {
-    ptr_array_free_cb(&syn->states, FREE_FUNC(free_state));
-    ptr_array_free_cb(&syn->string_lists, FREE_FUNC(free_string_list));
-    ptr_array_free_cb(&syn->default_colors, FREE_FUNC(free_string_array));
-
+    free_syntax_contents(syn);
     free(syn->name);
     free(syn);
+}
+
+static void free_syntax_cb(Syntax *syn)
+{
+    free_syntax_contents(syn);
+    free(syn);
+}
+
+// This function is only called by the test binary, just to ensure
+// the various free_*() functions get exercised by ASan/UBSan
+void free_syntaxes(void)
+{
+    hashmap_free(&syntaxes, FREE_FUNC(free_syntax_cb));
 }
 
 void finalize_syntax(Syntax *syn, unsigned int saved_nr_errors)
@@ -214,17 +205,17 @@ void finalize_syntax(Syntax *syn, unsigned int saved_nr_errors)
         error_msg("Empty syntax");
     }
 
-    for (size_t i = 0, n = syn->states.count; i < n; i++) {
-        State *s = syn->states.ptrs[i];
+    for (HashMapIter it = hashmap_iter(&syn->states); hashmap_next(&it); ) {
+        const State *s = it.entry->value;
         if (!s->defined) {
             // This state has been referenced but not defined
-            error_msg("No such state %s", s->name);
+            error_msg("No such state %s", it.entry->key);
         }
     }
-    for (size_t i = 0, n = syn->string_lists.count; i < n; i++) {
-        StringList *list = syn->string_lists.ptrs[i];
+    for (HashMapIter it = hashmap_iter(&syn->string_lists); hashmap_next(&it); ) {
+        const StringList *list = it.entry->value;
         if (!list->defined) {
-            error_msg("No such list %s", list->name);
+            error_msg("No such list %s", it.entry->key);
         }
     }
 
@@ -242,21 +233,21 @@ void finalize_syntax(Syntax *syn, unsigned int saved_nr_errors)
     }
 
     // Unused states and lists cause warning only
-    visit(syn->states.ptrs[0]);
-    for (size_t i = 0, n = syn->states.count; i < n; i++) {
-        State *s = syn->states.ptrs[i];
+    visit(syn->start_state);
+    for (HashMapIter it = hashmap_iter(&syn->states); hashmap_next(&it); ) {
+        const State *s = it.entry->value;
         if (!s->visited && !s->copied) {
-            error_msg("State %s is unreachable", s->name);
+            error_msg("State %s is unreachable", it.entry->key);
         }
     }
-    for (size_t i = 0, n = syn->string_lists.count; i < n; i++) {
-        StringList *list = syn->string_lists.ptrs[i];
+    for (HashMapIter it = hashmap_iter(&syn->string_lists); hashmap_next(&it); ) {
+        const StringList *list = it.entry->value;
         if (!list->used) {
-            error_msg("List %s never used", list->name);
+            error_msg("List %s never used", it.entry->key);
         }
     }
 
-    ptr_array_add(&syntaxes, syn);
+    hashmap_insert(&syntaxes, syn->name, syn);
 }
 
 Syntax *find_syntax(const char *name)
@@ -268,36 +259,26 @@ Syntax *find_syntax(const char *name)
     return syn;
 }
 
-static const char *find_default_color(Syntax *syn, const char *name)
+static const char *find_default_color(const Syntax *syn, const char *name)
 {
-    for (size_t i = 0, n = syn->default_colors.count; i < n; i++) {
-        char **strs = syn->default_colors.ptrs[i];
-        for (size_t j = 1; strs[j]; j++) {
-            if (streq(strs[j], name)) {
-                return strs[0];
-            }
-        }
-    }
-    return NULL;
+    return hashmap_get(&syn->default_colors, name);
 }
 
-static void update_action_color(Syntax *syn, Action *a)
+static void update_action_color(const Syntax *syn, Action *a)
 {
     const char *name = a->emit_name;
-    const char *def;
-    char full[64];
-
     if (!name) {
         name = a->destination->emit_name;
     }
 
+    char full[64];
     snprintf(full, sizeof(full), "%s.%s", syn->name, name);
     a->emit_color = find_color(full);
     if (a->emit_color) {
         return;
     }
 
-    def = find_default_color(syn, name);
+    const char *def = find_default_color(syn, name);
     if (!def) {
         return;
     }
@@ -306,7 +287,7 @@ static void update_action_color(Syntax *syn, Action *a)
     a->emit_color = find_color(full);
 }
 
-static void update_state_colors(Syntax *syn, State *s)
+static void update_state_colors(const Syntax *syn, State *s)
 {
     for (size_t i = 0, n = s->conds.count; i < n; i++) {
         Condition *c = s->conds.ptrs[i];
@@ -321,27 +302,26 @@ void update_syntax_colors(Syntax *syn)
         // No point to update colors of a sub-syntax
         return;
     }
-    for (size_t i = 0, n = syn->states.count; i < n; i++) {
-        update_state_colors(syn, syn->states.ptrs[i]);
+    for (HashMapIter it = hashmap_iter(&syn->states); hashmap_next(&it); ) {
+        update_state_colors(syn, it.entry->value);
     }
 }
 
 void update_all_syntax_colors(void)
 {
-    for (size_t i = 0; i < syntaxes.count; i++) {
-        update_syntax_colors(syntaxes.ptrs[i]);
+    for (HashMapIter it = hashmap_iter(&syntaxes); hashmap_next(&it); ) {
+        update_syntax_colors(it.entry->value);
     }
 }
 
 void find_unused_subsyntaxes(void)
 {
-    // Don't complain multiple times about same unused subsyntaxes
-    static size_t i;
-
-    for (; i < syntaxes.count; i++) {
-        Syntax *s = syntaxes.ptrs[i];
-        if (!s->used && is_subsyntax(s)) {
+    for (HashMapIter it = hashmap_iter(&syntaxes); hashmap_next(&it); ) {
+        Syntax *s = it.entry->value;
+        if (!s->used && !s->warned_unused_subsyntax && is_subsyntax(s)) {
             error_msg("Subsyntax %s is unused", s->name);
+            // Don't complain multiple times about the same unused subsyntaxes
+            s->warned_unused_subsyntax = true;
         }
     }
 }

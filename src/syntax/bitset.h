@@ -1,31 +1,52 @@
 #ifndef SYNTAX_BITSET_H
 #define SYNTAX_BITSET_H
 
+#include <limits.h>
 #include <stdbool.h>
 #include <stddef.h>
-#include <stdint.h>
+#include "util/macros.h"
 
-// This is a container type for storing a *set* of chars (bytes).
-// It uses an array of 256 bits (32 bytes) for lookups, with each
-// bit index used to determine whether or not the byte with that
-// value is in the set.
+#define BITSET_WORD_BITS (sizeof(BitSetWord) * CHAR_BIT)
+#define BITSET_BIT_MASK (BITSET_WORD_BITS - 1)
+#define BITSET_NR_WORDS(bits) (((bits) + BITSET_WORD_BITS - 1) / BITSET_WORD_BITS)
+#define BITSET_INVERT(set) bitset_invert(set, ARRAY_COUNT(set))
 
-typedef uint8_t BitSet[256 / 8];
+typedef unsigned long BitSetWord;
 
-static inline bool bitset_contains(const uint8_t *set, unsigned char ch)
+static inline bool bitset_contains(const BitSetWord *set, unsigned char ch)
 {
-    unsigned int byte = ch / 8;
-    unsigned int bit = ch & 7;
-    return set[byte] & 1u << bit;
+    unsigned int word = ch / BITSET_WORD_BITS;
+    unsigned int bit = ch & BITSET_BIT_MASK;
+    return set[word] & ((BitSetWord)1) << bit;
 }
 
-static inline void bitset_invert(uint8_t *set)
+static inline void bitset_add(BitSetWord *set, unsigned char ch)
 {
-    for (size_t i = 0; i < 32; i++) {
-        set[i] = ~set[i];
+    unsigned int word = ch / BITSET_WORD_BITS;
+    unsigned int bit = ch & BITSET_BIT_MASK;
+    set[word] |= ((BitSetWord)1) << bit;
+}
+
+static inline void bitset_add_char_range(BitSetWord *set, const unsigned char *r)
+{
+    for (size_t i = 0; r[i]; i++) {
+        unsigned int ch = r[i];
+        bitset_add(set, ch);
+        if (r[i + 1] == '-' && r[i + 2]) {
+            // Add char range
+            for (ch = ch + 1; ch <= r[i + 2]; ch++) {
+                bitset_add(set, ch);
+            }
+            i += 2;
+        }
     }
 }
 
-void bitset_add_pattern(uint8_t *set, const unsigned char *pattern);
+static inline void bitset_invert(BitSetWord *set, size_t nr_words)
+{
+    for (size_t i = 0; i < nr_words; i++) {
+        set[i] = ~set[i];
+    }
+}
 
 #endif

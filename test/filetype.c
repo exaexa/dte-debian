@@ -1,11 +1,12 @@
 #include <string.h>
 #include "test.h"
-#include "../src/filetype.h"
+#include "filetype.h"
 
 static void test_find_ft_filename(void)
 {
-    static const struct ft_filename_test {
-        const char *filename, *expected_filetype;
+    static const struct {
+        const char *filename;
+        const char *expected_filetype;
     } tests[] = {
         {"/usr/local/include/lib.h", "c"},
         {"test.cc~", "c"},
@@ -15,6 +16,7 @@ static void test_find_ft_filename(void)
         {"test.rs", "rust"},
         {"test.C", "c"},
         {"test.H", "c"},
+        {"test.re", "c"},
         {"test.S", "asm"},
         {"test.s", "asm"},
         {"test.d", "d"},
@@ -22,6 +24,12 @@ static void test_find_ft_filename(void)
         {"test.m", "objc"},
         {"test.v", "verilog"},
         {"test.y", "yacc"},
+        {"test.kt", "kotlin"},
+        {"test.kts", "kotlin"},
+        {"test.csv", "csv"},
+        {"test.tsv", "tsv"},
+        {"test.opml", "xml"},
+        {"test.gcode", "gcode"},
         {"makefile", "make"},
         {"GNUmakefile", "make"},
         {".file.yml", "yaml"},
@@ -48,9 +56,11 @@ static void test_find_ft_filename(void)
         {".gitmodules", "ini"},
         {".jshintrc", "json"},
         {".zshrc", "sh"},
+        {".XCompose", "config"},
+        {".tmux.conf", "tmux"},
         {"zshrc", "sh"},
+        {"gnus", "lisp"},
         {"file.flatpakref", "ini"},
-        {"file.flatpakrepo", "ini"},
         {"file.automount", "ini"},
         {"file.nginxconf", "nginx"},
         {"meson_options.txt", "meson"},
@@ -60,6 +70,7 @@ static void test_find_ft_filename(void)
         {"Makefile.a_", NULL},
         {"Makefile._m", NULL},
         {"M_______.am", NULL},
+        {".Makefile", NULL},
         {"file.glslf", "glsl"},
         {"file.glslv", "glsl"},
         {"file.gl_lv", NULL},
@@ -83,6 +94,8 @@ static void test_find_ft_filename(void)
         {"test.c.pacsave", "c"},
         {"test.c.dpkg-dist", "c"},
         {"test.c.dpkg-old", "c"},
+        {"test.c.dpkg-backup", "c"},
+        {"test.c.dpkg-remove", "c"},
         {"test.c.rpmnew", "c"},
         {"test.c.rpmsave", "c"},
         {".c", NULL},
@@ -91,16 +104,16 @@ static void test_find_ft_filename(void)
     };
     const StringView empty_line = STRING_VIEW_INIT;
     FOR_EACH_I(i, tests) {
-        const struct ft_filename_test *t = &tests[i];
-        const char *result = find_ft(t->filename, empty_line);
-        IEXPECT_STREQ(result, t->expected_filetype);
+        const char *ft = find_ft(tests[i].filename, empty_line);
+        IEXPECT_STREQ(ft, tests[i].expected_filetype);
     }
 }
 
 static void test_find_ft_firstline(void)
 {
-    static const struct ft_firstline_test {
-        const char *line, *expected_filetype;
+    static const struct {
+        const char *line;
+        const char *expected_filetype;
     } tests[] = {
         {"<!DOCTYPE html>", "html"},
         {"<!doctype HTML", "html"},
@@ -113,6 +126,11 @@ static void test_find_ft_firstline(void)
         {"%YAML 1.1", "yaml"},
         {"[wrap-file]", "ini"},
         {"[wrap-file", NULL},
+        {"[section] \t", "ini"},
+        {" [section]", NULL},
+        {"[section \t", NULL},
+        {"[ section]", NULL},
+        {"[1]", NULL},
         {"diff --git a/example.txt b/example.txt", "diff"},
         {".TH DTE 1", NULL},
         {"", NULL},
@@ -171,16 +189,41 @@ static void test_find_ft_firstline(void)
         {"#!/usr/bin/unknown", NULL},
     };
     FOR_EACH_I(i, tests) {
-        const struct ft_firstline_test *t = &tests[i];
-        const char *result = find_ft(NULL, string_view_from_cstring(t->line));
-        IEXPECT_STREQ(result, t->expected_filetype);
+        const char *ft = find_ft(NULL, strview_from_cstring(tests[i].line));
+        IEXPECT_STREQ(ft, tests[i].expected_filetype);
     }
 }
 
-DISABLE_WARNING("-Wmissing-prototypes")
-
-void test_filetype(void)
+static void test_is_ft(void)
 {
-    test_find_ft_filename();
-    test_find_ft_firstline();
+    EXPECT_TRUE(is_ft("ada"));
+    EXPECT_TRUE(is_ft("asm"));
+    EXPECT_TRUE(is_ft("awk"));
+    EXPECT_TRUE(is_ft("c"));
+    EXPECT_TRUE(is_ft("d"));
+    EXPECT_TRUE(is_ft("dte"));
+    EXPECT_TRUE(is_ft("java"));
+    EXPECT_TRUE(is_ft("javascript"));
+    EXPECT_TRUE(is_ft("lua"));
+    EXPECT_TRUE(is_ft("mail"));
+    EXPECT_TRUE(is_ft("make"));
+    EXPECT_TRUE(is_ft("pkg-config"));
+    EXPECT_TRUE(is_ft("rst"));
+    EXPECT_TRUE(is_ft("sh"));
+    EXPECT_TRUE(is_ft("yaml"));
+    EXPECT_TRUE(is_ft("zig"));
+
+    EXPECT_FALSE(is_ft(""));
+    EXPECT_FALSE(is_ft("-"));
+    EXPECT_FALSE(is_ft("a"));
+    EXPECT_FALSE(is_ft("C"));
+    EXPECT_FALSE(is_ft("MAKE"));
 }
+
+static const TestEntry tests[] = {
+    TEST(test_find_ft_filename),
+    TEST(test_find_ft_firstline),
+    TEST(test_is_ft),
+};
+
+const TestGroup filetype_tests = TEST_GROUP(tests);

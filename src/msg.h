@@ -22,22 +22,17 @@ typedef struct {
     FileLocation *loc;
 } Message;
 
-FileLocation *file_location_create (
-    const char *filename,
-    unsigned long buffer_id,
-    unsigned long line,
-    unsigned long column
-);
-
+FileLocation *get_current_file_location(void) RETURNS_NONNULL;
 void file_location_free(FileLocation *loc);
 void push_file_location(FileLocation *loc);
 void pop_file_location(void);
 
-Message *new_message(const char *msg);
+Message *new_message(const char *msg, size_t len) RETURNS_NONNULL;
 void add_message(Message *m);
 void activate_current_message(void);
 void activate_next_message(void);
 void activate_prev_message(void);
+void activate_current_message_save(void);
 void clear_messages(void);
 size_t message_count(void) PURE;
 

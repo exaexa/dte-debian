@@ -3,14 +3,17 @@
 
 #include <regex.h>
 #include <stdbool.h>
-#include "util/ptr-array.h"
+#include <stddef.h>
+#include "util/string-view.h"
 
-bool regexp_match_nosub(const char *pattern, const char *buf, size_t size);
-bool regexp_match(const char *pattern, const char *buf, size_t size, PointerArray *m);
+typedef struct {
+    char start[8];
+    char end[8];
+} RegexpWordBoundaryTokens;
+
+extern RegexpWordBoundaryTokens regexp_word_boundary;
 
 bool regexp_compile_internal(regex_t *re, const char *pattern, int flags);
-bool regexp_exec(const regex_t *re, const char *buf, size_t size, size_t nr_m, regmatch_t *m, int flags);
-bool regexp_exec_sub(const regex_t *re, const char *buf, size_t size, PointerArray *matches, int flags);
 
 static inline bool regexp_compile(regex_t *re, const char *pattern, int flags)
 {
@@ -31,5 +34,9 @@ static inline bool regexp_compile_basic(regex_t *re, const char *pattern, int fl
 {
     return regexp_compile_internal(re, pattern, flags);
 }
+
+bool regexp_match_nosub(const char *pattern, const StringView *buf);
+bool regexp_exec(const regex_t *re, const char *buf, size_t size, size_t nr_m, regmatch_t *m, int flags);
+void regexp_init_word_boundary_tokens(void);
 
 #endif

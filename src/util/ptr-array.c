@@ -1,10 +1,11 @@
 #include <string.h>
 #include "ptr-array.h"
+#include "debug.h"
 
-void ptr_array_add(PointerArray *array, void *ptr)
+void ptr_array_append(PointerArray *array, void *ptr)
 {
     size_t alloc = array->alloc;
-    if (alloc == array->count) {
+    if (unlikely(alloc == array->count)) {
         // NOTE: if alloc was 1 then new alloc would be 1*3/2 = 1!
         alloc *= 3;
         alloc /= 2;
@@ -19,15 +20,47 @@ void ptr_array_add(PointerArray *array, void *ptr)
 
 void ptr_array_insert(PointerArray *array, void *ptr, size_t pos)
 {
+    BUG_ON(pos > array->count);
     size_t count = array->count - pos;
-    ptr_array_add(array, NULL);
+    ptr_array_append(array, NULL);
     memmove(array->ptrs + pos + 1, array->ptrs + pos, count * sizeof(void *));
     array->ptrs[pos] = ptr;
 }
 
+// Move a pointer from one index to another
+void ptr_array_move(PointerArray *array, size_t from, size_t to)
+{
+    BUG_ON(from >= array->count);
+    BUG_ON(to >= array->count);
+    if (unlikely(from == to)) {
+        return;
+    }
+
+    void **p = array->ptrs;
+    void *tmp = p[from];
+    size_t difference = (from < to) ? (to - from) : (from - to);
+    if (difference == 1) {
+        // Adjacent pointers can be moved with a simple swap
+        p[from] = p[to];
+        p[to] = tmp;
+        return;
+    }
+
+    void *dest, *src;
+    if (from < to) {
+        dest = p + from;
+        src = p + from + 1;
+    } else {
+        dest = p + to + 1;
+        src = p + to;
+    }
+    memmove(dest, src, difference * sizeof(void*));
+    p[to] = tmp;
+}
+
 void ptr_array_free_cb(PointerArray *array, FreeFunction free_ptr)
 {
-    for (size_t i = 0; i < array->count; i++) {
+    for (size_t i = 0, n = array->count; i < n; i++) {
         free_ptr(array->ptrs[i]);
         array->ptrs[i] = NULL;
     }
@@ -42,6 +75,7 @@ void ptr_array_remove(PointerArray *array, void *ptr)
 
 void *ptr_array_remove_idx(PointerArray *array, size_t pos)
 {
+    BUG_ON(pos >= array->count);
     void **ptrs = array->ptrs;
     void *removed = ptrs[pos];
     array->count--;
@@ -57,12 +91,6 @@ size_t ptr_array_idx(const PointerArray *array, const void *ptr)
         }
     }
     return -1;
-}
-
-void *ptr_array_rel(const PointerArray *array, const void *ptr, size_t offset)
-{
-    size_t i = ptr_array_idx(array, ptr);
-    return array->ptrs[(i + offset + array->count) % array->count];
 }
 
 // Trim all leading NULLs and all but one trailing NULL (if any)

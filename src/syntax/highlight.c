@@ -1,10 +1,13 @@
-#include <inttypes.h>
+#include <stdint.h>
+#include <string.h>
 #include <sys/types.h>
 #include "highlight.h"
 #include "syntax.h"
-#include "../debug.h"
-#include "../util/ascii.h"
-#include "../util/xmalloc.h"
+#include "block-iter.h"
+#include "util/ascii.h"
+#include "util/debug.h"
+#include "util/str-util.h"
+#include "util/xmalloc.h"
 
 static bool state_is_valid(const State *st)
 {
@@ -23,16 +26,20 @@ static bool states_equal(void **ptrs, size_t idx, const State *b)
     return a == b;
 }
 
-static bool is_buffered(const Condition *cond, const char *str, size_t len)
+static bool bufis(const ConditionData *u, const char *buf, size_t len)
 {
-    if (len != (size_t)cond->u.cond_bufis.len) {
+    if (len != (size_t)u->str.len) {
         return false;
     }
+    return mem_equal(u->str.buf, buf, len);
+}
 
-    if (cond->u.cond_bufis.icase) {
-        return mem_equal_icase(cond->u.cond_bufis.str, str, len);
+static bool bufis_icase(const ConditionData *u, const char *buf, size_t len)
+{
+    if (len != (size_t)u->str.len) {
+        return false;
     }
-    return !memcmp(cond->u.cond_bufis.str, str, len);
+    return mem_equal_icase(u->str.buf, buf, len);
 }
 
 static State *handle_heredoc (
@@ -43,7 +50,7 @@ static State *handle_heredoc (
 ) {
     for (size_t i = 0, n = state->heredoc.states.count; i < n; i++) {
         HeredocState *s = state->heredoc.states.ptrs[i];
-        if (s->len == len && !memcmp(s->delim, delim, len)) {
+        if (s->len == len && mem_equal(s->delim, delim, len)) {
             return s->state;
         }
     }
@@ -55,35 +62,39 @@ static State *handle_heredoc (
         .delim_len = len
     };
 
-    HeredocState *s = xnew0(HeredocState, 1);
-    s->state = merge_syntax(syn, &m);
-    s->delim = xmemdup(delim, len);
-    s->len = len;
-    ptr_array_add(&state->heredoc.states, s);
+    HeredocState *s = xnew(HeredocState, 1);
+    *s = (HeredocState) {
+        .state = merge_syntax(syn, &m),
+        .delim = xmemdup(delim, len),
+        .len = len,
+    };
+
+    ptr_array_append(&state->heredoc.states, s);
     return s->state;
 }
 
 // Line should be terminated with \n unless it's the last line
-static HlColor **highlight_line (
+static TermColor **highlight_line (
     Syntax *syn,
     State *state,
-    const LineRef *lr,
+    const StringView *line_sv,
     State **ret
 ) {
-    static HlColor **colors;
+    static TermColor **colors;
     static size_t alloc;
-    const char *const line = lr->line;
-    const size_t len = lr->size;
+    const unsigned char *const line = line_sv->data;
+    const size_t len = line_sv->length;
     size_t i = 0;
     ssize_t sidx = -1;
 
     if (len > alloc) {
-        alloc = ROUND_UP(len, 128);
+        alloc = round_size_to_next_multiple(len, 128);
         xrenew(colors, alloc);
     }
 
     while (1) {
         const Condition *cond;
+        const ConditionData *u;
         const Action *a;
         unsigned char ch;
     top:
@@ -93,10 +104,11 @@ static HlColor **highlight_line (
         ch = line[i];
         for (size_t ci = 0, n = state->conds.count; ci < n; ci++) {
             cond = state->conds.ptrs[ci];
+            u = &cond->u;
             a = &cond->a;
             switch (cond->type) {
             case COND_CHAR_BUFFER:
-                if (!bitset_contains(cond->u.cond_char.bitset, ch)) {
+                if (!bitset_contains(u->bitset, ch)) {
                     break;
                 }
                 if (sidx < 0) {
@@ -106,7 +118,17 @@ static HlColor **highlight_line (
                 state = a->destination;
                 goto top;
             case COND_BUFIS:
-                if (sidx >= 0 && is_buffered(cond, line + sidx, i - sidx)) {
+                if (sidx >= 0 && bufis(u, line + sidx, i - sidx)) {
+                    for (size_t idx = sidx; idx < i; idx++) {
+                        colors[idx] = a->emit_color;
+                    }
+                    sidx = -1;
+                    state = a->destination;
+                    goto top;
+                }
+                break;
+            case COND_BUFIS_ICASE:
+                if (sidx >= 0 && bufis_icase(u, line + sidx, i - sidx)) {
                     for (size_t idx = sidx; idx < i; idx++) {
                         colors[idx] = a->emit_color;
                     }
@@ -116,7 +138,7 @@ static HlColor **highlight_line (
                 }
                 break;
             case COND_CHAR:
-                if (!bitset_contains(cond->u.cond_char.bitset, ch)) {
+                if (!bitset_contains(u->bitset, ch)) {
                     break;
                 }
                 colors[i++] = a->emit_color;
@@ -124,7 +146,7 @@ static HlColor **highlight_line (
                 state = a->destination;
                 goto top;
             case COND_CHAR1:
-                if (cond->u.cond_single_char.ch != ch) {
+                if (u->ch != ch) {
                     break;
                 }
                 colors[i++] = a->emit_color;
@@ -134,11 +156,7 @@ static HlColor **highlight_line (
             case COND_INLIST:
                 if (
                     sidx >= 0
-                    && hashset_get (
-                        &cond->u.cond_inlist.list->strings,
-                        line + sidx,
-                        i - sidx
-                    )
+                    && hashset_get(&u->str_list->strings, line + sidx, i - sidx)
                 ) {
                     for (size_t idx = sidx; idx < i; idx++) {
                         colors[idx] = a->emit_color;
@@ -149,7 +167,7 @@ static HlColor **highlight_line (
                 }
                 break;
             case COND_RECOLOR: {
-                ssize_t idx = i - cond->u.cond_recolor.len;
+                ssize_t idx = i - u->recolor_len;
                 if (idx < 0) {
                     idx = 0;
                 }
@@ -166,41 +184,37 @@ static HlColor **highlight_line (
                 }
                 break;
             case COND_STR: {
-                size_t slen = cond->u.cond_str.len;
+                size_t slen = u->str.len;
                 size_t end = i + slen;
-                if (
-                    len >= end
-                    && !memcmp(cond->u.cond_str.str, line + i, slen)
-                ) {
-                    while (i < end) {
-                        colors[i++] = a->emit_color;
-                    }
-                    sidx = -1;
-                    state = a->destination;
-                    goto top;
+                if (len < end || !mem_equal(u->str.buf, line + i, slen)) {
+                    break;
                 }
-                } break;
+                while (i < end) {
+                    colors[i++] = a->emit_color;
+                }
+                sidx = -1;
+                state = a->destination;
+                goto top;
+                }
             case COND_STR_ICASE: {
-                size_t slen = cond->u.cond_str.len;
+                size_t slen = u->str.len;
                 size_t end = i + slen;
-                if (
-                    len >= end
-                    && mem_equal_icase(cond->u.cond_str.str, line + i, slen)
-                ) {
-                    while (i < end) {
-                        colors[i++] = a->emit_color;
-                    }
-                    sidx = -1;
-                    state = a->destination;
-                    goto top;
+                if (len < end || !mem_equal_icase(u->str.buf, line + i, slen)) {
+                    break;
                 }
-                } break;
+                while (i < end) {
+                    colors[i++] = a->emit_color;
+                }
+                sidx = -1;
+                state = a->destination;
+                goto top;
+                }
             case COND_STR2:
                 // Optimized COND_STR (length 2, case sensitive)
                 if (
-                    ch == cond->u.cond_str.str[0]
+                    ch == u->str.buf[0]
                     && len - i > 1
-                    && line[i + 1] == cond->u.cond_str.str[1]
+                    && line[i + 1] == u->str.buf[1]
                 ) {
                     colors[i++] = a->emit_color;
                     colors[i++] = a->emit_color;
@@ -210,10 +224,10 @@ static HlColor **highlight_line (
                 }
                 break;
             case COND_HEREDOCEND: {
-                const char *str = cond->u.cond_heredocend.str;
-                size_t slen = cond->u.cond_heredocend.len;
+                const char *str = u->heredocend.data;
+                size_t slen = u->heredocend.length;
                 size_t end = i + slen;
-                if (len >= end && (slen == 0 || !memcmp(str, line + i, slen))) {
+                if (len >= end && (slen == 0 || mem_equal(str, line + i, slen))) {
                     while (i < end) {
                         colors[i++] = a->emit_color;
                     }
@@ -222,6 +236,8 @@ static HlColor **highlight_line (
                     goto top;
                 }
                 } break;
+            default:
+                BUG("unhandled condition type");
             }
         }
 
@@ -244,7 +260,7 @@ static HlColor **highlight_line (
             break;
         case STATE_INVALID:
         default:
-            BUG("Invalid default action type should never make it here");
+            BUG("unhandled default action type");
         }
     }
 
@@ -257,7 +273,7 @@ static HlColor **highlight_line (
 static void resize_line_states(PointerArray *s, size_t count)
 {
     if (s->alloc < count) {
-        s->alloc = ROUND_UP(count, 64);
+        s->alloc = round_size_to_next_multiple(count, 64);
         xrenew(s->ptrs, s->alloc);
     }
 }
@@ -284,11 +300,11 @@ static ssize_t fill_hole(Buffer *b, BlockIter *bi, ssize_t sidx, ssize_t eidx)
     ssize_t idx = sidx;
 
     while (idx < eidx) {
-        LineRef lr;
+        StringView line;
         State *st;
-        fill_line_nl_ref(bi, &lr);
+        fill_line_nl_ref(bi, &line);
         block_iter_eat_line(bi);
-        highlight_line(b->syn, ptrs[idx++], &lr, &st);
+        highlight_line(b->syn, ptrs[idx++], &line, &st);
 
         if (ptrs[idx] == st) {
             // Was not invalidated and didn't change
@@ -316,7 +332,7 @@ void hl_fill_start_states(Buffer *b, size_t line_nr)
     ssize_t current_line = 0;
     ssize_t idx = 0;
 
-    if (b->syn == NULL) {
+    if (!b->syn) {
         return;
     }
 
@@ -351,12 +367,12 @@ void hl_fill_start_states(Buffer *b, size_t line_nr)
     // Add new
     block_iter_move_down(&bi, s->count - 1 - current_line);
     while (s->count - 1 < line_nr) {
-        LineRef lr;
-        fill_line_nl_ref(&bi, &lr);
+        StringView line;
+        fill_line_nl_ref(&bi, &line);
         highlight_line (
             b->syn,
             states[s->count - 1],
-            &lr,
+            &line,
             &states[s->count]
         );
         s->count++;
@@ -364,21 +380,21 @@ void hl_fill_start_states(Buffer *b, size_t line_nr)
     }
 }
 
-HlColor **hl_line (
+TermColor **hl_line (
     Buffer *b,
-    const LineRef *lr,
+    const StringView *line,
     size_t line_nr,
     bool *next_changed
 ) {
     *next_changed = false;
-    if (b->syn == NULL) {
+    if (!b->syn) {
         return NULL;
     }
 
     PointerArray *s = &b->line_start_states;
     BUG_ON(line_nr >= s->count);
     State *next;
-    HlColor **colors = highlight_line(b->syn, s->ptrs[line_nr++], lr, &next);
+    TermColor **colors = highlight_line(b->syn, s->ptrs[line_nr++], line, &next);
 
     if (line_nr == s->count) {
         resize_line_states(s, s->count + 1);

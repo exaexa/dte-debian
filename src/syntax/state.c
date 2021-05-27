@@ -1,17 +1,18 @@
 #include <errno.h>
+#include <stdbool.h>
+#include <string.h>
 #include "state.h"
-#include "syntax.h"
-#include "../command.h"
-#include "../config.h"
-#include "../editor.h"
-#include "../error.h"
-#include "../parse-args.h"
-#include "../terminal/color.h"
-#include "../util/path.h"
-#include "../util/str-util.h"
-#include "../util/strtonum.h"
-#include "../util/xmalloc.h"
-#include "../util/xsnprintf.h"
+#include "command/args.h"
+#include "command/run.h"
+#include "editor.h"
+#include "error.h"
+#include "util/bsearch.h"
+#include "util/macros.h"
+#include "util/path.h"
+#include "util/str-util.h"
+#include "util/strtonum.h"
+#include "util/xmalloc.h"
+#include "util/xsnprintf.h"
 
 static Syntax *current_syntax;
 static State *current_state;
@@ -61,7 +62,12 @@ static State *find_or_add_state(const char *name)
     st->name = xstrdup(name);
     st->defined = false;
     st->type = STATE_INVALID;
-    ptr_array_add(&current_syntax->states, st);
+
+    hashmap_insert(&current_syntax->states, st->name, st);
+    if (current_syntax->states.count == 1) {
+        current_syntax->start_state = st;
+    }
+
     return st;
 }
 
@@ -114,7 +120,7 @@ static bool subsyntax_call(const char *name, const char *ret, State **dest)
 
 static bool destination_state(const char *name, State **dest)
 {
-    const char *const sep = strchr(name, ':');
+    const char *sep = strchr(name, ':');
     if (sep) {
         // subsyntax:returnstate
         char *sub = xstrcut(name, sep - name);
@@ -153,72 +159,61 @@ static Condition *add_condition (
     c->a.destination = d;
     c->a.emit_name = emit ? xstrdup(emit) : NULL;
     c->type = type;
-    ptr_array_add(&current_state->conds, c);
+    ptr_array_append(&current_state->conds, c);
     return c;
 }
 
 static void cmd_bufis(const CommandArgs *a)
 {
-    char **args = a->args;
-    const bool icase = a->flags[0] == 'i';
-    const char *str = args[0];
+    const char *str = a->args[0];
     const size_t len = strlen(str);
     Condition *c;
-
-    if (len > ARRAY_COUNT(c->u.cond_bufis.str)) {
+    if (len > ARRAY_COUNT(c->u.str.buf)) {
         error_msg (
             "Maximum length of string is %zu bytes",
-            ARRAY_COUNT(c->u.cond_bufis.str)
+            ARRAY_COUNT(c->u.str.buf)
         );
         return;
     }
 
-    c = add_condition(COND_BUFIS, args[1], args[2]);
+    ConditionType type = a->flags[0] == 'i' ? COND_BUFIS_ICASE : COND_BUFIS;
+    c = add_condition(type, a->args[1], a->args[2]);
     if (c) {
-        memcpy(c->u.cond_bufis.str, str, len);
-        c->u.cond_bufis.len = len;
-        c->u.cond_bufis.icase = icase;
+        memcpy(c->u.str.buf, str, len);
+        c->u.str.len = len;
     }
 }
 
 static void cmd_char(const CommandArgs *a)
 {
-    const char *pf = a->flags;
-    bool n_flag = false;
-    bool b_flag = false;
-    while (*pf) {
-        switch (*pf) {
-        case 'b':
-            b_flag = true;
-            break;
-        case 'n':
-            n_flag = true;
-            break;
-        }
-        pf++;
+    const char *chars = a->args[0];
+    if (chars[0] == '\0') {
+        error_msg("char argument can't be empty");
+        return;
     }
 
-    char **args = a->args;
+    bool add_to_buffer = cmdargs_has_flag(a, 'b');
+    bool invert = cmdargs_has_flag(a, 'n');
     ConditionType type;
-    if (b_flag) {
+    if (add_to_buffer) {
         type = COND_CHAR_BUFFER;
-    } else if (!n_flag && args[0][0] != '\0' && args[0][1] == '\0') {
+    } else if (!invert && chars[1] == '\0') {
         type = COND_CHAR1;
     } else {
         type = COND_CHAR;
     }
 
-    Condition *c = add_condition(type, args[1], args[2]);
+    Condition *c = add_condition(type, a->args[1], a->args[2]);
     if (!c) {
         return;
     }
 
     if (type == COND_CHAR1) {
-        c->u.cond_single_char.ch = (unsigned char)args[0][0];
+        c->u.ch = (unsigned char)chars[0];
     } else {
-        bitset_add_pattern(c->u.cond_char.bitset, args[0]);
-        if (n_flag) {
-            bitset_invert(c->u.cond_char.bitset);
+        bitset_add_char_range(c->u.bitset, chars);
+        if (invert) {
+            BITSET_INVERT(c->u.bitset);
         }
     }
 }
@@ -229,10 +224,21 @@ static void cmd_default(const CommandArgs *a)
     if (no_syntax()) {
         return;
     }
-    ptr_array_add (
-        &current_syntax->default_colors,
-        copy_string_array(a->args, a->nr_args)
-    );
+
+    const char *value = str_intern(a->args[0]);
+    HashMap *map = &current_syntax->default_colors;
+    for (size_t i = 1, n = a->nr_args; i < n; i++) {
+        const char *name = a->args[i];
+        void *oldval = hashmap_insert_or_replace(map, xstrdup(name), (char*)value);
+        if (unlikely(oldval)) {
+            DEBUG_LOG (
+                "duplicate 'default' argument in %s:%d: '%s'",
+                current_config.file,
+                current_config.line,
+                name
+            );
+        }
+    }
 }
 
 static void cmd_eat(const CommandArgs *a)
@@ -298,10 +304,9 @@ static void cmd_list(const CommandArgs *a)
     char **args = a->args;
     const char *name = args[0];
     StringList *list = find_string_list(current_syntax, name);
-    if (list == NULL) {
+    if (!list) {
         list = xnew0(StringList, 1);
-        list->name = xstrdup(name);
-        ptr_array_add(&current_syntax->string_lists, list);
+        hashmap_insert(&current_syntax->string_lists, xstrdup(name), list);
     } else if (list->defined) {
         error_msg("List %s already exists.", name);
         return;
@@ -309,9 +314,12 @@ static void cmd_list(const CommandArgs *a)
     list->defined = true;
 
     bool icase = a->flags[0] == 'i';
-    size_t nstrings = a->nr_args - 1;
-    hashset_init(&list->strings, nstrings, icase);
-    hashset_add_many(&list->strings, args + 1, nstrings);
+    HashSet *set = &list->strings;
+    hashset_init(set, a->nr_args - 1, icase);
+    for (size_t i = 1, n = a->nr_args; i < n; i++) {
+        const char *str = args[i];
+        hashset_add(set, str, strlen(str));
+    }
 }
 
 static void cmd_inlist(const CommandArgs *a)
@@ -322,18 +330,17 @@ static void cmd_inlist(const CommandArgs *a)
     StringList *list = find_string_list(current_syntax, name);
     Condition *c = add_condition(COND_INLIST, args[1], emit);
 
-    if (c == NULL) {
+    if (!c) {
         return;
     }
 
-    if (list == NULL) {
+    if (!list) {
         // Add undefined list
         list = xnew0(StringList, 1);
-        list->name = xstrdup(name);
-        ptr_array_add(&current_syntax->string_lists, list);
+        hashmap_insert(&current_syntax->string_lists, xstrdup(name), list);
     }
     list->used = true;
-    c->u.cond_inlist.list = list;
+    c->u.str_list = list;
 }
 
 static void cmd_noeat(const CommandArgs *a)
@@ -344,10 +351,7 @@ static void cmd_noeat(const CommandArgs *a)
 
     const char *arg = a->args[0];
     if (streq(arg, current_state->name)) {
-        error_msg (
-            "Using noeat to to jump to parent state causes"
-            " infinite loop"
-        );
+        error_msg("Using noeat to jump to parent state causes infinite loop");
         return;
     }
 
@@ -393,7 +397,7 @@ static void cmd_recolor(const CommandArgs *a)
 
     Condition *c = add_condition(type, NULL, a->args[0]);
     if (c && type == COND_RECOLOR) {
-        c->u.cond_recolor.len = len;
+        c->u.recolor_len = len;
     }
 }
 
@@ -428,10 +432,10 @@ static void cmd_str(const CommandArgs *a)
     Condition *c;
     size_t len = strlen(str);
 
-    if (len > ARRAY_COUNT(c->u.cond_str.str)) {
+    if (len > ARRAY_COUNT(c->u.str.buf)) {
         error_msg (
             "Maximum length of string is %zu bytes",
-            ARRAY_COUNT(c->u.cond_str.str)
+            ARRAY_COUNT(c->u.str.buf)
         );
         return;
     }
@@ -442,8 +446,8 @@ static void cmd_str(const CommandArgs *a)
     }
     c = add_condition(type, a->args[1], a->args[2]);
     if (c) {
-        memcpy(c->u.cond_str.str, str, len);
-        c->u.cond_str.len = len;
+        memcpy(c->u.str.buf, str, len);
+        c->u.str.len = len;
     }
 }
 
@@ -468,31 +472,39 @@ static void cmd_syntax(const CommandArgs *a)
 }
 
 static void cmd_include(const CommandArgs *a);
+static void cmd_require(const CommandArgs *a);
 
-// Prevent Clang whining about .max_args = -1
-#if HAS_WARNING("-Wbitfield-constant-conversion")
- IGNORE_WARNING("-Wbitfield-constant-conversion")
-#endif
-
-static const Command syntax_commands[] = {
-    {"bufis", "i", 2, 3, cmd_bufis},
-    {"char", "bn", 2, 3, cmd_char},
-    {"default", "", 2, -1, cmd_default},
-    {"eat", "", 1, 2, cmd_eat},
-    {"heredocbegin", "", 2, 2, cmd_heredocbegin},
-    {"heredocend", "", 1, 2, cmd_heredocend},
-    {"include", "b", 1, 1, cmd_include},
-    {"inlist", "", 2, 3, cmd_inlist},
-    {"list", "i", 2, -1, cmd_list},
-    {"noeat", "b", 1, 1, cmd_noeat},
-    {"recolor", "", 1, 2, cmd_recolor},
-    {"state", "", 1, 2, cmd_state},
-    {"str", "i", 2, 3, cmd_str},
-    {"syntax", "", 1, 1, cmd_syntax},
-    {"", "", 0, 0, NULL}
+static const Command cmds[] = {
+    {"bufis", "i", true, 2, 3, cmd_bufis},
+    {"char", "bn", true, 2, 3, cmd_char},
+    {"default", "", true, 2, -1, cmd_default},
+    {"eat", "", true, 1, 2, cmd_eat},
+    {"heredocbegin", "", true, 2, 2, cmd_heredocbegin},
+    {"heredocend", "", true, 1, 2, cmd_heredocend},
+    {"include", "b", true, 1, 1, cmd_include},
+    {"inlist", "", true, 2, 3, cmd_inlist},
+    {"list", "i", true, 2, -1, cmd_list},
+    {"noeat", "b", true, 1, 1, cmd_noeat},
+    {"recolor", "", true, 1, 2, cmd_recolor},
+    {"require", "f", true, 1, 1, cmd_require},
+    {"state", "", true, 1, 2, cmd_state},
+    {"str", "i", true, 2, 3, cmd_str},
+    {"syntax", "", true, 1, 1, cmd_syntax},
 };
 
-UNIGNORE_WARNINGS
+UNITTEST {
+    CHECK_BSEARCH_ARRAY(cmds, name, strcmp);
+}
+
+static const Command *find_syntax_command(const char *name)
+{
+    return BSEARCH(name, cmds, command_cmp);
+}
+
+static const CommandSet syntax_commands = {
+    .lookup = find_syntax_command,
+    .allow_recording = NULL,
+};
 
 static void cmd_include(const CommandArgs *a)
 {
@@ -500,32 +512,63 @@ static void cmd_include(const CommandArgs *a)
     if (a->flags[0] == 'b') {
         flags |= CFG_BUILTIN;
     }
-    read_config(syntax_commands, a->args[0], flags);
+    read_config(&syntax_commands, a->args[0], flags);
+}
+
+static void cmd_require(const CommandArgs *a)
+{
+    static HashSet loaded_files;
+    static HashSet loaded_builtins;
+    if (!loaded_files.table_size) {
+        hashset_init(&loaded_files, 8, false);
+        hashset_init(&loaded_builtins, 8, false);
+    }
+
+    char buf[4096];
+    char *path;
+    size_t path_len;
+    HashSet *set;
+    ConfigFlags flags = CFG_MUST_EXIST;
+
+    if (a->flags[0] == 'f') {
+        set = &loaded_files;
+        path = a->args[0];
+        path_len = strlen(path);
+    } else {
+        set = &loaded_builtins;
+        path_len = xsnprintf(buf, sizeof(buf), "syntax/inc/%s", a->args[0]);
+        path = buf;
+        flags |= CFG_BUILTIN;
+    }
+
+    if (hashset_get(set, path, path_len)) {
+        return;
+    }
+
+    if (read_config(&syntax_commands, path, flags) == 0) {
+        hashset_add(set, path, path_len);
+    }
 }
 
 Syntax *load_syntax_file(const char *filename, ConfigFlags flags, int *err)
 {
-    const char *saved_config_file = config_file;
-    int saved_config_line = config_line;
-
-    *err = do_read_config(syntax_commands, filename, flags);
+    const ConfigState saved = current_config;
+    *err = do_read_config(&syntax_commands, filename, flags);
     if (*err) {
-        config_file = saved_config_file;
-        config_line = saved_config_line;
+        current_config = saved;
         return NULL;
     }
     if (current_syntax) {
         finish_syntax();
         find_unused_subsyntaxes();
     }
-    config_file = saved_config_file;
-    config_line = saved_config_line;
+    current_config = saved;
 
     Syntax *syn = find_syntax(path_basename(filename));
     if (syn && editor.status != EDITOR_INITIALIZING) {
         update_syntax_colors(syn);
     }
-    if (syn == NULL) {
+    if (!syn) {
         *err = EINVAL;
     }
     return syn;

@@ -2,74 +2,77 @@ static const struct FileInterpreterMap {
     const char key[8];
     const FileTypeEnum filetype;
 } interpreters[] = {
-    {"ash", SHELL},
+    {"ash", SH},
     {"awk", AWK},
-    {"bash", SHELL},
+    {"bash", SH},
     {"bigloo", SCHEME},
     {"ccl", LISP},
     {"chicken", SCHEME},
     {"clisp", LISP},
     {"coffee", COFFEESCRIPT},
     {"crystal", RUBY},
-    {"dash", SHELL},
+    {"dart", DART},
+    {"dash", SH},
     {"ecl", LISP},
+    {"elixir", ELIXIR},
+    {"escript", ERLANG},
     {"gawk", AWK},
+    {"gjs", JAVASCRIPT},
     {"gmake", MAKE},
     {"gnuplot", GNUPLOT},
     {"groovy", GROOVY},
     {"gsed", SED},
     {"guile", SCHEME},
     {"jruby", RUBY},
-    {"ksh", SHELL},
+    {"julia", JULIA},
+    {"ksh", SH},
     {"lisp", LISP},
     {"lua", LUA},
     {"luajit", LUA},
     {"macruby", RUBY},
     {"make", MAKE},
     {"mawk", AWK},
-    {"mksh", SHELL},
+    {"mksh", SH},
     {"moon", MOONSCRIPT},
     {"nawk", AWK},
     {"node", JAVASCRIPT},
-    {"pdksh", SHELL},
+    {"ocaml", OCAML},
+    {"pdksh", SH},
     {"perl", PERL},
     {"php", PHP},
+    {"pwsh", POWERSHELL},
     {"python", PYTHON},
     {"r6rs", SCHEME},
     {"racket", SCHEME},
     {"rake", RUBY},
     {"ruby", RUBY},
+    {"runghc", HASKELL},
     {"sbcl", LISP},
+    {"scala", SCALA},
+    {"scheme", SCHEME},
     {"sed", SED},
-    {"sh", SHELL},
+    {"sh", SH},
     {"tcc", C},
     {"tclsh", TCL},
     {"wish", TCL},
-    {"zsh", SHELL},
+    {"zsh", SH},
 };
 
-static FileTypeEnum filetype_from_interpreter(const StringView sv)
+static FileTypeEnum filetype_from_interpreter(const StringView name)
 {
-    switch (sv.length) {
-    case 2: case 3: case 4:
-    case 5: case 6: case 7:
-        break;
-    case 10:
-        switch (sv.data[0]) {
-        case 'o': return memcmp(sv.data, "openrc-run", 10) ? NONE : SHELL;
-        case 'r': return memcmp(sv.data, "runhaskell", 10) ? NONE : HASKELL;
-        }
-        // Fallthrough
-    default:
+    if (name.length < 2) {
         return NONE;
     }
 
-    const struct FileInterpreterMap *e = bsearch (
-        &sv,
-        interpreters,
-        ARRAY_COUNT(interpreters),
-        sizeof(interpreters[0]),
-        ft_compare
-    );
+    if (name.length >= ARRAY_COUNT(interpreters[0].key)) {
+        if (strview_equal_cstring(&name, "openrc-run")) {
+            return SH;
+        } else if (strview_equal_cstring(&name, "runhaskell")) {
+            return HASKELL;
+        }
+        return NONE;
+    }
+
+    const struct FileInterpreterMap *e = BSEARCH(&name, interpreters, ft_compare);
     return e ? e->filetype : NONE;
 }

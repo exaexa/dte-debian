@@ -1,7 +1,10 @@
 #ifndef SPAWN_H
 #define SPAWN_H
 
+#include <stdbool.h>
 #include "compiler.h"
+#include "util/string.h"
+#include "util/string-view.h"
 
 typedef enum {
     SPAWN_DEFAULT = 0,
@@ -11,22 +14,17 @@ typedef enum {
 } SpawnFlags;
 
 typedef struct {
-    char *in;
-    char *out;
-    size_t in_len;
-    size_t out_len;
-} FilterData;
+    char **argv;
+    const char **env;
+    StringView input;
+    String output;
+    SpawnFlags flags;
+} SpawnContext;
 
-#define FILTER_DATA_INIT { \
-    .in = NULL, \
-    .out = NULL, \
-    .in_len = 0, \
-    .out_len = 0 \
-}
-
-int spawn_filter(char **argv, FilterData *data);
-int spawn_writer(char **argv, const char *text, size_t length);
+bool spawn_source(SpawnContext *ctx);
+bool spawn_sink(SpawnContext *ctx);
+bool spawn_filter(SpawnContext *ctx);
+void spawn(SpawnContext *ctx);
 void spawn_compiler(char **args, SpawnFlags flags, const Compiler *c);
-void spawn(char **args, int fd[3], bool prompt);
 
 #endif

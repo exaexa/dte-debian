@@ -1,16 +1,14 @@
 #include <stddef.h>
-#include <stdlib.h>
 #include <string.h>
-#include <sys/types.h>
 #include "editorconfig.h"
 #include "ini.h"
 #include "match.h"
-#include "../debug.h"
-#include "../util/ascii.h"
-#include "../util/path.h"
-#include "../util/string.h"
-#include "../util/string-view.h"
-#include "../util/strtonum.h"
+#include "util/debug.h"
+#include "util/path.h"
+#include "util/string.h"
+#include "util/string-view.h"
+#include "util/strtonum.h"
+#include "util/str-util.h"
 
 typedef struct {
     const char *const pathname;
@@ -27,7 +25,7 @@ typedef enum {
     EC_UNKNOWN_PROPERTY,
 } PropertyType;
 
-#define CMP(s, val) if (!memcmp(name->data, s, STRLEN(s))) return val; break
+#define CMP(s, val) if (mem_equal(name->data, s, STRLEN(s))) return val; break
 
 static PropertyType lookup_property(const StringView *name)
 {
@@ -48,16 +46,16 @@ static void editorconfig_option_set (
     unsigned int n = 0;
     switch (lookup_property(name)) {
     case EC_INDENT_STYLE:
-        if (string_view_equal_literal_icase(val, "space")) {
+        if (strview_equal_cstring_icase(val, "space")) {
             options->indent_style = INDENT_STYLE_SPACE;
-        } else if (string_view_equal_literal_icase(val, "tab")) {
+        } else if (strview_equal_cstring_icase(val, "tab")) {
             options->indent_style = INDENT_STYLE_TAB;
         } else {
             options->indent_style = INDENT_STYLE_UNSPECIFIED;
         }
         break;
     case EC_INDENT_SIZE:
-        if (string_view_equal_literal_icase(val, "tab")) {
+        if (strview_equal_cstring_icase(val, "tab")) {
             options->indent_size_is_tab = true;
             options->indent_size = 0;
         } else {
@@ -78,16 +76,19 @@ static void editorconfig_option_set (
         break;
     case EC_UNKNOWN_PROPERTY:
         break;
+    default:
+        BUG("unhandled property type");
     }
 }
 
-static int ini_handler(const IniData *data, void *ud) {
+static int ini_handler(const IniData *data, void *ud)
+{
     UserData *userdata = ud;
 
     if (data->section.length == 0) {
         if (
-            string_view_equal_literal_icase(&data->name, "root")
-            && string_view_equal_literal_icase(&data->value, "true")
+            strview_equal_cstring_icase(&data->name, "root")
+            && strview_equal_cstring_icase(&data->value, "true")
         ) {
             // root=true, clear all previous values
             userdata->options = editorconfig_options_init();
@@ -109,22 +110,22 @@ static int ini_handler(const IniData *data, void *ud) {
             case '*': case ',': case '-':
             case '?': case '[': case '\\':
             case ']': case '{': case '}':
-                string_add_byte(&pattern, '\\');
+                string_append_byte(&pattern, '\\');
                 // Fallthrough
             default:
-                string_add_byte(&pattern, ch);
+                string_append_byte(&pattern, ch);
             }
         }
 
-        if (!string_view_memchr(&data->section, '/')) {
+        if (!strview_memchr(&data->section, '/')) {
             // No slash in pattern, append "**/"
-            string_add_literal(&pattern, "**/");
+            string_append_literal(&pattern, "**/");
         } else if (data->section.data[0] != '/') {
             // Pattern contains at least one slash but not at the start, add one
-            string_add_byte(&pattern, '/');
+            string_append_byte(&pattern, '/');
         }
 
-        string_add_string_view(&pattern, &data->section);
+        string_append_strview(&pattern, &data->section);
         userdata->match = ec_pattern_match (
             pattern.buffer,
             pattern.len,
@@ -168,8 +169,8 @@ int get_editorconfig_options(const char *pathname, EditorConfigOptions *opts)
             return err_num;
         }
 
-        const char *const slash = strchr(ptr, '/');
-        if (slash == NULL) {
+        const char *slash = strchr(ptr, '/');
+        if (!slash) {
             break;
         }
 

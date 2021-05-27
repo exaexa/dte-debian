@@ -1,32 +1,24 @@
-#ifndef UTIL_UCHAR_H
-#define UTIL_UCHAR_H
+#ifndef UTIL_UTF8_H
+#define UTIL_UTF8_H
 
-#include <sys/types.h>
+#include <stddef.h>
+#include "macros.h"
 #include "unicode.h"
 
 static inline size_t u_char_size(CodePoint u)
 {
-    if (u <= UINT32_C(0x7f)) {
+    if (likely(u <= 0x7f)) {
         return 1;
-    } else if (u <= UINT32_C(0x7ff)) {
+    } else if (u <= 0x7ff) {
         return 2;
-    } else if (u <= UINT32_C(0xffff)) {
+    } else if (u <= 0xffff) {
         return 3;
-    } else if (u <= UINT32_C(0x10ffff)) {
+    } else if (u <= UNICODE_MAX_VALID_CODEPOINT) {
         return 4;
     }
 
-    // Invalid byte in UTF-8 byte sequence.
+    // Invalid byte in UTF-8 byte sequence
     return 1;
-}
-
-NONNULL_ARGS
-static inline void u_set_ctrl(char *buf, size_t *idx, CodePoint u)
-{
-    size_t i = *idx;
-    buf[i++] = '^';
-    buf[i++] = (u == 0x7F) ? '?' : u | 0x40;
-    *idx = i;
 }
 
 size_t u_str_width(const unsigned char *str);
@@ -50,7 +42,5 @@ void u_set_hex(char *str, size_t *idx, CodePoint u);
  * Returns number of bytes skipped.
  */
 size_t u_skip_chars(const char *str, int *width);
-
-ssize_t u_str_index(const char *haystack, const char *needle_lcase);
 
 #endif

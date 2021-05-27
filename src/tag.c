@@ -1,18 +1,16 @@
 #include <errno.h>
-#include <fcntl.h>
+#include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #include "tag.h"
 #include "completion.h"
-#include "debug.h"
-#include "error.h"
 #include "util/path.h"
 #include "util/str-util.h"
 #include "util/xmalloc.h"
 #include "util/xreadwrite.h"
 
 static TagFile *current_tag_file;
-static char *current_filename; // For sorting tags
+static const char *current_filename; // For sorting tags
 
 static int visibility_cmp(const Tag *a, const Tag *b)
 {
@@ -52,11 +50,11 @@ static int visibility_cmp(const Tag *a, const Tag *b)
         if (b->local && b_this_file) {
             return 0;
         }
-        // a is more interesting bacause it is local symbol
+        // a is more interesting because it is local symbol
         return -1;
     }
     if (b->local && b_this_file) {
-        // b is more interesting bacause it is local symbol
+        // b is more interesting because it is local symbol
         return 1;
     }
     return 0;
@@ -92,36 +90,29 @@ static int tag_cmp(const void *ap, const void *bp)
 {
     const Tag *a = *(const Tag **)ap;
     const Tag *b = *(const Tag **)bp;
-
-    int ret = visibility_cmp(a, b);
-    if (ret) {
-        return ret;
-    }
-
-    return kind_cmp(a, b);
+    int r = visibility_cmp(a, b);
+    return r ? r : kind_cmp(a, b);
 }
 
 // Find "tags" file from directory path and its parent directories
 static int open_tag_file(char *path)
 {
-    const char tags[] = "tags";
-
+    static const char tags[] = "tags";
     while (*path) {
         size_t len = strlen(path);
         char *slash = strrchr(path, '/');
-
         if (slash != path + len - 1) {
             path[len++] = '/';
         }
         memcpy(path + len, tags, sizeof(tags));
-        int fd = open(path, O_RDONLY);
+        int fd = xopen(path, O_RDONLY | O_CLOEXEC, 0);
         if (fd >= 0) {
             return fd;
         }
         if (errno != ENOENT) {
             return -1;
         }
-        *slash = 0;
+        *slash = '\0';
     }
     errno = ENOENT;
     return -1;
@@ -132,10 +123,7 @@ static bool tag_file_changed (
     const char *filename,
     const struct stat *st
 ) {
-    if (tf->mtime != st->st_mtime) {
-        return true;
-    }
-    return !streq(tf->filename, filename);
+    return tf->mtime != st->st_mtime || !streq(tf->filename, filename);
 }
 
 static void tag_file_free(TagFile *tf)
@@ -148,7 +136,7 @@ static void tag_file_free(TagFile *tf)
 TagFile *load_tag_file(void)
 {
     char path[4096];
-    if (!getcwd(path, sizeof(path) - 5)) { // 5 = length of "/tags"
+    if (!getcwd(path, sizeof(path) - STRLEN("/tags"))) {
         return NULL;
     }
 
@@ -159,35 +147,36 @@ TagFile *load_tag_file(void)
 
     struct stat st;
     if (fstat(fd, &st) != 0 || st.st_size <= 0) {
-        close(fd);
+        xclose(fd);
         return NULL;
     }
 
-    if (
-        current_tag_file != NULL
-        && tag_file_changed(current_tag_file, path, &st)
-    ) {
-        tag_file_free(current_tag_file);
-        current_tag_file = NULL;
-    }
-    if (current_tag_file != NULL) {
-        close(fd);
-        return current_tag_file;
+    if (current_tag_file) {
+        if (tag_file_changed(current_tag_file, path, &st)) {
+            tag_file_free(current_tag_file);
+            current_tag_file = NULL;
+        } else {
+            xclose(fd);
+            return current_tag_file;
+        }
     }
 
     char *buf = xmalloc(st.st_size);
     ssize_t size = xread(fd, buf, st.st_size);
-    close(fd);
+    xclose(fd);
     if (size < 0) {
         free(buf);
         return NULL;
     }
 
-    TagFile *tf = xnew0(TagFile, 1);
-    tf->filename = xstrdup(path);
-    tf->buf = buf;
-    tf->size = size;
-    tf->mtime = st.st_mtime;
+    TagFile *tf = xnew(TagFile, 1);
+    *tf = (TagFile) {
+        .filename = xstrdup(path),
+        .buf = buf,
+        .size = size,
+        .mtime = st.st_mtime,
+    };
+
     current_tag_file = tf;
     return current_tag_file;
 }
@@ -204,21 +193,19 @@ void free_tags(PointerArray *tags)
 }
 
 // Both parameters must be absolute and clean
-static char *path_relative(const char *filename, const char *dir)
+static const char *path_relative(const char *filename, const StringView dir)
 {
-    size_t dlen = strlen(dir);
-
-    if (!str_has_prefix(filename, dir)) {
+    if (strncmp(filename, dir.data, dir.length) != 0) {
+        // Filename doesn't start with dir
         return NULL;
     }
-    if (filename[dlen] == '\0') {
-        // Equal strings
-        return xmemdup_literal(".");
+    switch (filename[dir.length]) {
+    case '\0': // Equal strings
+        return ".";
+    case '/':
+        return filename + dir.length + 1;
     }
-    if (filename[dlen] != '/') {
-        return NULL;
-    }
-    return xstrdup(filename + dlen + 1);
+    return NULL;
 }
 
 void tag_file_find_tags (
@@ -230,20 +217,18 @@ void tag_file_find_tags (
     Tag *t = xnew(Tag, 1);
     size_t pos = 0;
     while (next_tag(tf, &pos, name, true, t)) {
-        ptr_array_add(tags, t);
+        ptr_array_append(tags, t);
         t = xnew(Tag, 1);
     }
     free(t);
 
-    if (filename == NULL) {
+    if (!filename) {
         current_filename = NULL;
     } else {
-        char *dir = path_dirname(tf->filename);
+        StringView dir = path_slice_dirname(tf->filename);
         current_filename = path_relative(filename, dir);
-        free(dir);
     }
     ptr_array_sort(tags, tag_cmp);
-    free(current_filename);
     current_filename = NULL;
 }
 
@@ -264,7 +249,6 @@ void collect_tags(const TagFile *tf, const char *prefix)
     Tag t;
     size_t pos = 0;
     char *prev = NULL;
-
     while (next_tag(tf, &pos, prefix, false, &t)) {
         if (!prev || !streq(prev, t.name)) {
             add_completion(t.name);

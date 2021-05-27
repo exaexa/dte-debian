@@ -21,34 +21,22 @@ typedef int (*CompareFunction)(const void *, const void *);
 typedef void (*FreeFunction)(void *ptr);
 #define FREE_FUNC(f) (FreeFunction)f
 
-void ptr_array_add(PointerArray *array, void *ptr) NONNULL_ARG(1);
+void ptr_array_append(PointerArray *array, void *ptr) NONNULL_ARG(1);
 void ptr_array_insert(PointerArray *array, void *ptr, size_t pos) NONNULL_ARG(1);
+void ptr_array_move(PointerArray *array, size_t from, size_t to) NONNULL_ARGS;
 void ptr_array_free_cb(PointerArray *array, FreeFunction free_ptr) NONNULL_ARGS;
 void ptr_array_remove(PointerArray *array, void *ptr) NONNULL_ARG(1);
 void *ptr_array_remove_idx(PointerArray *array, size_t pos) NONNULL_ARG(1);
 size_t ptr_array_idx(const PointerArray *array, const void *ptr) NONNULL_ARG(1);
-void *ptr_array_rel(const PointerArray *array, const void *ptr, size_t offset) NONNULL_ARG(1);
 void ptr_array_trim_nulls(PointerArray *array) NONNULL_ARGS;
 
 NONNULL_ARGS
 static inline void ptr_array_init(PointerArray *array, size_t capacity)
 {
-    capacity = ROUND_UP(capacity, 8);
+    capacity = round_size_to_next_multiple(capacity, 8);
     array->count = 0;
     array->ptrs = capacity ? xnew(array->ptrs, capacity) : NULL;
     array->alloc = capacity;
-}
-
-NONNULL_ARG(1)
-static inline void *ptr_array_next(const PointerArray *array, const void *ptr)
-{
-    return ptr_array_rel(array, ptr, 1);
-}
-
-NONNULL_ARG(1)
-static inline void *ptr_array_prev(const PointerArray *array, const void *ptr)
-{
-    return ptr_array_rel(array, ptr, -1);
 }
 
 // Free each pointer and then free the array.

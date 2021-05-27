@@ -1,26 +1,32 @@
 #include <ctype.h>
 #include <limits.h>
 #include <locale.h>
+#include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <unistd.h>
 #include "test.h"
-#include "../src/util/ascii.h"
-#include "../src/util/bit.h"
-#include "../src/util/checked-arith.h"
-#include "../src/util/hashset.h"
-#include "../src/util/path.h"
-#include "../src/util/ptr-array.h"
-#include "../src/util/readfile.h"
-#include "../src/util/str-util.h"
-#include "../src/util/string-view.h"
-#include "../src/util/string.h"
-#include "../src/util/strtonum.h"
-#include "../src/util/unicode.h"
-#include "../src/util/utf8.h"
-#include "../src/util/xmalloc.h"
-#include "../src/util/xsnprintf.h"
+#include "util/ascii.h"
+#include "util/base64.h"
+#include "util/checked-arith.h"
+#include "util/hash.h"
+#include "util/hashmap.h"
+#include "util/hashset.h"
+#include "util/numtostr.h"
+#include "util/path.h"
+#include "util/ptr-array.h"
+#include "util/readfile.h"
+#include "util/str-util.h"
+#include "util/string-view.h"
+#include "util/string.h"
+#include "util/strtonum.h"
+#include "util/unicode.h"
+#include "util/utf8.h"
+#include "util/xmalloc.h"
+#include "util/xsnprintf.h"
+#include "util/xstdio.h"
 
-static void test_macros(void)
+static void test_util_macros(void)
 {
     EXPECT_EQ(STRLEN(""), 0);
     EXPECT_EQ(STRLEN("a"), 1);
@@ -30,10 +36,31 @@ static void test_macros(void)
     EXPECT_EQ(ARRAY_COUNT("a"), 2);
     EXPECT_EQ(ARRAY_COUNT("123456789"), 10);
 
+    const UNUSED char a2[] = {1, 2};
+    const UNUSED int a3[] = {1, 2, 3};
+    const UNUSED long long a4[] = {1, 2, 3, 4};
+    EXPECT_EQ(ARRAY_COUNT(a2), 2);
+    EXPECT_EQ(ARRAY_COUNT(a3), 3);
+    EXPECT_EQ(ARRAY_COUNT(a4), 4);
+
     EXPECT_EQ(MIN(0, 1), 0);
     EXPECT_EQ(MIN(99, 100), 99);
     EXPECT_EQ(MIN(-10, 10), -10);
 
+    EXPECT_EQ(MAX(0, 1), 1);
+    EXPECT_EQ(MAX(99, 100), 100);
+    EXPECT_EQ(MAX(-10, 10), 10);
+
+    int n = snprintf(NULL, 0, "%d", INT_MIN);
+    EXPECT_TRUE(n >= STRLEN("-2147483647"));
+    EXPECT_TRUE(DECIMAL_STR_MAX(int) > n);
+    n = snprintf(NULL, 0, "%llu", ULLONG_MAX);
+    EXPECT_TRUE(n >= STRLEN("18446744073709551615"));
+    EXPECT_TRUE(DECIMAL_STR_MAX(unsigned long long) > n);
+}
+
+static void test_IS_POWER_OF_2(void)
+{
     EXPECT_TRUE(IS_POWER_OF_2(1));
     EXPECT_TRUE(IS_POWER_OF_2(2));
     EXPECT_TRUE(IS_POWER_OF_2(4));
@@ -41,10 +68,62 @@ static void test_macros(void)
     EXPECT_TRUE(IS_POWER_OF_2(4096));
     EXPECT_TRUE(IS_POWER_OF_2(8192));
     EXPECT_TRUE(IS_POWER_OF_2(1ULL << 63));
+
     EXPECT_FALSE(IS_POWER_OF_2(0));
     EXPECT_FALSE(IS_POWER_OF_2(3));
+    EXPECT_FALSE(IS_POWER_OF_2(5));
+    EXPECT_FALSE(IS_POWER_OF_2(6));
+    EXPECT_FALSE(IS_POWER_OF_2(7));
     EXPECT_FALSE(IS_POWER_OF_2(12));
+    EXPECT_FALSE(IS_POWER_OF_2(15));
+    EXPECT_FALSE(IS_POWER_OF_2(-2));
     EXPECT_FALSE(IS_POWER_OF_2(-10));
+
+    const uintmax_t max_pow2 = UINTMAX_MAX & ~(UINTMAX_MAX >> 1);
+    EXPECT_TRUE(max_pow2 >= 1ULL << 63);
+    EXPECT_TRUE(IS_POWER_OF_2(max_pow2));
+    EXPECT_UINT_EQ(max_pow2 << 1, 0);
+
+    for (uintmax_t i = max_pow2; i > 4; i >>= 1) {
+        EXPECT_TRUE(IS_POWER_OF_2(i));
+        for (uintmax_t j = 1; j < 4; j++) {
+            EXPECT_FALSE(IS_POWER_OF_2(i + j));
+            EXPECT_FALSE(IS_POWER_OF_2(i - j));
+        }
+    }
+}
+
+static void test_xstreq(void)
+{
+    EXPECT_TRUE(xstreq("foo", "foo"));
+    EXPECT_TRUE(xstreq("foo\0\n", "foo\0\0"));
+    EXPECT_TRUE(xstreq("\0foo", "\0bar"));
+    EXPECT_TRUE(xstreq(NULL, NULL));
+    EXPECT_FALSE(xstreq("foo", "bar"));
+    EXPECT_FALSE(xstreq("abc", "abcd"));
+    EXPECT_FALSE(xstreq("abcd", "abc"));
+    EXPECT_FALSE(xstreq(NULL, ""));
+    EXPECT_FALSE(xstreq("", NULL));
+}
+
+static void test_hex_decode(void)
+{
+    EXPECT_EQ(hex_decode('0'), 0);
+    EXPECT_EQ(hex_decode('1'), 1);
+    EXPECT_EQ(hex_decode('9'), 9);
+    EXPECT_EQ(hex_decode('a'), 10);
+    EXPECT_EQ(hex_decode('A'), 10);
+    EXPECT_EQ(hex_decode('f'), 15);
+    EXPECT_EQ(hex_decode('F'), 15);
+    EXPECT_EQ(hex_decode('g'), HEX_INVALID);
+    EXPECT_EQ(hex_decode('G'), HEX_INVALID);
+    EXPECT_EQ(hex_decode('@'), HEX_INVALID);
+    EXPECT_EQ(hex_decode('/'), HEX_INVALID);
+    EXPECT_EQ(hex_decode(':'), HEX_INVALID);
+    EXPECT_EQ(hex_decode(' '), HEX_INVALID);
+    EXPECT_EQ(hex_decode('~'), HEX_INVALID);
+    EXPECT_EQ(hex_decode('\0'), HEX_INVALID);
+    EXPECT_EQ(hex_decode(0xFF), HEX_INVALID);
 }
 
 static void test_ascii(void)
@@ -104,21 +183,6 @@ static void test_ascii(void)
     EXPECT_FALSE(ascii_isdigit(':'));
     EXPECT_FALSE(ascii_isdigit('\0'));
     EXPECT_FALSE(ascii_isdigit(0xFF));
-
-    EXPECT_TRUE(ascii_isxdigit('0'));
-    EXPECT_TRUE(ascii_isxdigit('1'));
-    EXPECT_TRUE(ascii_isxdigit('9'));
-    EXPECT_TRUE(ascii_isxdigit('a'));
-    EXPECT_TRUE(ascii_isxdigit('A'));
-    EXPECT_TRUE(ascii_isxdigit('f'));
-    EXPECT_TRUE(ascii_isxdigit('F'));
-    EXPECT_FALSE(ascii_isxdigit('g'));
-    EXPECT_FALSE(ascii_isxdigit('G'));
-    EXPECT_FALSE(ascii_isxdigit('@'));
-    EXPECT_FALSE(ascii_isxdigit('/'));
-    EXPECT_FALSE(ascii_isxdigit(':'));
-    EXPECT_FALSE(ascii_isxdigit('\0'));
-    EXPECT_FALSE(ascii_isxdigit(0xFF));
 
     EXPECT_TRUE(ascii_is_nonspace_cntrl('\0'));
     EXPECT_TRUE(ascii_is_nonspace_cntrl('\a'));
@@ -194,18 +258,6 @@ static void test_ascii(void)
     EXPECT_FALSE(is_regex_special_char(0x80));
     EXPECT_FALSE(is_regex_special_char(0xFF));
 
-    EXPECT_EQ(hex_decode('0'), 0);
-    EXPECT_EQ(hex_decode('9'), 9);
-    EXPECT_EQ(hex_decode('a'), 10);
-    EXPECT_EQ(hex_decode('A'), 10);
-    EXPECT_EQ(hex_decode('f'), 15);
-    EXPECT_EQ(hex_decode('F'), 15);
-    EXPECT_EQ(hex_decode('g'), -1);
-    EXPECT_EQ(hex_decode('G'), -1);
-    EXPECT_EQ(hex_decode(' '), -1);
-    EXPECT_EQ(hex_decode('\0'), -1);
-    EXPECT_EQ(hex_decode('~'), -1);
-
     EXPECT_TRUE(ascii_streq_icase("", ""));
     EXPECT_TRUE(ascii_streq_icase("a", "a"));
     EXPECT_TRUE(ascii_streq_icase("a", "A"));
@@ -232,24 +284,77 @@ static void test_ascii(void)
     EXPECT_FALSE(mem_equal_icase(s1, s2, 7));
     EXPECT_FALSE(mem_equal_icase(s1, s2, 8));
 
-    char *saved_locale = xstrdup(setlocale(LC_CTYPE, NULL));
-    setlocale(LC_CTYPE, "C");
+    // Query the current locale
+    const char *locale = setlocale(LC_CTYPE, NULL);
+    ASSERT_NONNULL(locale);
+
+    // Copy the locale string (which may be in static storage)
+    char *saved_locale = xstrdup(locale);
+
+    // Check that the ascii_is*() functions behave like their corresponding
+    // <ctype.h> macros, when in the standard "C" locale
+    ASSERT_NONNULL(setlocale(LC_CTYPE, "C"));
     for (int i = -1; i < 256; i++) {
-        EXPECT_EQ(!!ascii_isalpha(i), !!isalpha(i));
-        EXPECT_EQ(!!ascii_isalnum(i), !!isalnum(i));
-        EXPECT_EQ(!!ascii_islower(i), !!islower(i));
-        EXPECT_EQ(!!ascii_isupper(i), !!isupper(i));
-        EXPECT_EQ(!!ascii_iscntrl(i), !!iscntrl(i));
-        EXPECT_EQ(!!ascii_isdigit(i), !!isdigit(i));
-        EXPECT_EQ(!!ascii_isblank(i), !!isblank(i));
-        EXPECT_EQ(!!ascii_isprint(i), !!isprint(i));
-        EXPECT_EQ(!!ascii_isxdigit(i), !!isxdigit(i));
+        EXPECT_EQ(ascii_isalpha(i), !!isalpha(i));
+        EXPECT_EQ(ascii_isalnum(i), !!isalnum(i));
+        EXPECT_EQ(ascii_islower(i), !!islower(i));
+        EXPECT_EQ(ascii_isupper(i), !!isupper(i));
+        EXPECT_EQ(ascii_iscntrl(i), !!iscntrl(i));
+        EXPECT_EQ(ascii_isdigit(i), !!isdigit(i));
+        EXPECT_EQ(ascii_isblank(i), !!isblank(i));
+        EXPECT_EQ(ascii_isprint(i), !!isprint(i));
+        EXPECT_EQ(hex_decode(i) <= 0xF, !!isxdigit(i));
+        EXPECT_EQ(is_alpha_or_underscore(i), !!isalpha(i) || i == '_');
+        EXPECT_EQ(is_alnum_or_underscore(i), !!isalnum(i) || i == '_');
         if (i != '\v' && i != '\f') {
-            EXPECT_EQ(!!ascii_isspace(i), !!isspace(i));
+            EXPECT_EQ(ascii_isspace(i), !!isspace(i));
+            EXPECT_EQ(ascii_is_nonspace_cntrl(i), !!iscntrl(i) && !isspace(i));
+        }
+        if (i != -1) {
+            EXPECT_EQ(ascii_tolower(i), tolower(i));
+            EXPECT_EQ(ascii_toupper(i), toupper(i));
         }
     }
+
+    // Restore the original locale
     setlocale(LC_CTYPE, saved_locale);
     free(saved_locale);
+}
+
+static void test_base64(void)
+{
+    EXPECT_EQ(base64_decode('A'), 0);
+    EXPECT_EQ(base64_decode('Z'), 25);
+    EXPECT_EQ(base64_decode('a'), 26);
+    EXPECT_EQ(base64_decode('z'), 51);
+    EXPECT_EQ(base64_decode('0'), 52);
+    EXPECT_EQ(base64_decode('9'), 61);
+    EXPECT_EQ(base64_decode('+'), 62);
+    EXPECT_EQ(base64_decode('/'), 63);
+    EXPECT_EQ(base64_decode('='), BASE64_PADDING);
+    EXPECT_EQ(base64_decode(0x00), BASE64_INVALID);
+    EXPECT_EQ(base64_decode(0xFF), BASE64_INVALID);
+
+    for (unsigned int i = 'A'; i <= 'Z'; i++) {
+        IEXPECT_EQ(base64_decode(i), i - 'A');
+    }
+
+    for (unsigned int i = 'a'; i <= 'z'; i++) {
+        IEXPECT_EQ(base64_decode(i), (i - 'a') + 26);
+    }
+
+    for (unsigned int i = '0'; i <= '9'; i++) {
+        IEXPECT_EQ(base64_decode(i), (i - '0') + 52);
+    }
+
+    for (unsigned int i = 0; i < 256; i++) {
+        unsigned int val = base64_decode(i);
+        if (ascii_isalnum(i) || i == '+' || i == '/') {
+            IEXPECT_EQ(val, val & 63);
+        } else {
+            IEXPECT_EQ(val, val & 192);
+        }
+    }
 }
 
 static void test_string(void)
@@ -257,20 +362,20 @@ static void test_string(void)
     String s = STRING_INIT;
     EXPECT_EQ(s.len, 0);
     EXPECT_EQ(s.alloc, 0);
-    EXPECT_PTREQ(s.buffer, NULL);
+    EXPECT_NULL(s.buffer);
 
     char *cstr = string_clone_cstring(&s);
     EXPECT_STREQ(cstr, "");
     free(cstr);
     EXPECT_EQ(s.len, 0);
     EXPECT_EQ(s.alloc, 0);
-    EXPECT_PTREQ(s.buffer, NULL);
+    EXPECT_NULL(s.buffer);
 
     string_insert_ch(&s, 0, 0x1F4AF);
     EXPECT_EQ(s.len, 4);
     EXPECT_STREQ(string_borrow_cstring(&s), "\xF0\x9F\x92\xAF");
 
-    string_add_str(&s, "test");
+    string_append_cstring(&s, "test");
     EXPECT_EQ(s.len, 8);
     EXPECT_STREQ(string_borrow_cstring(&s), "\xF0\x9F\x92\xAFtest");
 
@@ -278,9 +383,8 @@ static void test_string(void)
     EXPECT_EQ(s.len, 3);
     EXPECT_STREQ(string_borrow_cstring(&s), "est");
 
-    string_make_space(&s, 0, 1);
+    string_insert_ch(&s, 0, 't');
     EXPECT_EQ(s.len, 4);
-    s.buffer[0] = 't';
     EXPECT_STREQ(string_borrow_cstring(&s), "test");
 
     string_clear(&s);
@@ -297,58 +401,116 @@ static void test_string(void)
     string_free(&s);
     EXPECT_EQ(s.len, 0);
     EXPECT_EQ(s.alloc, 0);
-    EXPECT_PTREQ(s.buffer, NULL);
+    EXPECT_NULL(s.buffer);
 
     for (size_t i = 0; i < 40; i++) {
-        string_add_byte(&s, 'a');
+        string_append_byte(&s, 'a');
     }
 
     EXPECT_EQ(s.len, 40);
     cstr = string_steal_cstring(&s);
     EXPECT_EQ(s.len, 0);
     EXPECT_EQ(s.alloc, 0);
-    EXPECT_PTREQ(s.buffer, NULL);
+    EXPECT_NULL(s.buffer);
     EXPECT_STREQ(cstr, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    free(cstr);
+
+    s = string_new(12);
+    EXPECT_EQ(s.len, 0);
+    EXPECT_EQ(s.alloc, 16);
+    ASSERT_NONNULL(s.buffer);
+
+    string_append_cstring(&s, "123");
+    EXPECT_STREQ(string_borrow_cstring(&s), "123");
+    EXPECT_EQ(s.len, 3);
+
+    string_append_string(&s, &s);
+    EXPECT_STREQ(string_borrow_cstring(&s), "123123");
+    EXPECT_EQ(s.len, 6);
+
+    string_insert_buf(&s, 2, STRN("foo"));
+    EXPECT_STREQ(string_borrow_cstring(&s), "12foo3123");
+    EXPECT_EQ(s.len, 9);
+
+    cstr = string_clone_cstring(&s);
+    EXPECT_STREQ(cstr, "12foo3123");
+
+    EXPECT_EQ(string_insert_ch(&s, 0, '>'), 1);
+    EXPECT_STREQ(string_borrow_cstring(&s), ">12foo3123");
+    EXPECT_EQ(s.len, 10);
+
+    string_free(&s);
+    EXPECT_NULL(s.buffer);
+    EXPECT_EQ(s.len, 0);
+    EXPECT_EQ(s.alloc, 0);
+    EXPECT_STREQ(cstr, "12foo3123");
     free(cstr);
 }
 
 static void test_string_view(void)
 {
     const StringView sv1 = STRING_VIEW("testing");
-    EXPECT_TRUE(string_view_equal_cstr(&sv1, "testing"));
-    EXPECT_FALSE(string_view_equal_cstr(&sv1, "testin"));
-    EXPECT_FALSE(string_view_equal_cstr(&sv1, "TESTING"));
-    EXPECT_TRUE(string_view_has_literal_prefix(&sv1, "test"));
-    EXPECT_TRUE(string_view_has_literal_prefix_icase(&sv1, "TEst"));
-    EXPECT_FALSE(string_view_has_literal_prefix(&sv1, "TEst"));
-    EXPECT_FALSE(string_view_has_literal_prefix_icase(&sv1, "TEst_"));
+    EXPECT_TRUE(strview_equal_cstring(&sv1, "testing"));
+    EXPECT_FALSE(strview_equal_cstring(&sv1, "testin"));
+    EXPECT_FALSE(strview_equal_cstring(&sv1, "TESTING"));
+    EXPECT_TRUE(strview_has_prefix(&sv1, "test"));
+    EXPECT_TRUE(strview_has_prefix_icase(&sv1, "TEst"));
+    EXPECT_FALSE(strview_has_prefix(&sv1, "TEst"));
+    EXPECT_FALSE(strview_has_prefix_icase(&sv1, "TEst_"));
 
     const StringView sv2 = string_view(sv1.data, sv1.length);
-    EXPECT_TRUE(string_view_equal(&sv1, &sv2));
+    EXPECT_TRUE(strview_equal(&sv1, &sv2));
 
     const StringView sv3 = STRING_VIEW("\0test\0 ...");
-    EXPECT_TRUE(string_view_equal_strn(&sv3, "\0test\0 ...", 10));
-    EXPECT_TRUE(string_view_equal_literal(&sv3, "\0test\0 ..."));
-    EXPECT_TRUE(string_view_has_prefix(&sv3, "\0test", 5));
-    EXPECT_TRUE(string_view_has_literal_prefix(&sv3, "\0test\0"));
-    EXPECT_FALSE(string_view_equal_cstr(&sv3, "\0test\0 ..."));
+    EXPECT_TRUE(strview_equal_strn(&sv3, "\0test\0 ...", 10));
 
     const StringView sv4 = sv3;
-    EXPECT_TRUE(string_view_equal(&sv4, &sv3));
+    EXPECT_TRUE(strview_equal(&sv4, &sv3));
 
-    const StringView sv5 = string_view_from_cstring("foobar");
-    EXPECT_TRUE(string_view_equal_literal(&sv5, "foobar"));
-    EXPECT_TRUE(string_view_has_literal_prefix(&sv5, "foo"));
-    EXPECT_FALSE(string_view_equal_cstr(&sv5, "foo"));
+    const StringView sv5 = strview_from_cstring("foobar");
+    EXPECT_TRUE(strview_equal_cstring(&sv5, "foobar"));
+    EXPECT_TRUE(strview_has_prefix(&sv5, "foo"));
+    EXPECT_FALSE(strview_equal_cstring(&sv5, "foo"));
+
+    StringView sv6 = strview_from_cstring("\t  \t\t ");
+    EXPECT_TRUE(strview_isblank(&sv6));
+    sv6.length = 0;
+    EXPECT_TRUE(strview_isblank(&sv6));
+    sv6 = strview_from_cstring("    \t .  ");
+    EXPECT_FALSE(strview_isblank(&sv6));
+    sv6 = strview_from_cstring("\n");
+    EXPECT_FALSE(strview_isblank(&sv6));
+    sv6 = strview_from_cstring("  \r ");
+    EXPECT_FALSE(strview_isblank(&sv6));
 }
 
-static void test_number_width(void)
+static void test_get_delim(void)
 {
-    EXPECT_EQ(number_width(0), 1);
-    EXPECT_EQ(number_width(-1), 2);
-    EXPECT_EQ(number_width(420), 3);
-    EXPECT_EQ(number_width(2147483647), 10);
-    EXPECT_EQ(number_width(-2147483647), 11);
+    static const char input[] = "-x-y-foo--bar--";
+    static const char parts[][4] = {"", "x", "y", "foo", "", "bar", "", ""};
+    const size_t nparts = ARRAY_COUNT(parts);
+    const size_t part_size = ARRAY_COUNT(parts[0]);
+
+    size_t idx = 0;
+    for (size_t pos = 0, len = sizeof(input) - 1; pos < len; idx++) {
+        const StringView sv = get_delim(input, &pos, len, '-');
+        ASSERT_TRUE(idx < nparts);
+        ASSERT_TRUE(parts[idx][part_size - 1] == '\0');
+        EXPECT_TRUE(strview_equal_cstring(&sv, parts[idx]));
+    }
+
+    EXPECT_EQ(idx, nparts - 1);
+}
+
+static void test_size_str_width(void)
+{
+    EXPECT_EQ(size_str_width(0), 1);
+    EXPECT_EQ(size_str_width(1), 1);
+    EXPECT_EQ(size_str_width(9), 1);
+    EXPECT_EQ(size_str_width(19), 2);
+    EXPECT_EQ(size_str_width(425), 3);
+    EXPECT_EQ(size_str_width(12345), 5);
+    EXPECT_EQ(size_str_width(2147483647), 10);
 }
 
 static void test_buf_parse_ulong(void)
@@ -414,6 +576,63 @@ static void test_str_to_size(void)
     EXPECT_FALSE(str_to_size("99999999999999999999999999999999", &val));
 }
 
+static void test_umax_to_str(void)
+{
+    EXPECT_STREQ(umax_to_str(0), "0");
+    EXPECT_STREQ(umax_to_str(1), "1");
+    EXPECT_STREQ(umax_to_str(7), "7");
+    EXPECT_STREQ(umax_to_str(99), "99");
+    EXPECT_STREQ(umax_to_str(111), "111");
+    EXPECT_STREQ(umax_to_str(1000), "1000");
+    EXPECT_STREQ(umax_to_str(20998), "20998");
+
+    uintmax_t x = UINTMAX_MAX;
+    char ref[DECIMAL_STR_MAX(x)];
+    xsnprintf(ref, sizeof ref, "%ju", x);
+    EXPECT_STREQ(umax_to_str(x), ref);
+    x--;
+    xsnprintf(ref, sizeof ref, "%ju", x);
+    EXPECT_STREQ(umax_to_str(x), ref);
+}
+
+static void test_uint_to_str(void)
+{
+    EXPECT_STREQ(uint_to_str(0), "0");
+    EXPECT_STREQ(uint_to_str(1), "1");
+    EXPECT_STREQ(uint_to_str(9), "9");
+    EXPECT_STREQ(uint_to_str(10), "10");
+    EXPECT_STREQ(uint_to_str(11), "11");
+    EXPECT_STREQ(uint_to_str(99), "99");
+    EXPECT_STREQ(uint_to_str(100), "100");
+    EXPECT_STREQ(uint_to_str(101), "101");
+    EXPECT_STREQ(uint_to_str(21904), "21904");
+
+    // See test_posix_sanity()
+    static_assert(sizeof(unsigned int) >= 4);
+    static_assert(CHAR_BIT == 8);
+    static_assert(UINT_MAX >= 4294967295u);
+    static_assert(4294967295u == 0xFFFFFFFF);
+    EXPECT_STREQ(uint_to_str(4294967295u), "4294967295");
+}
+
+static void test_buf_uint_to_str(void)
+{
+    char buf[DECIMAL_STR_MAX(unsigned int)];
+    EXPECT_EQ(buf_uint_to_str(0, buf), 1);
+    EXPECT_STREQ(buf, "0");
+    EXPECT_EQ(buf_uint_to_str(1, buf), 1);
+    EXPECT_STREQ(buf, "1");
+    EXPECT_EQ(buf_uint_to_str(9, buf), 1);
+    EXPECT_STREQ(buf, "9");
+    EXPECT_EQ(buf_uint_to_str(129, buf), 3);
+    EXPECT_STREQ(buf, "129");
+    EXPECT_EQ(buf_uint_to_str(21904, buf), 5);
+    EXPECT_STREQ(buf, "21904");
+    static_assert(sizeof(buf) > 10);
+    EXPECT_EQ(buf_uint_to_str(4294967295u, buf), 10);
+    EXPECT_STREQ(buf, "4294967295");
+}
+
 static void test_u_char_width(void)
 {
     // ASCII (1 column)
@@ -444,9 +663,9 @@ static void test_u_char_width(void)
     // Double width (2 columns)
     EXPECT_EQ(u_char_width(0x2757), 2);
     EXPECT_EQ(u_char_width(0x312F), 2);
+    EXPECT_EQ(u_char_width(0x30000), 2);
 
     // Double width but unassigned (rendered as <xx> -- 4 columns)
-    EXPECT_EQ(u_char_width(0x30000), 4);
     EXPECT_EQ(u_char_width(0x3A009), 4);
     EXPECT_EQ(u_char_width(0x3FFFD), 4);
 
@@ -465,6 +684,45 @@ static void test_u_to_lower(void)
     EXPECT_EQ(u_to_lower('\0'), '\0');
 }
 
+static void test_u_to_upper(void)
+{
+    EXPECT_EQ(u_to_upper('a'), 'A');
+    EXPECT_EQ(u_to_upper('z'), 'Z');
+    EXPECT_EQ(u_to_upper('A'), 'A');
+    EXPECT_EQ(u_to_upper('0'), '0');
+    EXPECT_EQ(u_to_upper('~'), '~');
+    EXPECT_EQ(u_to_upper('@'), '@');
+    EXPECT_EQ(u_to_upper('\0'), '\0');
+}
+
+static void test_u_is_lower(void)
+{
+    EXPECT_TRUE(u_is_lower('a'));
+    EXPECT_TRUE(u_is_lower('z'));
+    EXPECT_FALSE(u_is_lower('A'));
+    EXPECT_FALSE(u_is_lower('Z'));
+    EXPECT_FALSE(u_is_lower('0'));
+    EXPECT_FALSE(u_is_lower('9'));
+    EXPECT_FALSE(u_is_lower('@'));
+    EXPECT_FALSE(u_is_lower('['));
+    EXPECT_FALSE(u_is_lower('{'));
+    EXPECT_FALSE(u_is_lower('\0'));
+    EXPECT_FALSE(u_is_lower('\t'));
+    EXPECT_FALSE(u_is_lower(' '));
+    EXPECT_FALSE(u_is_lower(0x1F315));
+    EXPECT_FALSE(u_is_lower(0x10ffff));
+
+    /*
+    Even if SANE_WCTYPE is defined, we still can't make many assumptions
+    about the iswlower(3) implementation, since it depends on all kinds
+    of factors out of our control. Otherwise it'd be reasonable to test
+    something like:
+
+    EXPECT_TRUE(u_is_lower(0x00E0));
+    EXPECT_TRUE(u_is_lower(0x00E7));
+    */
+}
+
 static void test_u_is_upper(void)
 {
     EXPECT_TRUE(u_is_upper('A'));
@@ -479,11 +737,10 @@ static void test_u_is_upper(void)
     EXPECT_FALSE(u_is_upper('\0'));
     EXPECT_FALSE(u_is_upper('\t'));
     EXPECT_FALSE(u_is_upper(' '));
-    EXPECT_FALSE(u_is_upper(0x00E0));
-    EXPECT_FALSE(u_is_upper(0x00E7));
-    EXPECT_FALSE(u_is_upper(0x1D499));
     EXPECT_FALSE(u_is_upper(0x1F315));
     EXPECT_FALSE(u_is_upper(0x10ffff));
+    EXPECT_FALSE(u_is_upper(0x00E0));
+    EXPECT_FALSE(u_is_upper(0x00E7));
 }
 
 static void test_u_is_cntrl(void)
@@ -566,7 +823,7 @@ static void test_u_is_unprintable(void)
     EXPECT_TRUE(u_is_unprintable(0xF0000));
     EXPECT_TRUE(u_is_unprintable(0xFFFFD));
     EXPECT_TRUE(u_is_unprintable(0x100000));
-    EXPECT_TRUE(u_is_unprintable(0x10FFFd));
+    EXPECT_TRUE(u_is_unprintable(0x10FFFD));
 
     // Non-characters --------------------------------------------------
     // (https://www.unicode.org/faq/private_use.html#noncharacters)
@@ -608,9 +865,70 @@ static void test_u_str_width(void)
     );
 }
 
+static void test_u_set_char_raw(void)
+{
+    unsigned char buf[16];
+    size_t i;
+    MEMZERO(&buf);
+
+    i = 0;
+    u_set_char_raw(buf, &i, 'a');
+    EXPECT_EQ(i, 1);
+    EXPECT_EQ(buf[0], 'a');
+
+    i = 0;
+    u_set_char_raw(buf, &i, '\0');
+    EXPECT_EQ(i, 1);
+    EXPECT_EQ(buf[0], '\0');
+
+    i = 0;
+    u_set_char_raw(buf, &i, 0x1F);
+    EXPECT_EQ(i, 1);
+    EXPECT_EQ(buf[0], 0x1F);
+
+    i = 0;
+    u_set_char_raw(buf, &i, 0x7F);
+    EXPECT_EQ(i, 1);
+    EXPECT_EQ(buf[0], 0x7F);
+
+    i = 0;
+    u_set_char_raw(buf, &i, 0x7FF);
+    EXPECT_EQ(i, 2);
+    EXPECT_EQ(buf[0], 0xDF);
+    EXPECT_EQ(buf[1], 0xBF);
+
+    i = 0;
+    u_set_char_raw(buf, &i, 0xFF45);
+    EXPECT_EQ(i, 3);
+    EXPECT_EQ(buf[0], 0xEF);
+    EXPECT_EQ(buf[1], 0xBD);
+    EXPECT_EQ(buf[2], 0x85);
+
+    i = 0;
+    u_set_char_raw(buf, &i, 0x1F311);
+    EXPECT_EQ(i, 4);
+    EXPECT_EQ(buf[0], 0xF0);
+    EXPECT_EQ(buf[1], 0x9F);
+    EXPECT_EQ(buf[2], 0x8C);
+    EXPECT_EQ(buf[3], 0x91);
+
+    i = 0;
+    buf[1] = 0x88;
+    u_set_char_raw(buf, &i, 0x110000);
+    EXPECT_EQ(i, 1);
+    EXPECT_EQ(buf[0], 0);
+    EXPECT_EQ(buf[1], 0x88);
+
+    i = 0;
+    u_set_char_raw(buf, &i, 0x110042);
+    EXPECT_EQ(i, 1);
+    EXPECT_EQ(buf[0], 0x42);
+    EXPECT_EQ(buf[1], 0x88);
+}
+
 static void test_u_set_char(void)
 {
-    char buf[16];
+    unsigned char buf[16];
     size_t i;
     MEMZERO(&buf);
 
@@ -622,55 +940,78 @@ static void test_u_set_char(void)
     i = 0;
     u_set_char(buf, &i, 0x00DF);
     EXPECT_EQ(i, 2);
-    EXPECT_EQ(memcmp(buf, "\xC3\x9F", 2), 0);
+    EXPECT_EQ(buf[0], 0xC3);
+    EXPECT_EQ(buf[1], 0x9F);
 
     i = 0;
     u_set_char(buf, &i, 0x0E01);
     EXPECT_EQ(i, 3);
-    EXPECT_EQ(memcmp(buf, "\xE0\xB8\x81", 3), 0);
+    EXPECT_EQ(buf[0], 0xE0);
+    EXPECT_EQ(buf[1], 0xB8);
+    EXPECT_EQ(buf[2], 0x81);
 
     i = 0;
     u_set_char(buf, &i, 0x1F914);
     EXPECT_EQ(i, 4);
-    EXPECT_EQ(memcmp(buf, "\xF0\x9F\xA4\x94", 4), 0);
+    EXPECT_EQ(buf[0], 0xF0);
+    EXPECT_EQ(buf[1], 0x9F);
+    EXPECT_EQ(buf[2], 0xA4);
+    EXPECT_EQ(buf[3], 0x94);
 
     i = 0;
     u_set_char(buf, &i, 0x10FFFF);
     EXPECT_EQ(i, 4);
-    // Note: string separated to prevent "-Wtrigraphs" warning
-    EXPECT_EQ(memcmp(buf, "<" "?" "?" ">", 4), 0);
-}
-
-static void test_u_set_ctrl(void)
-{
-    char buf[16];
-    size_t i;
-    MEMZERO(&buf);
+    EXPECT_EQ(buf[0], '<');
+    EXPECT_EQ(buf[1], '?');
+    EXPECT_EQ(buf[2], '?');
+    EXPECT_EQ(buf[3], '>');
 
     i = 0;
-    u_set_ctrl(buf, &i, '\0');
+    u_set_char(buf, &i, '\0');
     EXPECT_EQ(i, 2);
-    EXPECT_EQ(memcmp(buf, "^@", 3), 0);
+    EXPECT_EQ(buf[0], '^');
+    EXPECT_EQ(buf[1], '@');
 
     i = 0;
-    u_set_ctrl(buf, &i, '\t');
+    u_set_char(buf, &i, '\t');
     EXPECT_EQ(i, 2);
-    EXPECT_EQ(memcmp(buf, "^I", 3), 0);
+    EXPECT_EQ(buf[0], '^');
+    EXPECT_EQ(buf[1], 'I');
 
     i = 0;
-    u_set_ctrl(buf, &i, 0x1F);
+    u_set_char(buf, &i, 0x1F);
     EXPECT_EQ(i, 2);
-    EXPECT_EQ(memcmp(buf, "^_", 3), 0);
+    EXPECT_EQ(buf[0], '^');
+    EXPECT_EQ(buf[1], '_');
 
     i = 0;
-    u_set_ctrl(buf, &i, 0x7F);
+    u_set_char(buf, &i, 0x7F);
     EXPECT_EQ(i, 2);
-    EXPECT_EQ(memcmp(buf, "^?", 3), 0);
+    EXPECT_EQ(buf[0], '^');
+    EXPECT_EQ(buf[1], '?');
+
+    i = 0;
+    u_set_char(buf, &i, 0x80);
+    EXPECT_EQ(i, 4);
+    EXPECT_EQ(buf[0], '<');
+    EXPECT_EQ(buf[1], '?');
+    EXPECT_EQ(buf[2], '?');
+    EXPECT_EQ(buf[3], '>');
+
+    i = 0;
+    u_set_char(buf, &i, 0x7E);
+    EXPECT_EQ(i, 1);
+    EXPECT_EQ(buf[0], '~');
+
+    i = 0;
+    u_set_char(buf, &i, 0x20);
+    EXPECT_EQ(i, 1);
+    EXPECT_EQ(buf[0], ' ');
 }
 
 static void test_u_prev_char(void)
 {
-    const unsigned char *buf = "深圳市";
+    const unsigned char *buf = "\xE6\xB7\xB1\xE5\x9C\xB3\xE5\xB8\x82"; // 深圳市
     size_t idx = 9;
     CodePoint c = u_prev_char(buf, &idx);
     EXPECT_EQ(c, 0x5E02);
@@ -696,7 +1037,7 @@ static void test_u_prev_char(void)
     EXPECT_EQ(c, 'e');
     EXPECT_EQ(idx, 6);
 
-    buf = "🥣🥤";
+    buf = "\xF0\x9F\xA5\xA3\xF0\x9F\xA5\xA4"; // 🥣🥤
     idx = 8;
     c = u_prev_char(buf, &idx);
     EXPECT_EQ(c, 0x1F964);
@@ -727,13 +1068,13 @@ static void test_u_prev_char(void)
 static void test_ptr_array(void)
 {
     PointerArray a = PTR_ARRAY_INIT;
-    ptr_array_add(&a, NULL);
-    ptr_array_add(&a, NULL);
-    ptr_array_add(&a, xstrdup("foo"));
-    ptr_array_add(&a, NULL);
-    ptr_array_add(&a, xstrdup("bar"));
-    ptr_array_add(&a, NULL);
-    ptr_array_add(&a, NULL);
+    ptr_array_append(&a, NULL);
+    ptr_array_append(&a, NULL);
+    ptr_array_append(&a, xstrdup("foo"));
+    ptr_array_append(&a, NULL);
+    ptr_array_append(&a, xstrdup("bar"));
+    ptr_array_append(&a, NULL);
+    ptr_array_append(&a, NULL);
     EXPECT_EQ(a.count, 7);
 
     ptr_array_trim_nulls(&a);
@@ -751,6 +1092,215 @@ static void test_ptr_array(void)
     EXPECT_EQ(a.count, 0);
 }
 
+static void test_ptr_array_move(void)
+{
+    PointerArray a = PTR_ARRAY_INIT;
+    ptr_array_append(&a, xstrdup("A"));
+    ptr_array_append(&a, xstrdup("B"));
+    ptr_array_append(&a, xstrdup("C"));
+    ptr_array_append(&a, xstrdup("D"));
+    ptr_array_append(&a, xstrdup("E"));
+    ptr_array_append(&a, xstrdup("F"));
+    EXPECT_EQ(a.count, 6);
+
+    ptr_array_move(&a, 0, 1);
+    EXPECT_STREQ(a.ptrs[0], "B");
+    EXPECT_STREQ(a.ptrs[1], "A");
+
+    ptr_array_move(&a, 1, 0);
+    EXPECT_STREQ(a.ptrs[0], "A");
+    EXPECT_STREQ(a.ptrs[1], "B");
+
+    ptr_array_move(&a, 1, 5);
+    EXPECT_STREQ(a.ptrs[0], "A");
+    EXPECT_STREQ(a.ptrs[1], "C");
+    EXPECT_STREQ(a.ptrs[2], "D");
+    EXPECT_STREQ(a.ptrs[3], "E");
+    EXPECT_STREQ(a.ptrs[4], "F");
+    EXPECT_STREQ(a.ptrs[5], "B");
+
+    ptr_array_move(&a, 5, 1);
+    EXPECT_STREQ(a.ptrs[0], "A");
+    EXPECT_STREQ(a.ptrs[1], "B");
+    EXPECT_STREQ(a.ptrs[2], "C");
+    EXPECT_STREQ(a.ptrs[3], "D");
+    EXPECT_STREQ(a.ptrs[4], "E");
+    EXPECT_STREQ(a.ptrs[5], "F");
+
+    ptr_array_move(&a, 0, 5);
+    EXPECT_STREQ(a.ptrs[0], "B");
+    EXPECT_STREQ(a.ptrs[1], "C");
+    EXPECT_STREQ(a.ptrs[2], "D");
+    EXPECT_STREQ(a.ptrs[3], "E");
+    EXPECT_STREQ(a.ptrs[4], "F");
+    EXPECT_STREQ(a.ptrs[5], "A");
+
+    ptr_array_move(&a, 5, 0);
+    EXPECT_STREQ(a.ptrs[0], "A");
+    EXPECT_STREQ(a.ptrs[1], "B");
+    EXPECT_STREQ(a.ptrs[2], "C");
+    EXPECT_STREQ(a.ptrs[3], "D");
+    EXPECT_STREQ(a.ptrs[4], "E");
+    EXPECT_STREQ(a.ptrs[5], "F");
+
+    ptr_array_move(&a, 5, 0);
+    EXPECT_STREQ(a.ptrs[0], "F");
+    EXPECT_STREQ(a.ptrs[1], "A");
+    EXPECT_STREQ(a.ptrs[2], "B");
+    EXPECT_STREQ(a.ptrs[3], "C");
+    EXPECT_STREQ(a.ptrs[4], "D");
+    EXPECT_STREQ(a.ptrs[5], "E");
+
+    ptr_array_move(&a, 4, 5);
+    EXPECT_STREQ(a.ptrs[4], "E");
+    EXPECT_STREQ(a.ptrs[5], "D");
+
+    ptr_array_move(&a, 1, 3);
+    EXPECT_STREQ(a.ptrs[1], "B");
+    EXPECT_STREQ(a.ptrs[2], "C");
+    EXPECT_STREQ(a.ptrs[3], "A");
+
+    ptr_array_free(&a);
+}
+
+static void test_hashmap(void)
+{
+    static const char strings[][8] = {
+        "foo", "bar", "quux", "etc", "",
+        "A", "B", "C", "D", "E", "F", "G",
+        "a", "b", "c", "d", "e", "f", "g",
+        "test", "1234567", "..", "...",
+        "\x01\x02\x03 \t\xfe\xff",
+    };
+
+    HashMap map;
+    hashmap_init(&map, ARRAY_COUNT(strings));
+    ASSERT_NONNULL(map.entries);
+    EXPECT_EQ(map.mask, 31);
+    EXPECT_EQ(map.count, 0);
+    EXPECT_NULL(hashmap_find(&map, "foo"));
+
+    static const char value[] = "VALUE";
+    FOR_EACH_I(i, strings) {
+        const char *key = strings[i];
+        ASSERT_EQ(key[sizeof(strings[0]) - 1], '\0');
+        hashmap_insert(&map, xstrdup(key), (void*)value);
+        HashMapEntry *e = hashmap_find(&map, key);
+        ASSERT_NONNULL(e);
+        EXPECT_STREQ(e->key, key);
+        EXPECT_PTREQ(e->value, value);
+    }
+
+    EXPECT_EQ(map.count, 24);
+    EXPECT_EQ(map.mask, 31);
+
+    HashMapIter it = hashmap_iter(&map);
+    EXPECT_PTREQ(it.map, &map);
+    EXPECT_NULL(it.entry);
+    EXPECT_EQ(it.idx, 0);
+
+    while (hashmap_next(&it)) {
+        ASSERT_NONNULL(it.entry);
+        ASSERT_NONNULL(it.entry->key);
+        EXPECT_PTREQ(it.entry->value, value);
+    }
+
+    FOR_EACH_I(i, strings) {
+        const char *key = strings[i];
+        HashMapEntry *e = hashmap_find(&map, key);
+        ASSERT_NONNULL(e);
+        EXPECT_STREQ(e->key, key);
+        EXPECT_PTREQ(e->value, value);
+
+        EXPECT_PTREQ(hashmap_remove(&map, key), value);
+        EXPECT_STREQ(e->key, "TOMBSTONE");
+        EXPECT_NULL(hashmap_find(&map, key));
+    }
+
+    EXPECT_EQ(map.count, 0);
+    it = hashmap_iter(&map);
+    EXPECT_FALSE(hashmap_next(&it));
+
+    hashmap_insert(&map, xstrdup("new"), (void*)value);
+    ASSERT_NONNULL(hashmap_find(&map, "new"));
+    EXPECT_STREQ(hashmap_find(&map, "new")->key, "new");
+    EXPECT_EQ(map.count, 1);
+
+    FOR_EACH_I(i, strings) {
+        const char *key = strings[i];
+        hashmap_insert(&map, xstrdup(key), (void*)value);
+        HashMapEntry *e = hashmap_find(&map, key);
+        ASSERT_NONNULL(e);
+        EXPECT_STREQ(e->key, key);
+        EXPECT_PTREQ(e->value, value);
+    }
+
+    EXPECT_EQ(map.count, 25);
+
+    FOR_EACH_I(i, strings) {
+        const char *key = strings[i];
+        HashMapEntry *e = hashmap_find(&map, key);
+        ASSERT_NONNULL(e);
+        EXPECT_STREQ(e->key, key);
+        EXPECT_PTREQ(hashmap_remove(&map, key), value);
+        EXPECT_STREQ(e->key, "TOMBSTONE");
+        EXPECT_NULL(hashmap_find(&map, key));
+    }
+
+    EXPECT_EQ(map.count, 1);
+    EXPECT_NULL(hashmap_remove(&map, "non-existent-key"));
+    EXPECT_EQ(map.count, 1);
+    EXPECT_PTREQ(hashmap_remove(&map, "new"), value);
+    EXPECT_EQ(map.count, 0);
+
+    it = hashmap_iter(&map);
+    EXPECT_FALSE(hashmap_next(&it));
+
+    hashmap_free(&map, NULL);
+    EXPECT_NULL(map.entries);
+    EXPECT_EQ(map.count, 0);
+    EXPECT_EQ(map.mask, 0);
+
+    hashmap_init(&map, 0);
+    ASSERT_NONNULL(map.entries);
+    EXPECT_EQ(map.mask, 7);
+    EXPECT_EQ(map.count, 0);
+    hashmap_free(&map, NULL);
+    EXPECT_NULL(map.entries);
+
+    hashmap_init(&map, 13);
+    ASSERT_NONNULL(map.entries);
+    EXPECT_EQ(map.mask, 31);
+    EXPECT_EQ(map.count, 0);
+
+    for (size_t i = 1; i <= 380; i++) {
+        char key[4];
+        EXPECT_EQ(xsnprintf(key, sizeof key, "%zu", i), size_str_width(i));
+        hashmap_insert(&map, xstrdup(key), (void*)value);
+        HashMapEntry *e = hashmap_find(&map, key);
+        ASSERT_NONNULL(e);
+        EXPECT_STREQ(e->key, key);
+        EXPECT_PTREQ(e->value, value);
+    }
+
+    EXPECT_EQ(map.count, 380);
+    EXPECT_EQ(map.mask, 511);
+    hashmap_free(&map, NULL);
+
+    const char *val = "VAL";
+    char *key = xstrdup("KEY");
+    EXPECT_NULL(hashmap_insert_or_replace(&map, key, (char*)val));
+    EXPECT_EQ(map.count, 1);
+    EXPECT_STREQ(hashmap_get(&map, "KEY"), val);
+
+    const char *new_val = "NEW";
+    char *duplicate_key = xstrdup(key);
+    EXPECT_PTREQ(val, hashmap_insert_or_replace(&map, duplicate_key, (char*)new_val));
+    EXPECT_EQ(map.count, 1);
+    EXPECT_STREQ(hashmap_get(&map, "KEY"), new_val);
+    hashmap_free(&map, NULL);
+}
+
 static void test_hashset(void)
 {
     static const char *const strings[] = {
@@ -765,9 +1315,13 @@ static void test_hashset(void)
 
     HashSet set;
     hashset_init(&set, ARRAY_COUNT(strings), false);
+    EXPECT_EQ(set.nr_entries, 0);
     EXPECT_NULL(hashset_get(&set, "foo", 3));
+    FOR_EACH_I(i, strings) {
+        hashset_add(&set, strings[i], strlen(strings[i]));
+    }
 
-    hashset_add_many(&set, (char**)strings, ARRAY_COUNT(strings));
+    EXPECT_EQ(set.nr_entries, ARRAY_COUNT(strings));
     EXPECT_NONNULL(hashset_get(&set, "\t\xff\x80\b", 4));
     EXPECT_NONNULL(hashset_get(&set, "foo", 3));
     EXPECT_NONNULL(hashset_get(&set, "Foo", 3));
@@ -791,11 +1345,14 @@ static void test_hashset(void)
     hashset_free(&set);
     MEMZERO(&set);
 
-    hashset_init(&set, ARRAY_COUNT(strings), true);
-    hashset_add_many(&set, (char**)strings, ARRAY_COUNT(strings));
-    EXPECT_NONNULL(hashset_get(&set, "foo", 3));
-    EXPECT_NONNULL(hashset_get(&set, "FOO", 3));
-    EXPECT_NONNULL(hashset_get(&set, "fOO", 3));
+    hashset_init(&set, 0, true);
+    EXPECT_EQ(set.nr_entries, 0);
+    hashset_add(&set, STRN("foo"));
+    hashset_add(&set, STRN("Foo"));
+    EXPECT_EQ(set.nr_entries, 1);
+    EXPECT_NONNULL(hashset_get(&set, STRN("foo")));
+    EXPECT_NONNULL(hashset_get(&set, STRN("FOO")));
+    EXPECT_NONNULL(hashset_get(&set, STRN("fOO")));
     hashset_free(&set);
     MEMZERO(&set);
 
@@ -803,35 +1360,53 @@ static void test_hashset(void)
     // inserting duplicates
     hashset_init(&set, 0, false);
     EXPECT_EQ(set.nr_entries, 0);
-    HashSetEntry *e1 = hashset_add(&set, "foo", 3);
+    HashSetEntry *e1 = hashset_add(&set, STRN("foo"));
     EXPECT_EQ(e1->str_len, 3);
     EXPECT_STREQ(e1->str, "foo");
     EXPECT_EQ(set.nr_entries, 1);
-    HashSetEntry *e2 = hashset_add(&set, "foo", 3);
+    HashSetEntry *e2 = hashset_add(&set, STRN("foo"));
     EXPECT_PTREQ(e1, e2);
     EXPECT_EQ(set.nr_entries, 1);
     hashset_free(&set);
+
+    hashset_init(&set, 0, false);
+    // Initial table size should be 16 (minimum + load factor + rounding)
+    EXPECT_EQ(set.table_size, 16);
+    for (size_t i = 1; i <= 80; i++) {
+        char buf[4];
+        size_t n = xsnprintf(buf, sizeof buf, "%zu", i);
+        hashset_add(&set, buf, n);
+    }
+    EXPECT_EQ(set.nr_entries, 80);
+    EXPECT_NONNULL(hashset_get(&set, STRN("1")));
+    EXPECT_NONNULL(hashset_get(&set, STRN("80")));
+    EXPECT_NULL(hashset_get(&set, STRN("0")));
+    EXPECT_NULL(hashset_get(&set, STRN("81")));
+    // Table size should be the first power of 2 larger than the number
+    // of entries (including load factor adjustment)
+    EXPECT_EQ(set.table_size, 128);
+    hashset_free(&set);
 }
 
-static void test_round_up(void)
+static void test_round_size_to_next_multiple(void)
 {
-    EXPECT_EQ(ROUND_UP(3, 8), 8);
-    EXPECT_EQ(ROUND_UP(8, 8), 8);
-    EXPECT_EQ(ROUND_UP(9, 8), 16);
-    EXPECT_EQ(ROUND_UP(0, 8), 0);
-    EXPECT_EQ(ROUND_UP(0, 16), 0);
-    EXPECT_EQ(ROUND_UP(1, 16), 16);
-    EXPECT_EQ(ROUND_UP(123, 16), 128);
-    EXPECT_EQ(ROUND_UP(4, 64), 64);
-    EXPECT_EQ(ROUND_UP(80, 64), 128);
-    EXPECT_EQ(ROUND_UP(256, 256), 256);
-    EXPECT_EQ(ROUND_UP(257, 256), 512);
-    EXPECT_EQ(ROUND_UP(8000, 256), 8192);
+    EXPECT_EQ(round_size_to_next_multiple(3, 8), 8);
+    EXPECT_EQ(round_size_to_next_multiple(8, 8), 8);
+    EXPECT_EQ(round_size_to_next_multiple(9, 8), 16);
+    EXPECT_EQ(round_size_to_next_multiple(0, 8), 0);
+    EXPECT_EQ(round_size_to_next_multiple(0, 16), 0);
+    EXPECT_EQ(round_size_to_next_multiple(1, 16), 16);
+    EXPECT_EQ(round_size_to_next_multiple(123, 16), 128);
+    EXPECT_EQ(round_size_to_next_multiple(4, 64), 64);
+    EXPECT_EQ(round_size_to_next_multiple(80, 64), 128);
+    EXPECT_EQ(round_size_to_next_multiple(256, 256), 256);
+    EXPECT_EQ(round_size_to_next_multiple(257, 256), 512);
+    EXPECT_EQ(round_size_to_next_multiple(8000, 256), 8192);
 }
 
 static void test_round_size_to_next_power_of_2(void)
 {
-    EXPECT_UINT_EQ(round_size_to_next_power_of_2(0), 0);
+    EXPECT_UINT_EQ(round_size_to_next_power_of_2(0), 1);
     EXPECT_UINT_EQ(round_size_to_next_power_of_2(1), 1);
     EXPECT_UINT_EQ(round_size_to_next_power_of_2(2), 2);
     EXPECT_UINT_EQ(round_size_to_next_power_of_2(3), 4);
@@ -842,77 +1417,19 @@ static void test_round_size_to_next_power_of_2(void)
     EXPECT_UINT_EQ(round_size_to_next_power_of_2(17), 32);
     EXPECT_UINT_EQ(round_size_to_next_power_of_2(61), 64);
     EXPECT_UINT_EQ(round_size_to_next_power_of_2(64), 64);
+    EXPECT_UINT_EQ(round_size_to_next_power_of_2(65), 128);
     EXPECT_UINT_EQ(round_size_to_next_power_of_2(200), 256);
     EXPECT_UINT_EQ(round_size_to_next_power_of_2(1000), 1024);
     EXPECT_UINT_EQ(round_size_to_next_power_of_2(5500), 8192);
-}
-
-static void test_bitop(void)
-{
-    EXPECT_EQ(bit_popcount_u32(0), 0);
-    EXPECT_EQ(bit_popcount_u32(1), 1);
-    EXPECT_EQ(bit_popcount_u32(11), 3);
-    EXPECT_EQ(bit_popcount_u32(128), 1);
-    EXPECT_EQ(bit_popcount_u32(255), 8);
-    EXPECT_EQ(bit_popcount_u32(UINT32_MAX), 32);
-    EXPECT_EQ(bit_popcount_u32(UINT32_MAX - 1), 31);
-
-    EXPECT_EQ(bit_popcount_u64(0), 0);
-    EXPECT_EQ(bit_popcount_u64(1), 1);
-    EXPECT_EQ(bit_popcount_u64(255), 8);
-    EXPECT_EQ(bit_popcount_u64(UINT64_MAX), 64);
-    EXPECT_EQ(bit_popcount_u64(UINT64_MAX - 1), 63);
-    EXPECT_EQ(bit_popcount_u64(U64(0xFFFFFFFFFF)), 40);
-    EXPECT_EQ(bit_popcount_u64(U64(0x10000000000)), 1);
-
-    EXPECT_EQ(bit_count_leading_zeros_u64(1), 63);
-    EXPECT_EQ(bit_count_leading_zeros_u64(4), 61);
-    EXPECT_EQ(bit_count_leading_zeros_u64(127), 57);
-    EXPECT_EQ(bit_count_leading_zeros_u64(128), 56);
-    EXPECT_EQ(bit_count_leading_zeros_u64(UINT64_MAX), 0);
-    EXPECT_EQ(bit_count_leading_zeros_u64(UINT64_MAX - 1), 0);
-
-    EXPECT_EQ(bit_count_leading_zeros_u32(1), 31);
-    EXPECT_EQ(bit_count_leading_zeros_u32(4), 29);
-    EXPECT_EQ(bit_count_leading_zeros_u32(127), 25);
-    EXPECT_EQ(bit_count_leading_zeros_u32(128), 24);
-    EXPECT_EQ(bit_count_leading_zeros_u32(UINT32_MAX), 0);
-    EXPECT_EQ(bit_count_leading_zeros_u32(UINT32_MAX - 1), 0);
-
-    EXPECT_EQ(bit_count_trailing_zeros_u32(1), 0);
-    EXPECT_EQ(bit_count_trailing_zeros_u32(2), 1);
-    EXPECT_EQ(bit_count_trailing_zeros_u32(3), 0);
-    EXPECT_EQ(bit_count_trailing_zeros_u32(4), 2);
-    EXPECT_EQ(bit_count_trailing_zeros_u32(8), 3);
-    EXPECT_EQ(bit_count_trailing_zeros_u32(13), 0);
-    EXPECT_EQ(bit_count_trailing_zeros_u32(16), 4);
-    EXPECT_EQ(bit_count_trailing_zeros_u32(U32(0xFFFFFFFE)), 1);
-    EXPECT_EQ(bit_count_trailing_zeros_u32(U32(0x10000000)), 28);
-    EXPECT_EQ(bit_count_trailing_zeros_u32(UINT32_MAX), 0);
-    EXPECT_EQ(bit_count_trailing_zeros_u32(UINT32_MAX - 0xFF), 8);
-
-    EXPECT_EQ(bit_count_trailing_zeros_u64(1), 0);
-    EXPECT_EQ(bit_count_trailing_zeros_u64(2), 1);
-    EXPECT_EQ(bit_count_trailing_zeros_u64(3), 0);
-    EXPECT_EQ(bit_count_trailing_zeros_u64(16), 4);
-    EXPECT_EQ(bit_count_trailing_zeros_u64(U64(0xFFFFFFFE)), 1);
-    EXPECT_EQ(bit_count_trailing_zeros_u64(U64(0x10000000)), 28);
-    EXPECT_EQ(bit_count_trailing_zeros_u64(U64(0x100000000000)), 44);
-    EXPECT_EQ(bit_count_trailing_zeros_u64(UINT64_MAX), 0);
-
-    EXPECT_EQ(bit_find_first_set_u32(0), 0);
-    EXPECT_EQ(bit_find_first_set_u32(1), 1);
-    EXPECT_EQ(bit_find_first_set_u32(2), 2);
-    EXPECT_EQ(bit_find_first_set_u32(3), 1);
-    EXPECT_EQ(bit_find_first_set_u32(64), 7);
-    EXPECT_EQ(bit_find_first_set_u32(U32(1) << 31), 32);
-
-    EXPECT_EQ(bit_find_first_set_u64(0), 0);
-    EXPECT_EQ(bit_find_first_set_u64(1), 1);
-    EXPECT_EQ(bit_find_first_set_u64(2), 2);
-    EXPECT_EQ(bit_find_first_set_u64(3), 1);
-    EXPECT_EQ(bit_find_first_set_u64(64), 7);
-    EXPECT_EQ(bit_find_first_set_u64(U64(1) << 63), 64);
+    const size_t size_max = (size_t)-1;
+    const size_t pow2_max = size_max & ~(size_max >> 1);
+    EXPECT_UINT_EQ(round_size_to_next_power_of_2(size_max >> 1), pow2_max);
+    EXPECT_UINT_EQ(round_size_to_next_power_of_2(pow2_max), pow2_max);
+    EXPECT_UINT_EQ(round_size_to_next_power_of_2(pow2_max - 1), pow2_max);
+    // Note: returns 0 on overflow
+    EXPECT_UINT_EQ(round_size_to_next_power_of_2(pow2_max + 1), 0);
+    EXPECT_UINT_EQ(round_size_to_next_power_of_2(size_max), 0);
+    EXPECT_UINT_EQ(round_size_to_next_power_of_2(size_max - 1), 0);
 }
 
 static void test_path_dirname_and_path_basename(void)
@@ -942,11 +1459,50 @@ static void test_path_dirname_and_path_basename(void)
     }
 }
 
+static void test_relative_filename(void)
+{
+    static const struct rel_test {
+        const char *cwd;
+        const char *path;
+        const char *result;
+    } tests[] = { // NOTE: at most 2 ".." components allowed in relative name
+        { "/", "/", "/" },
+        { "/", "/file", "file" },
+        { "/a/b/c/d", "/a/b/file", "../../file" },
+        { "/a/b/c/d/e", "/a/b/file", "/a/b/file" },
+        { "/a/foobar", "/a/foo/file", "../foo/file" },
+    };
+    FOR_EACH_I(i, tests) {
+        char *result = relative_filename(tests[i].path, tests[i].cwd);
+        IEXPECT_STREQ(tests[i].result, result);
+        free(result);
+    }
+}
+
 static void test_path_absolute(void)
 {
     char *path = path_absolute("///dev///");
-    ASSERT_NONNULL(path);
-    EXPECT_STREQ(path, "/dev/");
+    EXPECT_STREQ(path, "/dev");
+    free(path);
+
+    path = path_absolute("///dev///..///dev//null");
+    EXPECT_STREQ(path, "/dev/null");
+    free(path);
+
+    path = path_absolute("///dev//n0nexist3nt-file");
+    EXPECT_STREQ(path, "/dev/n0nexist3nt-file");
+    free(path);
+
+    path = path_absolute("///../..//./");
+    EXPECT_STREQ(path, "/");
+    free(path);
+
+    path = path_absolute("/");
+    EXPECT_STREQ(path, "/");
+    free(path);
+
+    path = path_absolute("");
+    EXPECT_STREQ(path, NULL);
     free(path);
 
     const char *linkpath = "./build/../build/test/test-symlink";
@@ -954,20 +1510,47 @@ static void test_path_absolute(void)
         TEST_FAIL("symlink() failed: %s", strerror(errno));
         return;
     }
+    passed++;
 
     path = path_absolute(linkpath);
     EXPECT_EQ(unlink(linkpath), 0);
     ASSERT_NONNULL(path);
     EXPECT_STREQ(path_basename(path), "README.md");
     free(path);
+}
 
-    char buf[8192 + 1];
-    memset(buf, 'a', sizeof(buf));
-    buf[0] = '/';
-    buf[8192] = '\0';
-    errno = 0;
-    EXPECT_NULL(path_absolute(buf));
-    EXPECT_EQ(errno, ENAMETOOLONG);
+static void test_path_join(void)
+{
+    char *p = path_join("/", "file");
+    EXPECT_STREQ(p, "/file");
+    free(p);
+    p = path_join("foo", "bar");
+    EXPECT_STREQ(p, "foo/bar");
+    free(p);
+    p = path_join("foo/", "bar");
+    EXPECT_STREQ(p, "foo/bar");
+    free(p);
+    p = path_join("", "bar");
+    EXPECT_STREQ(p, "bar");
+    free(p);
+    p = path_join("foo", "");
+    EXPECT_STREQ(p, "foo");
+    free(p);
+    p = path_join("", "");
+    EXPECT_STREQ(p, "");
+    free(p);
+    p = path_join("/", "");
+    EXPECT_STREQ(p, "/");
+    free(p);
+    p = path_join("/home/user", ".dte");
+    EXPECT_STREQ(p, "/home/user/.dte");
+    free(p);
+    p = path_join("/home/user/", ".dte");
+    EXPECT_STREQ(p, "/home/user/.dte");
+    free(p);
+    p = path_join("/home/user//", ".dte");
+    EXPECT_STREQ(p, "/home/user//.dte");
+    free(p);
 }
 
 static void test_path_parent(void)
@@ -1065,7 +1648,7 @@ static void test_mem_intern(void)
 static void test_read_file(void)
 {
     char *buf = NULL;
-    ssize_t size = read_file("/dev", &buf);
+    ssize_t size = read_file("test", &buf);
     EXPECT_EQ(size, -1);
     EXPECT_EQ(errno, EISDIR);
     EXPECT_NULL(buf);
@@ -1088,39 +1671,64 @@ static void test_read_file(void)
     free(buf);
 }
 
-DISABLE_WARNING("-Wmissing-prototypes")
-
-void test_util(void)
+static void test_xfopen(void)
 {
-    test_macros();
-    test_ascii();
-    test_string();
-    test_string_view();
-    test_number_width();
-    test_buf_parse_ulong();
-    test_str_to_int();
-    test_str_to_size();
-    test_u_char_width();
-    test_u_to_lower();
-    test_u_is_upper();
-    test_u_is_cntrl();
-    test_u_is_zero_width();
-    test_u_is_special_whitespace();
-    test_u_is_unprintable();
-    test_u_str_width();
-    test_u_set_char();
-    test_u_set_ctrl();
-    test_u_prev_char();
-    test_ptr_array();
-    test_hashset();
-    test_round_up();
-    test_round_size_to_next_power_of_2();
-    test_bitop();
-    test_path_dirname_and_path_basename();
-    test_path_absolute();
-    test_path_parent();
-    test_size_multiply_overflows();
-    test_size_add_overflows();
-    test_mem_intern();
-    test_read_file();
+    static const char modes[][4] = {"a", "a+", "r", "r+", "w", "w+"};
+    FOR_EACH_I(i, modes) {
+        FILE *f = xfopen("/dev/null", modes[i], O_CLOEXEC, 0666);
+        EXPECT_NONNULL(f);
+        if (likely(f)) {
+            EXPECT_EQ(fclose(f), 0);
+        }
+    }
 }
+
+static const TestEntry tests[] = {
+    TEST(test_util_macros),
+    TEST(test_IS_POWER_OF_2),
+    TEST(test_xstreq),
+    TEST(test_hex_decode),
+    TEST(test_ascii),
+    TEST(test_base64),
+    TEST(test_string),
+    TEST(test_string_view),
+    TEST(test_get_delim),
+    TEST(test_size_str_width),
+    TEST(test_buf_parse_ulong),
+    TEST(test_str_to_int),
+    TEST(test_str_to_size),
+    TEST(test_umax_to_str),
+    TEST(test_uint_to_str),
+    TEST(test_buf_uint_to_str),
+    TEST(test_u_char_width),
+    TEST(test_u_to_lower),
+    TEST(test_u_to_upper),
+    TEST(test_u_is_lower),
+    TEST(test_u_is_upper),
+    TEST(test_u_is_cntrl),
+    TEST(test_u_is_zero_width),
+    TEST(test_u_is_special_whitespace),
+    TEST(test_u_is_unprintable),
+    TEST(test_u_str_width),
+    TEST(test_u_set_char_raw),
+    TEST(test_u_set_char),
+    TEST(test_u_prev_char),
+    TEST(test_ptr_array),
+    TEST(test_ptr_array_move),
+    TEST(test_hashmap),
+    TEST(test_hashset),
+    TEST(test_round_size_to_next_multiple),
+    TEST(test_round_size_to_next_power_of_2),
+    TEST(test_path_dirname_and_path_basename),
+    TEST(test_relative_filename),
+    TEST(test_path_absolute),
+    TEST(test_path_join),
+    TEST(test_path_parent),
+    TEST(test_size_multiply_overflows),
+    TEST(test_size_add_overflows),
+    TEST(test_mem_intern),
+    TEST(test_read_file),
+    TEST(test_xfopen),
+};
+
+const TestGroup util_tests = TEST_GROUP(tests);

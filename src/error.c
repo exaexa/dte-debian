@@ -1,12 +1,16 @@
+#include <errno.h>
+#include <stdarg.h>
 #include <stdio.h>
+#include <string.h>
 #include "error.h"
+#include "command/run.h"
 #include "config.h"
 #include "editor.h"
+#include "util/debug.h"
 
 static char error_buf[256];
 static unsigned int nr_errors;
 static bool msg_is_error;
-static bool supress_errors;
 
 void clear_error(void)
 {
@@ -15,36 +19,24 @@ void clear_error(void)
 
 void error_msg(const char *format, ...)
 {
-    if (supress_errors) {
-        return;
-    }
-
+    const char *cmd = current_command ? current_command->name : NULL;
+    const char *file = current_config.file;
+    const int line = current_config.line;
+    const size_t size = sizeof(error_buf);
     int pos = 0;
-    if (config_file) {
-        if (current_command) {
-            pos = snprintf (
-                error_buf,
-                sizeof(error_buf),
-                "%s:%d: %s: ",
-                config_file,
-                config_line,
-                current_command->name
-            );
-        } else {
-            pos = snprintf (
-                error_buf,
-                sizeof(error_buf),
-                "%s:%d: ",
-                config_file,
-                config_line
-            );
-        }
+
+    if (file && cmd) {
+        pos = snprintf(error_buf, size, "%s:%d: %s: ", file, line, cmd);
+    } else if (file) {
+        pos = snprintf(error_buf, size, "%s:%d: ", file, line);
+    } else if (cmd) {
+        pos = snprintf(error_buf, size, "%s: ", cmd);
     }
 
-    if (pos >= 0 && pos < (sizeof(error_buf) - 3)) {
+    if (pos >= 0 && pos < (size - 3)) {
         va_list ap;
         va_start(ap, format);
-        vsnprintf(error_buf + pos, sizeof(error_buf) - pos, format, ap);
+        vsnprintf(error_buf + pos, size - pos, format, ap);
         va_end(ap);
     }
 
@@ -55,6 +47,13 @@ void error_msg(const char *format, ...)
         fputs(error_buf, stderr);
         fputc('\n', stderr);
     }
+
+    DEBUG_LOG("%s", error_buf);
+}
+
+void perror_msg(const char *prefix)
+{
+    error_msg("%s: %s", prefix, strerror(errno));
 }
 
 void info_msg(const char *format, ...)
@@ -75,14 +74,4 @@ const char *get_msg(bool *is_error)
 unsigned int get_nr_errors(void)
 {
     return nr_errors;
-}
-
-void suppress_error_msg(void)
-{
-    supress_errors = true;
-}
-
-void unsuppress_error_msg(void)
-{
-    supress_errors = false;
 }

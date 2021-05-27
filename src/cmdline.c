@@ -145,14 +145,6 @@ static void cmdline_prev_word(CommandLine *c)
     c->pos = i;
 }
 
-static void cmdline_insert_bytes(CommandLine *c, const char *buf, size_t size)
-{
-    string_make_space(&c->buf, c->pos, size);
-    for (size_t i = 0; i < size; i++) {
-        c->buf.buffer[c->pos++] = buf[i];
-    }
-}
-
 static void cmdline_insert_paste(CommandLine *c)
 {
     size_t size;
@@ -162,7 +154,8 @@ static void cmdline_insert_paste(CommandLine *c)
             text[i] = ' ';
         }
     }
-    cmdline_insert_bytes(c, text, size);
+    string_insert_buf(&c->buf, c->pos, text, size);
+    c->pos += size;
     free(text);
 }
 
@@ -170,7 +163,7 @@ static void set_text(CommandLine *c, const char *text)
 {
     string_clear(&c->buf);
     const size_t text_len = strlen(text);
-    string_add_buf(&c->buf, text, text_len);
+    string_append_buf(&c->buf, text, text_len);
     c->pos = text_len;
 }
 
@@ -178,82 +171,76 @@ void cmdline_clear(CommandLine *c)
 {
     string_clear(&c->buf);
     c->pos = 0;
-    c->search_pos = -1;
+    c->search_pos = NULL;
 }
 
 void cmdline_set_text(CommandLine *c, const char *text)
 {
     set_text(c, text);
-    c->search_pos = -1;
+    c->search_pos = NULL;
 }
 
-CommandLineResult cmdline_handle_key (
-    CommandLine *c,
-    PointerArray *history,
-    KeyCode key
-) {
+CommandLineResult cmdline_handle_key(CommandLine *c, History *hist, KeyCode key)
+{
     if (key <= KEY_UNICODE_MAX) {
         c->pos += string_insert_ch(&c->buf, c->pos, key);
         return CMDLINE_KEY_HANDLED;
     }
+
     switch (key) {
     case CTRL('['): // ESC
     case CTRL('C'):
     case CTRL('G'):
         cmdline_clear(c);
         return CMDLINE_CANCEL;
+
+    case KEY_DELETE:
     case CTRL('D'):
         cmdline_delete(c);
         goto reset_search_pos;
+
     case CTRL('K'):
         cmdline_delete_eol(c);
         goto reset_search_pos;
+
     case CTRL('H'):
     case CTRL('?'):
         if (c->buf.len > 0) {
             cmdline_backspace(c);
         }
         goto reset_search_pos;
+
     case CTRL('U'):
         cmdline_delete_bol(c);
         goto reset_search_pos;
+
     case CTRL('W'):
     case MOD_META | MOD_CTRL | 'H':
     case MOD_META | MOD_CTRL | '?':
         cmdline_erase_word(c);
         goto reset_search_pos;
+
     case MOD_CTRL | KEY_DELETE:
     case MOD_META | KEY_DELETE:
     case MOD_META | 'd':
         cmdline_delete_word(c);
         goto reset_search_pos;
 
-    case CTRL('A'):
-        c->pos = 0;
-        goto handled;
+    case KEY_LEFT:
     case CTRL('B'):
         cmdline_prev_char(c);
         goto handled;
-    case CTRL('E'):
-        c->pos = c->buf.len;
-        goto handled;
+
+    case KEY_RIGHT:
     case CTRL('F'):
         cmdline_next_char(c);
         goto handled;
-    case KEY_DELETE:
-        cmdline_delete(c);
-        goto reset_search_pos;
 
-    case KEY_LEFT:
-        cmdline_prev_char(c);
-        goto handled;
-    case KEY_RIGHT:
-        cmdline_next_char(c);
-        goto handled;
     case CTRL(KEY_LEFT):
     case MOD_META | 'b':
         cmdline_prev_word(c);
         goto handled;
+
     case CTRL(KEY_RIGHT):
     case MOD_META | 'f':
         cmdline_next_word(c);
@@ -261,48 +248,54 @@ CommandLineResult cmdline_handle_key (
 
     case KEY_HOME:
     case MOD_META | KEY_LEFT:
+    case CTRL('A'):
         c->pos = 0;
         goto handled;
+
     case KEY_END:
     case MOD_META | KEY_RIGHT:
+    case CTRL('E'):
         c->pos = c->buf.len;
         goto handled;
+
     case KEY_UP:
-        if (history == NULL) {
+        if (!hist) {
             return CMDLINE_UNKNOWN_KEY;
         }
-        if (c->search_pos < 0) {
+        if (!c->search_pos) {
             free(c->search_text);
             c->search_text = string_clone_cstring(&c->buf);
-            c->search_pos = history->count;
         }
-        if (history_search_forward(history, &c->search_pos, c->search_text)) {
-            set_text(c, history->ptrs[c->search_pos]);
+        if (history_search_forward(hist, &c->search_pos, c->search_text)) {
+            set_text(c, c->search_pos->text);
         }
         goto handled;
+
     case KEY_DOWN:
-        if (history == NULL) {
+        if (!hist) {
             return CMDLINE_UNKNOWN_KEY;
         }
-        if (c->search_pos < 0) {
+        if (!c->search_pos) {
             goto handled;
         }
-        if (history_search_backward(history, &c->search_pos, c->search_text)) {
-            set_text(c, history->ptrs[c->search_pos]);
+        if (history_search_backward(hist, &c->search_pos, c->search_text)) {
+            set_text(c, c->search_pos->text);
         } else {
             set_text(c, c->search_text);
-            c->search_pos = -1;
+            c->search_pos = NULL;
         }
         goto handled;
+
     case KEY_PASTE:
         cmdline_insert_paste(c);
         goto reset_search_pos;
+
     default:
         return CMDLINE_UNKNOWN_KEY;
     }
 
 reset_search_pos:
-    c->search_pos = -1;
+    c->search_pos = NULL;
 handled:
     return CMDLINE_KEY_HANDLED;
 }

@@ -1,47 +1,71 @@
+#include "../../build/feature.h" // Must be first include
 #include <errno.h>
 #include <fcntl.h>
 #include <signal.h>
-#include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #include "exec.h"
+#include "debug.h"
+#include "xreadwrite.h"
 
-void close_on_exec(int fd)
+static bool close_on_exec(int fd, bool cloexec)
 {
-    fcntl(fd, F_SETFD, FD_CLOEXEC);
-}
-
-int pipe_close_on_exec(int fd[2])
-{
-    int ret = pipe(fd);
-    if (ret == 0) {
-        close_on_exec(fd[0]);
-        close_on_exec(fd[1]);
+    int flags = fcntl(fd, F_GETFD);
+    if (flags < 0) {
+        return false;
     }
-    return ret;
+    int new_flags = cloexec ? (flags | FD_CLOEXEC) : (flags & ~FD_CLOEXEC);
+    if (new_flags == flags) {
+        return true;
+    }
+    if (fcntl(fd, F_SETFD, new_flags) == -1) {
+        return false;
+    }
+    return true;
 }
 
-static int dup_close_on_exec(int oldfd, int newfd)
+bool pipe_close_on_exec(int fd[2])
 {
-    if (dup2(oldfd, newfd) < 0) {
+#ifdef HAVE_PIPE2
+    return (pipe2(fd, O_CLOEXEC) == 0);
+#else
+    if (pipe(fd) != 0) {
+        return false;
+    }
+    close_on_exec(fd[0], true);
+    close_on_exec(fd[1], true);
+    return true;
+#endif
+}
+
+static int xdup3(int oldfd, int newfd, int flags)
+{
+#ifdef HAVE_DUP3
+    int fd;
+    do {
+        fd = dup3(oldfd, newfd, flags);
+    } while (unlikely(fd < 0 && errno == EINTR));
+    return fd;
+#else
+    if (unlikely(oldfd == newfd)) {
+        // Replicate dup3() behaviour:
+        errno = EINVAL;
         return -1;
     }
-    close_on_exec(newfd);
-    return newfd;
+    int fd;
+    do {
+        fd = dup2(oldfd, newfd);
+    } while (unlikely(fd < 0 && errno == EINTR));
+    if (fd >= 0 && (flags & O_CLOEXEC)) {
+        close_on_exec(fd, true);
+    }
+    return fd;
+#endif
 }
 
-static void reset_signal_handler(int signum)
-{
-    struct sigaction act;
-    memset(&act, 0, sizeof(struct sigaction));
-    sigemptyset(&act.sa_mask);
-    act.sa_handler = SIG_DFL;
-    sigaction(signum, &act, NULL);
-}
-
-static void handle_child(char **argv, int fd[3], int error_fd)
+static noreturn void handle_child(char **argv, const char **env, int fd[3], int error_fd)
 {
     int error;
     int nr_fds = 3;
@@ -60,18 +84,17 @@ static void handle_child(char **argv, int fd[3], int error_fd)
 
     if (move) {
         int next_free = max + 1;
-
         if (error_fd < nr_fds) {
-            error_fd = dup_close_on_exec(error_fd, next_free++);
+            error_fd = xdup3(error_fd, next_free++, O_CLOEXEC);
             if (error_fd < 0) {
-                goto out;
+                goto error;
             }
         }
         for (int i = 0; i < nr_fds; i++) {
             if (fd[i] < i) {
-                fd[i] = dup_close_on_exec(fd[i], next_free++);
+                fd[i] = xdup3(fd[i], next_free++, O_CLOEXEC);
                 if (fd[i] < 0) {
-                    goto out;
+                    goto error;
                 }
             }
         }
@@ -81,57 +104,80 @@ static void handle_child(char **argv, int fd[3], int error_fd)
     for (int i = 0; i < nr_fds; i++) {
         if (i == fd[i]) {
             // Clear FD_CLOEXEC flag
-            fcntl(fd[i], F_SETFD, 0);
+            close_on_exec(fd[i], false);
         } else {
-            if (dup2(fd[i], i) < 0) {
-                goto out;
+            if (xdup3(fd[i], i, 0) < 0) {
+                goto error;
             }
         }
     }
 
-    // Unignore signals (see man page exec(3p) for more information)
-    reset_signal_handler(SIGINT);
-    reset_signal_handler(SIGQUIT);
+    if (env) {
+        for (size_t i = 0; env[i]; i += 2) {
+            const char *name = env[i];
+            const char *value = env[i + 1];
+            int r = value ? setenv(name, value, true) : unsetenv(name);
+            if (unlikely(r != 0)) {
+                goto error;
+            }
+        }
+    }
+
+    // Reset ignored signals to SIG_DFL (see exec(3p))
+    struct sigaction act;
+    memset(&act, 0, sizeof(struct sigaction));
+    sigemptyset(&act.sa_mask);
+    act.sa_handler = SIG_DFL;
+    sigaction(SIGINT, &act, NULL);
+    sigaction(SIGQUIT, &act, NULL);
+    sigaction(SIGPIPE, &act, NULL);
+    sigaction(SIGUSR1, &act, NULL);
+    sigaction(SIGUSR2, &act, NULL);
 
     execvp(argv[0], argv);
-out:
+
+error:
     error = errno;
     error = write(error_fd, &error, sizeof(error));
     exit(42);
 }
 
-pid_t fork_exec(char **argv, int fd[3])
+pid_t fork_exec(char **argv, const char **env, int fd[3])
 {
-    int error = 0;
     int ep[2];
-
-    if (pipe_close_on_exec(ep)) {
+    if (!pipe_close_on_exec(ep)) {
         return -1;
     }
 
     const pid_t pid = fork();
-    if (pid < 0) {
-        error = errno;
-        close(ep[0]);
-        close(ep[1]);
-        errno = error;
+    if (unlikely(pid < 0)) {
+        const int saved_errno = errno;
+        xclose(ep[0]);
+        xclose(ep[1]);
+        errno = saved_errno;
         return pid;
     }
-    if (!pid) {
-        handle_child(argv, fd, ep[1]);
+
+    if (pid == 0) {
+        // Child
+        handle_child(argv, env, fd, ep[1]);
+        BUG("handle_child() should never return");
     }
 
-    close(ep[1]);
+    // Parent
+    xclose(ep[1]);
+    int error = 0;
     const ssize_t rc = read(ep[0], &error, sizeof(error));
+    const int saved_errno = errno;
+    xclose(ep[0]);
+
     if (rc > 0 && rc != sizeof(error)) {
         error = EPIPE;
     }
     if (rc < 0) {
-        error = errno;
+        error = saved_errno;
     }
-    close(ep[0]);
-
-    if (!rc) {
+    if (rc == 0) {
         // Child exec was successful
         return pid;
     }
@@ -153,19 +199,24 @@ int wait_child(pid_t pid)
         }
         return -errno;
     }
+
     if (WIFEXITED(status)) {
         return WEXITSTATUS(status) & 0xFF;
     }
+
     if (WIFSIGNALED(status)) {
         return WTERMSIG(status) << 8;
     }
+
     if (WIFSTOPPED(status)) {
         return WSTOPSIG(status) << 8;
     }
+
 #if defined(WIFCONTINUED)
     if (WIFCONTINUED(status)) {
         return SIGCONT << 8;
     }
 #endif
+
     return -EINVAL;
 }

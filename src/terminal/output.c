@@ -1,25 +1,19 @@
 #include <stdarg.h>
-#include <stdio.h>
-#include <stdlib.h>
+#include <string.h>
 #include <unistd.h>
 #include "output.h"
 #include "terminal.h"
-#include "../debug.h"
-#include "../util/ascii.h"
-#include "../util/utf8.h"
-#include "../util/xmalloc.h"
-#include "../util/xreadwrite.h"
+#include "util/ascii.h"
+#include "util/debug.h"
+#include "util/numtostr.h"
+#include "util/utf8.h"
+#include "util/xreadwrite.h"
 
 TermOutputBuffer obuf;
 
-static size_t obuf_avail(void)
-{
-    return sizeof(obuf.buf) - obuf.count;
-}
-
 static void obuf_need_space(size_t count)
 {
-    if (obuf_avail() < count) {
+    if (unlikely(obuf_avail() < count)) {
         term_output_flush();
     }
 }
@@ -35,11 +29,11 @@ void term_output_reset(size_t start_x, size_t width, size_t scroll_x)
 }
 
 // Does not update obuf.x
-void term_add_bytes(const char *const str, size_t count)
+void term_add_bytes(const char *str, size_t count)
 {
-    if (count > obuf_avail()) {
+    if (unlikely(count > obuf_avail())) {
         term_output_flush();
-        if (count >= sizeof(obuf.buf)) {
+        if (unlikely(count >= sizeof(obuf.buf))) {
             xwrite(STDOUT_FILENO, str, count);
             return;
         }
@@ -91,42 +85,7 @@ void term_add_string_view(StringView sv)
     }
 }
 
-VPRINTF(1)
-static void term_vsprintf(const char *fmt, va_list ap)
-{
-    va_list ap2;
-    va_copy(ap2, ap);
-    // Calculate the required size
-    int n = vsnprintf(NULL, 0, fmt, ap2);
-    va_end(ap2);
-    BUG_ON(n < 0);
-
-    if (n >= obuf_avail()) {
-        term_output_flush();
-        if (n >= sizeof(obuf.buf)) {
-            char *tmp = xmalloc(n + 1);
-            int wrote = vsnprintf(tmp, n + 1, fmt, ap);
-            BUG_ON(wrote != n);
-            xwrite(STDOUT_FILENO, tmp, n);
-            free(tmp);
-            return;
-        }
-    }
-
-    int wrote = vsnprintf(obuf.buf + obuf.count, n + 1, fmt, ap);
-    BUG_ON(wrote != n);
-    obuf.count += wrote;
-}
-
-void term_sprintf(const char *fmt, ...)
-{
-    va_list ap;
-    va_start(ap, fmt);
-    term_vsprintf(fmt, ap);
-    va_end(ap);
-}
-
-void term_add_str(const char *const str)
+void term_add_str(const char *str)
 {
     size_t i = 0;
     while (str[i]) {
@@ -134,6 +93,13 @@ void term_add_str(const char *const str)
             break;
         }
     }
+}
+
+// Does not update obuf.x
+void term_add_uint(unsigned int x)
+{
+    obuf_need_space(DECIMAL_STR_MAX(x));
+    obuf.count += buf_uint_to_str(x, obuf.buf + obuf.count);
 }
 
 void term_hide_cursor(void)
@@ -146,18 +112,36 @@ void term_show_cursor(void)
     terminal.put_control_code(terminal.control_codes.show_cursor);
 }
 
+void term_move_cursor(unsigned int x, unsigned int y)
+{
+    terminal.move_cursor(x, y);
+}
+
+void term_save_title(void)
+{
+    terminal.put_control_code(terminal.control_codes.save_title);
+}
+
+void term_restore_title(void)
+{
+    terminal.put_control_code(terminal.control_codes.restore_title);
+}
+
 void term_clear_eol(void)
 {
-    if (obuf.x < obuf.scroll_x + obuf.width) {
-        if (
-            obuf.can_clear
-            && (obuf.color.bg < 0 || terminal.back_color_erase)
-        ) {
-            terminal.clear_to_eol();
-            obuf.x = obuf.scroll_x + obuf.width;
-        } else {
-            term_set_bytes(' ', obuf.scroll_x + obuf.width - obuf.x);
-        }
+    const size_t end = obuf.scroll_x + obuf.width;
+    if (obuf.x >= end) {
+        return;
+    }
+    if (
+        obuf.can_clear
+        && (obuf.color.bg < 0 || terminal.back_color_erase)
+        && !(obuf.color.attr & ATTR_REVERSE)
+    ) {
+        terminal.clear_to_eol();
+        obuf.x = end;
+    } else {
+        term_set_bytes(' ', end - obuf.x);
     }
 }
 
@@ -172,27 +156,26 @@ void term_output_flush(void)
 static void skipped_too_much(CodePoint u)
 {
     size_t n = obuf.x - obuf.scroll_x;
-
+    char *buf = obuf.buf + obuf.count;
     obuf_need_space(8);
     if (u == '\t' && obuf.tab != TAB_CONTROL) {
-        char ch = ' ';
-        if (obuf.tab == TAB_SPECIAL) {
-            ch = '-';
-        }
-        memset(obuf.buf + obuf.count, ch, n);
+        memset(buf, (obuf.tab == TAB_SPECIAL) ? '-' : ' ', n);
         obuf.count += n;
     } else if (u < 0x20) {
-        obuf.buf[obuf.count++] = u | 0x40;
+        *buf = u | 0x40;
+        obuf.count++;
     } else if (u == 0x7f) {
-        obuf.buf[obuf.count++] = '?';
+        *buf = '?';
+        obuf.count++;
     } else if (u_is_unprintable(u)) {
         char tmp[4];
         size_t idx = 0;
         u_set_hex(tmp, &idx, u);
-        memcpy(obuf.buf + obuf.count, tmp + 4 - n, n);
+        memcpy(buf, tmp + 4 - n, n);
         obuf.count += n;
     } else {
-        obuf.buf[obuf.count++] = '>';
+        *buf = '>';
+        obuf.count++;
     }
 }
 
@@ -220,8 +203,7 @@ static void buf_skip(CodePoint u)
 static void print_tab(size_t width)
 {
     char ch = ' ';
-
-    if (obuf.tab == TAB_SPECIAL) {
+    if (unlikely(obuf.tab == TAB_SPECIAL)) {
         obuf.buf[obuf.count++] = '>';
         obuf.x++;
         width--;
@@ -236,41 +218,41 @@ static void print_tab(size_t width)
 
 bool term_put_char(CodePoint u)
 {
-    size_t space = obuf.scroll_x + obuf.width - obuf.x;
-    size_t width;
-
     if (obuf.x < obuf.scroll_x) {
         // Scrolled, char (at least partially) invisible
         buf_skip(u);
         return true;
     }
 
+    const size_t space = obuf.scroll_x + obuf.width - obuf.x;
     if (!space) {
         return false;
     }
 
     obuf_need_space(8);
-    if (u < 0x80) {
-        if (!ascii_iscntrl(u)) {
+    if (likely(u < 0x80)) {
+        if (likely(!ascii_iscntrl(u))) {
             obuf.buf[obuf.count++] = u;
             obuf.x++;
         } else if (u == '\t' && obuf.tab != TAB_CONTROL) {
-            width = (obuf.x + obuf.tab_width) / obuf.tab_width * obuf.tab_width - obuf.x;
+            const size_t tw = obuf.tab_width;
+            const size_t x = obuf.x;
+            size_t width = (x + tw) / tw * tw - x;
             if (width > space) {
                 width = space;
             }
             print_tab(width);
         } else {
-            u_set_ctrl(obuf.buf, &obuf.count, u);
-            obuf.x += 2;
-            if (unlikely(space == 1)) {
-                // Wrote too much
-                obuf.count--;
-                obuf.x--;
+            // Use caret notation for control chars:
+            obuf.buf[obuf.count++] = '^';
+            obuf.x++;
+            if (space > 1) {
+                obuf.buf[obuf.count++] = (u + 64) & 0x7F;
+                obuf.x++;
             }
         }
     } else {
-        width = u_char_width(u);
+        const size_t width = u_char_width(u);
         if (width <= space) {
             obuf.x += width;
             u_set_char(obuf.buf, &obuf.count, u);
@@ -287,5 +269,6 @@ bool term_put_char(CodePoint u)
             obuf.x++;
         }
     }
+
     return true;
 }

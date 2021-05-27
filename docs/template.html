@@ -2,8 +2,15 @@
 <html xmlns="http://www.w3.org/1999/xhtml" lang="en" xml:lang="en">
 <head>
   <meta charset="utf-8"/>
-  <title>dte text editor</title>
+$if(section)$
+  <title>$title$($section$)</title>
+$else$
+  <title>$title$</title>
+$endif$
+  <meta name="description" content="$description$"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <link rel="shortcut icon" type="image/x-icon" href="favicon.ico"/>
+  <link rel="icon" type="image/x-icon" href="favicon.ico"/>
   <link href="style.css" rel="stylesheet"/>
   <style>#top-nav a[href="$output_basename$"] {color: darkblue}</style>
 </head>
@@ -14,6 +21,7 @@
       <nav id="top-nav">
         <a href="index.html">About</a>
         <a href="releases.html">Releases</a>
+        <a href="dte.html">dte</a>
         <a href="dterc.html">dterc</a>
         <a href="dte-syntax.html">dte-syntax</a>
       </nav>
@@ -25,8 +33,14 @@
 $body$
     </main>
     <footer>
-      <p>&#xA9; Craig Barnes 2017</p>
+      <p>&#xA9; Craig Barnes 2017-2021</p>
     </footer>
   </div>
+  <!--
+    This hack prevents a Chromium bug that causes "a:hover" color
+    transitions to fire on every page load.
+    See: bugs.chromium.org/p/chromium/issues/detail?id=332189#c20
+  -->
+  <script> </script>
 </body>
 </html>

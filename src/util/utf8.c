@@ -1,30 +1,39 @@
 #include <stdbool.h>
+#include <stdint.h>
 #include "utf8.h"
 #include "ascii.h"
+#include "debug.h"
 
-static int u_seq_len(unsigned int first_byte)
+enum {
+    I = -1, // Invalid byte
+    C = 0,  // Continuation byte
+};
+
+static const int8_t seq_len_table[256] = {
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, // 00..0F
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, // 10..1F
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, // 20..2F
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, // 30..3F
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, // 40..4F
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, // 50..5F
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, // 60..6F
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, // 70..7F
+    C, C, C, C, C, C, C, C, C, C, C, C, C, C, C, C, // 80..8F
+    C, C, C, C, C, C, C, C, C, C, C, C, C, C, C, C, // 90..9F
+    C, C, C, C, C, C, C, C, C, C, C, C, C, C, C, C, // A0..AF
+    C, C, C, C, C, C, C, C, C, C, C, C, C, C, C, C, // B0..BF
+    I, I, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, // C0..CF
+    2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, // D0..DF
+    3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, // E0..EF
+    4, 4, 4, 4, 4, I, I, I, I, I, I, I, I, I, I, I  // F0..FF
+};
+
+static int u_seq_len(unsigned char first_byte)
 {
-    if (first_byte < 0x80) {
-        return 1;
-    }
-    if (first_byte < 0xc0) {
-        return 0;
-    }
-    if (first_byte < 0xe0) {
-        return 2;
-    }
-    if (first_byte < 0xf0) {
-        return 3;
-    }
-
-    // Could be 0xf8 but RFC 3629 doesn't allow codepoints above 0x10ffff
-    if (first_byte < 0xf5) {
-        return 4;
-    }
-    return -1;
+    return seq_len_table[first_byte];
 }
 
-static bool u_is_continuation(CodePoint u)
+static bool u_is_continuation_byte(unsigned char u)
 {
     return (u & 0xc0) == 0x80;
 }
@@ -46,7 +55,7 @@ static bool u_seq_len_ok(CodePoint u, int len)
  */
 static unsigned int u_get_first_byte_mask(unsigned int len)
 {
-    return (1U << 7U >> len) - 1;
+    return (0x80 >> len) - 1;
 }
 
 size_t u_str_width(const unsigned char *str)
@@ -61,26 +70,20 @@ size_t u_str_width(const unsigned char *str)
 CodePoint u_prev_char(const unsigned char *buf, size_t *idx)
 {
     size_t i = *idx;
-    unsigned int count, shift;
-    CodePoint u;
-
-    u = buf[--i];
-    if (u < 0x80) {
+    unsigned char ch = buf[--i];
+    if (likely(ch < 0x80)) {
         *idx = i;
-        return u;
+        return (CodePoint)ch;
     }
 
-    if (!u_is_continuation(u)) {
+    if (!u_is_continuation_byte(ch)) {
         goto invalid;
     }
 
-    u &= 0x3f;
-    count = 1;
-    shift = 6;
-    while (i) {
-        unsigned int ch = buf[--i];
+    CodePoint u = ch & 0x3f;
+    for (unsigned int count = 1, shift = 6; i > 0; ) {
+        ch = buf[--i];
         unsigned int len = u_seq_len(ch);
-
         count++;
         if (len == 0) {
             if (count == 4) {
@@ -97,11 +100,11 @@ CodePoint u_prev_char(const unsigned char *buf, size_t *idx)
             if (!u_seq_len_ok(u, len)) {
                 break;
             }
-
             *idx = i;
             return u;
         }
     }
+
 invalid:
     *idx = *idx - 1;
     u = buf[*idx];
@@ -112,7 +115,7 @@ CodePoint u_str_get_char(const unsigned char *str, size_t *idx)
 {
     size_t i = *idx;
     CodePoint u = str[i];
-    if (u < 0x80) {
+    if (likely(u < 0x80)) {
         *idx = i + 1;
         return u;
     }
@@ -123,7 +126,7 @@ CodePoint u_get_char(const unsigned char *buf, size_t size, size_t *idx)
 {
     size_t i = *idx;
     CodePoint u = buf[i];
-    if (u < 0x80) {
+    if (likely(u < 0x80)) {
         *idx = i + 1;
         return u;
     }
@@ -133,20 +136,17 @@ CodePoint u_get_char(const unsigned char *buf, size_t size, size_t *idx)
 CodePoint u_get_nonascii(const unsigned char *buf, size_t size, size_t *idx)
 {
     size_t i = *idx;
-    int len, c;
-    unsigned int first, u;
-
-    first = buf[i++];
-    len = u_seq_len(first);
+    unsigned int first = buf[i++];
+    int len = u_seq_len(first);
     if (unlikely(len < 2 || len > size - i + 1)) {
         goto invalid;
     }
 
-    u = first & u_get_first_byte_mask(len);
-    c = len - 1;
+    CodePoint u = first & u_get_first_byte_mask(len);
+    int c = len - 1;
     do {
-        CodePoint ch = buf[i++];
-        if (!u_is_continuation(ch)) {
+        unsigned char ch = buf[i++];
+        if (!u_is_continuation_byte(ch)) {
             goto invalid;
         }
         u = (u << 6) | (ch & 0x3f);
@@ -165,61 +165,49 @@ invalid:
 
 void u_set_char_raw(char *str, size_t *idx, CodePoint u)
 {
-    size_t i = *idx;
-    if (u <= 0x7f) {
-        str[i++] = u;
-    } else if (u <= 0x7ff) {
-        str[i + 1] = (u & 0x3f) | 0x80; u >>= 6;
-        str[i + 0] = u | 0xc0;
-        i += 2;
-    } else if (u <= 0xffff) {
-        str[i + 2] = (u & 0x3f) | 0x80; u >>= 6;
-        str[i + 1] = (u & 0x3f) | 0x80; u >>= 6;
-        str[i + 0] = u | 0xe0;
-        i += 3;
-    } else if (u <= 0x10ffff) {
-        str[i + 3] = (u & 0x3f) | 0x80; u >>= 6;
-        str[i + 2] = (u & 0x3f) | 0x80; u >>= 6;
-        str[i + 1] = (u & 0x3f) | 0x80; u >>= 6;
-        str[i + 0] = u | 0xf0;
-        i += 4;
-    } else {
-        // Invalid byte value
-        str[i++] = u & 0xff;
+    static const uint8_t prefixes[] = {0, 0, 0xC0, 0xE0, 0xF0};
+    const size_t len = u_char_size(u);
+    const uint8_t first_byte_prefix = prefixes[len];
+    const size_t i = *idx;
+
+    switch (len) {
+    case 4:
+        str[i + 3] = (u & 0x3F) | 0x80;
+        u >>= 6;
+        // Fallthrough
+    case 3:
+        str[i + 2] = (u & 0x3F) | 0x80;
+        u >>= 6;
+        // Fallthrough
+    case 2:
+        str[i + 1] = (u & 0x3F) | 0x80;
+        u >>= 6;
+        // Fallthrough
+    case 1:
+        str[i] = (u & 0xFF) | first_byte_prefix;
+        *idx = i + len;
+        break;
+    default:
+        BUG("unexpected UTF-8 sequence length: %zu", len);
     }
-    *idx = i;
 }
 
 void u_set_char(char *str, size_t *idx, CodePoint u)
 {
     size_t i = *idx;
-    if (u < 0x80) {
-        if (ascii_iscntrl(u)) {
-            u_set_ctrl(str, idx, u);
-        } else {
-            str[i++] = u;
-            *idx = i;
+    if (likely(u <= 0x7F)) {
+        if (unlikely(ascii_iscntrl(u))) {
+            // Use caret notation for control chars:
+            str[i++] = '^';
+            u = (u + 64) & 0x7F;
         }
+        str[i++] = u;
+        *idx = i;
     } else if (u_is_unprintable(u)) {
         u_set_hex(str, idx, u);
-    } else if (u <= 0x7ff) {
-        str[i + 1] = (u & 0x3f) | 0x80; u >>= 6;
-        str[i + 0] = u | 0xc0;
-        i += 2;
-        *idx = i;
-    } else if (u <= 0xffff) {
-        str[i + 2] = (u & 0x3f) | 0x80; u >>= 6;
-        str[i + 1] = (u & 0x3f) | 0x80; u >>= 6;
-        str[i + 0] = u | 0xe0;
-        i += 3;
-        *idx = i;
-    } else if (u <= 0x10ffff) {
-        str[i + 3] = (u & 0x3f) | 0x80; u >>= 6;
-        str[i + 2] = (u & 0x3f) | 0x80; u >>= 6;
-        str[i + 1] = (u & 0x3f) | 0x80; u >>= 6;
-        str[i + 0] = u | 0xf0;
-        i += 4;
-        *idx = i;
+    } else {
+        BUG_ON(u > 0x10FFFF); // (implied by !u_is_unprintable(u))
+        u_set_char_raw(str, idx, u);
     }
 }
 
@@ -245,7 +233,6 @@ size_t u_skip_chars(const char *str, int *width)
 {
     int w = *width;
     size_t idx = 0;
-
     while (str[idx] && w > 0) {
         w -= u_char_width(u_str_get_char(str, &idx));
     }
@@ -254,41 +241,4 @@ size_t u_skip_chars(const char *str, int *width)
     // width or invalid (<xx>))
     *width -= w;
     return idx;
-}
-
-static bool has_prefix(const char *str, const char *prefix_lcase)
-{
-    size_t ni = 0;
-    size_t hi = 0;
-    CodePoint pc;
-    while ((pc = u_str_get_char(prefix_lcase, &ni))) {
-        CodePoint sc = u_str_get_char(str, &hi);
-        if (sc != pc && u_to_lower(sc) != pc) {
-            return false;
-        }
-    }
-    return true;
-}
-
-ssize_t u_str_index(const char *haystack, const char *needle_lcase)
-{
-    size_t hi = 0;
-    size_t ni = 0;
-    CodePoint nc = u_str_get_char(needle_lcase, &ni);
-
-    if (!nc) {
-        return 0;
-    }
-
-    while (haystack[hi]) {
-        size_t prev = hi;
-        CodePoint hc = u_str_get_char(haystack, &hi);
-        if (
-            (hc == nc || u_to_lower(hc) == nc)
-            && has_prefix(haystack + hi, needle_lcase + ni)
-        ) {
-            return prev;
-        }
-    }
-    return -1;
 }
