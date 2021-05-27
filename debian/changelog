@@ -1,3 +1,11 @@
+dte (1.10-1) unstable; urgency=medium
+
+  * New upstream version 1.10
+  * Bump debhelper compat and standards version
+  * Update license file
+
+ -- Mirek Kratochvil <exa.exa@gmail.com>  Thu, 27 May 2021 19:28:15 +0200
+
 dte (1.9.1-2) unstable; urgency=medium
 
   [ Debian Janitor ]
