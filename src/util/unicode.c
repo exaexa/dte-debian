@@ -1,21 +1,13 @@
 #include <stddef.h>
 #include "unicode.h"
+#include "unidata.h"
 #include "ascii.h"
-#include "../editor.h"
+#include "editor.h"
 
 #define BISEARCH(u, arr) bisearch((u), (arr), ARRAY_COUNT(arr) - 1)
 
-typedef struct {
-    CodePoint first, last;
-} CodepointRange;
-
-#include "wcwidth.c"
-
-static bool bisearch (
-    CodePoint u,
-    const CodepointRange *const range,
-    size_t max
-) {
+static bool bisearch(CodePoint u, const CodepointRange *range, size_t max)
+{
     if (u < range[0].first || u > range[max].last) {
         return false;
     }
@@ -47,6 +39,7 @@ bool u_is_breakable_whitespace(CodePoint u)
     case '\f':
     case '\r':
     case ' ':
+    case 0x1680: // Ogham space mark
     case 0x2000: // En quad
     case 0x2001: // Em quad
     case 0x2002: // En space
@@ -54,8 +47,11 @@ bool u_is_breakable_whitespace(CodePoint u)
     case 0x2004: // 3-per-em space
     case 0x2005: // 4-per-em space
     case 0x2006: // 6-per-em space
+    case 0x2008: // Punctuation space
     case 0x2009: // Thin space
-    case 0x200a: // Hair space
+    case 0x200A: // Hair space
+    case 0x200B: // Zero width space
+    case 0x205F: // Medium mathematical space
     case 0x3000: // Ideographic space
         return true;
     }
@@ -111,8 +107,8 @@ static bool u_is_double_width(CodePoint u)
 
 unsigned int u_char_width(CodePoint u)
 {
-    if (u < 0x80) {
-        if (ascii_iscntrl(u)) {
+    if (likely(u < 0x80)) {
+        if (unlikely(ascii_iscntrl(u))) {
             return 2; // Rendered in caret notation (e.g. ^@)
         }
         return 1;
@@ -120,7 +116,7 @@ unsigned int u_char_width(CodePoint u)
         return 0;
     } else if (u_is_unprintable(u)) {
         return 4; // Rendered as <xx>
-    } else if (u < 0x1100U) {
+    } else if (u < 0x1100) {
         return 1;
     } else if (u_is_double_width(u)) {
         return 2;

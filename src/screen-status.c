@@ -2,7 +2,7 @@
 #include "editor.h"
 #include "selection.h"
 #include "terminal/output.h"
-#include "terminal/terminal.h"
+#include "util/debug.h"
 #include "util/utf8.h"
 #include "util/xsnprintf.h"
 
@@ -10,10 +10,12 @@ typedef struct {
     char *buf;
     size_t size;
     size_t pos;
-    bool separator;
+    size_t separator;
     const Window *win;
     const char *misc_status;
 } Formatter;
+
+#define add_status_literal(f, s) add_status_bytes(f, s, STRLEN(s))
 
 static void add_ch(Formatter *f, char ch)
 {
@@ -22,15 +24,16 @@ static void add_ch(Formatter *f, char ch)
 
 static void add_separator(Formatter *f)
 {
-    if (f->separator && f->pos < f->size) {
+    while (f->separator && f->pos < f->size) {
         add_ch(f, ' ');
+        f->separator--;
     }
-    f->separator = false;
 }
 
 static void add_status_str(Formatter *f, const char *str)
 {
-    if (!*str) {
+    BUG_ON(!str);
+    if (!str[0]) {
         return;
     }
     add_separator(f);
@@ -40,15 +43,30 @@ static void add_status_str(Formatter *f, const char *str)
     }
 }
 
+static void add_status_bytes(Formatter *f, const char *str, size_t len)
+{
+    if (len == 0) {
+        return;
+    }
+    add_separator(f);
+    if (f->pos >= f->size) {
+        return;
+    }
+    const size_t avail = f->size - f->pos;
+    len = MIN(len, avail);
+    memcpy(f->buf + f->pos, str, len);
+    f->pos += len;
+}
+
 PRINTF(2)
 static void add_status_format(Formatter *f, const char *format, ...)
 {
     char buf[1024];
     va_list ap;
     va_start(ap, format);
-    xvsnprintf(buf, sizeof(buf), format, ap);
+    size_t len = xvsnprintf(buf, sizeof(buf), format, ap);
     va_end(ap);
-    add_status_str(f, buf);
+    add_status_bytes(f, buf, len);
 }
 
 static void add_status_pos(Formatter *f)
@@ -56,17 +74,16 @@ static void add_status_pos(Formatter *f)
     size_t lines = f->win->view->buffer->nl;
     int h = f->win->edit_h;
     long pos = f->win->view->vy;
-
     if (lines <= h) {
         if (pos) {
-            add_status_str(f, "Bot");
+            add_status_literal(f, "Bot");
         } else {
-            add_status_str(f, "All");
+            add_status_literal(f, "All");
         }
     } else if (pos == 0) {
-        add_status_str(f, "Top");
+        add_status_literal(f, "Top");
     } else if (pos + h - 1 >= lines) {
-        add_status_str(f, "Bot");
+        add_status_literal(f, "Bot");
     } else {
         const long d = lines - (h - 1);
         add_status_format(f, "%2ld%%", (pos * 100 + d / 2) / d);
@@ -80,7 +97,7 @@ static void sf_format(Formatter *f, char *buf, size_t size, const char *format)
     f->buf = buf;
     f->size = size - 5; // Max length of char and terminating NUL
     f->pos = 0;
-    f->separator = false;
+    f->separator = 0;
 
     CodePoint u;
     bool got_char = block_iter_get_char(&v->cursor, &u) > 0;
@@ -93,17 +110,25 @@ static void sf_format(Formatter *f, char *buf, size_t size, const char *format)
         }
         ch = *format++;
         switch (ch) {
+        case 'b':
+            if (v->buffer->bom) {
+                add_status_literal(f, "BOM");
+            }
+            break;
         case 'f':
             add_status_str(f, buffer_filename(v->buffer));
             break;
         case 'm':
             if (buffer_modified(v->buffer)) {
-                add_status_str(f, "*");
+                add_separator(f);
+                add_ch(f, '*');
             }
             break;
         case 'r':
             if (v->buffer->readonly) {
-                add_status_str(f, "RO");
+                add_status_literal(f, "RO");
+            } else if (v->buffer->temporary) {
+                add_status_literal(f, "TMP");
             }
             break;
         case 'y':
@@ -127,24 +152,28 @@ static void sf_format(Formatter *f, char *buf, size_t size, const char *format)
         case 'E':
             add_status_str(f, v->buffer->encoding.name);
             break;
-        case 'M': {
-            if (f->misc_status != NULL) {
+        case 'M':
+            if (f->misc_status) {
                 add_status_str(f, f->misc_status);
             }
             break;
-        }
-        case 'n':
-            switch (v->buffer->newline) {
-            case NEWLINE_UNIX:
-                add_status_str(f, "LF");
-                break;
-            case NEWLINE_DOS:
-                add_status_str(f, "CRLF");
-                break;
+        case 'N':
+            if (v->buffer->crlf_newlines) {
+                add_status_literal(f, "CRLF");
             }
             break;
+        case 'n':
+            if (v->buffer->crlf_newlines) {
+                add_status_literal(f, "CRLF");
+            } else {
+                add_status_literal(f, "LF");
+            }
+            break;
+        case 'S':
+            f->separator = 3;
+            break;
         case 's':
-            f->separator = true;
+            f->separator = 1;
             break;
         case 't':
             add_status_str(f, v->buffer->options.filetype);
@@ -154,17 +183,19 @@ static void sf_format(Formatter *f, char *buf, size_t size, const char *format)
                 if (u_is_unicode(u)) {
                     add_status_format(f, "U+%04X", u);
                 } else {
-                    add_status_str(f, "Invalid");
+                    add_status_literal(f, "Invalid");
                 }
             }
             break;
         case '%':
             add_separator(f);
-            add_ch(f, ch);
+            add_ch(f, '%');
             break;
         case '\0':
             f->buf[f->pos] = '\0';
             return;
+        default:
+            BUG("should be unreachable, due to validate_statusline_format()");
         }
     }
     f->buf[f->pos] = '\0';
@@ -181,6 +212,7 @@ static const char *format_misc_status(const Window *win)
         case CSS_AUTO:
             return "[case-sensitive = auto]";
         }
+        BUG("unhandled case sensitivity type");
         return NULL;
     }
 
@@ -188,7 +220,7 @@ static const char *format_misc_status(const Window *win)
         return NULL;
     }
 
-    static char buf[32];
+    static char buf[sizeof("[n chars]") + DECIMAL_STR_MAX(size_t)];
     SelectionInfo si;
     init_selection(win->view, &si);
 
@@ -200,9 +232,11 @@ static const char *format_misc_status(const Window *win)
         xsnprintf(buf, sizeof(buf), "[%zu lines]", get_nr_selected_lines(&si));
         return buf;
     case SELECT_NONE:
+        // Already handled above
         break;
     }
 
+    BUG("unhandled selection type");
     return NULL;
 }
 
@@ -218,7 +252,7 @@ void update_status_line(const Window *win)
     sf_format(&f, rbuf, sizeof(rbuf), editor.options.statusline_right);
 
     term_output_reset(win->x, win->w, 0);
-    terminal.move_cursor(win->x, win->y + win->h - 1);
+    term_move_cursor(win->x, win->y + win->h - 1);
     set_builtin_color(BC_STATUSLINE);
     size_t lw = u_str_width(lbuf);
     size_t rw = u_str_width(rbuf);
@@ -231,7 +265,7 @@ void update_status_line(const Window *win)
         // Both would fit separately, draw overlapping
         term_add_str(lbuf);
         obuf.x = win->w - rw;
-        terminal.move_cursor(win->x + win->w - rw, win->y + win->h - 1);
+        term_move_cursor(win->x + win->w - rw, win->y + win->h - 1);
         term_add_str(rbuf);
     } else if (lw <= win->w) {
         // Left fits

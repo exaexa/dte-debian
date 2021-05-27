@@ -1,12 +1,17 @@
+#include <errno.h>
 #include <stdlib.h>
 #include <string.h>
 #include "hashset.h"
+#include "ascii.h"
+#include "debug.h"
 #include "hash.h"
 #include "str-util.h"
 #include "xmalloc.h"
 
 static void alloc_table(HashSet *set, size_t size)
 {
+    BUG_ON(size < 8);
+    BUG_ON(!IS_POWER_OF_2(size));
     set->table_size = size;
     set->table = xnew0(HashSetEntry*, size);
     set->grow_at = size - (size / 4); // 75% load factor (size * 0.75)
@@ -18,22 +23,25 @@ void hashset_init(HashSet *set, size_t size, bool icase)
         size = 8;
     }
 
-    // Accomodate the 75% load factor in the table size, to allow filling
+    // Accommodate the 75% load factor in the table size, to allow filling
     // the set to the requested size without needing to rehash()
     size += size / 3;
 
     // Round up the allocation to the next power of 2, to allow using
     // simple bitwise ops (instead of modulo) in get_slot()
     size = round_size_to_next_power_of_2(size);
+    if (unlikely(size == 0)) {
+        fatal_error(__func__, EOVERFLOW);
+    }
 
     alloc_table(set, size);
     set->nr_entries = 0;
 
     if (icase) {
-        set->hash = fnv_1a_32_hash_icase;
+        set->hash = fnv_1a_hash_icase;
         set->equal = mem_equal_icase;
     } else {
-        set->hash = fnv_1a_32_hash;
+        set->hash = fnv_1a_hash;
         set->equal = mem_equal;
     }
 }
@@ -53,8 +61,8 @@ void hashset_free(HashSet *set)
 
 static size_t get_slot(const HashSet *set, const char *str, size_t str_len)
 {
-    const uint32_t hash = set->hash(str, str_len);
-    return (size_t)hash & (set->table_size - 1);
+    const size_t hash = set->hash(str, str_len);
+    return hash & (set->table_size - 1);
 }
 
 HashSetEntry *hashset_get(const HashSet *set, const char *str, size_t str_len)
@@ -104,25 +112,20 @@ HashSetEntry *hashset_add(HashSet *set, const char *str, size_t str_len)
     set->table[slot] = h;
 
     if (++set->nr_entries > set->grow_at) {
-        rehash(set, set->table_size << 1);
+        size_t new_size = set->table_size << 1;
+        if (unlikely(new_size == 0)) {
+            fatal_error(__func__, EOVERFLOW);
+        }
+        rehash(set, new_size);
     }
 
     return h;
 }
 
-void hashset_add_many(HashSet *set, char **strings, size_t nstrings)
-{
-    for (size_t i = 0; i < nstrings; i++) {
-        const char *str = strings[i];
-        const size_t str_len = strlen(str);
-        hashset_add(set, str, str_len);
-    }
-}
-
 const void *mem_intern(const void *data, size_t len)
 {
     static HashSet pool;
-    if (!pool.table_size) {
+    if (unlikely(pool.table_size == 0)) {
         hashset_init(&pool, 32, false);
     }
 

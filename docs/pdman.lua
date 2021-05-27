@@ -3,12 +3,12 @@ local Buffer = {}
 Buffer.__index = Buffer
 
 function Buffer:write(...)
-    local length = self.length
+    local n = self.n
     for i = 1, select("#", ...) do
-        length = length + 1
-        self[length] = select(i, ...)
+        n = n + 1
+        self[n] = select(i, ...)
     end
-    self.length = length
+    self.n = n
 end
 
 function Buffer:tostring()
@@ -16,7 +16,7 @@ function Buffer:tostring()
 end
 
 local function new_buffer()
-    return setmetatable({length = 0}, Buffer)
+    return setmetatable({n = 0}, Buffer)
 end
 
 setmetatable(Buffer, {__call = new_buffer})
@@ -34,7 +34,6 @@ local template = [[
 .
 .SH NAME
 %s \- %s
-.SH SYNOPSIS
 %s%s.
 .SH SEE ALSO
 %s
@@ -50,7 +49,7 @@ function Doc(body, metadata, variables)
     local authors = assert(metadata.author)
     return template:format (
         title:upper(), section, date,
-        title, description,
+        title, description:gsub(" dte", " \\fBdte\\fR(1)"),
         toc:tostring(), body,
         concat(seealso, ",\n"),
         concat(authors, "\n.br\n")
@@ -73,6 +72,7 @@ function Header(level, s, attr)
     if level == 1 then
         if s == "dterc" or s == "dte\\-syntax" then
             generate_toc = true
+            toc:write(".SH SYNOPSIS\n")
             return ".SH DESCRIPTION\n"
         end
         if generate_toc then
@@ -139,7 +139,14 @@ function Code(s, attr)
         dterc = "(5)",
         ["dte-syntax"] = "(5)",
         execvp = "(3)",
-        glob = "(3)"
+        glob = "(7)",
+        regex = "(7)",
+        stdout = "(3)",
+        stderr = "(3)",
+        sysexits = "(3)",
+        ctags = "(1)",
+        fmt = "(1)",
+        terminfo = "(5)",
     }
     return "\\fB" .. escape(s) .. "\\fR" .. (crossrefs[s] or "")
 end
@@ -190,25 +197,25 @@ setmetatable(_G, {
     end
 })
 
---[[ Not implemented:
-
-function Subscript(s)
-function Superscript(s)
-function SmallCaps(s)
-function Strikeout(s)
-function Image(s, src, tit, attr)
-function InlineMath(s)
-function DisplayMath(s)
-function Note(s)
-function Span(s, attr)
-function RawInline(format, str)
-function Table(caption, aligns, widths, headers, rows)
-function BlockQuote(s)
-function HorizontalRule()
-function LineBlock(ls)
-function CaptionedImage(src, tit, caption, attr)
-function RawBlock(output_format, str)
-function Div(s, attr)
-function Cite(s, cs)
-function DoubleQuoted(s)
+--[[
+Not implemented:
+* Subscript(s)
+* Superscript(s)
+* SmallCaps(s)
+* Strikeout(s)
+* Image(s, src, title, attr)
+* InlineMath(s)
+* DisplayMath(s)
+* Note(s)
+* Span(s, attr)
+* RawInline(format, str)
+* Table(caption, aligns, widths, headers, rows)
+* BlockQuote(s)
+* HorizontalRule()
+* LineBlock(ls)
+* CaptionedImage(src, title, caption, attr)
+* RawBlock(output_format, str)
+* Div(s, attr)
+* Cite(s, cs)
+* DoubleQuoted(s)
 --]]

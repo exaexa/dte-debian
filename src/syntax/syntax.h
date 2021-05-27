@@ -6,11 +6,14 @@
 #include <stdint.h>
 #include "bitset.h"
 #include "color.h"
-#include "../util/hashset.h"
-#include "../util/ptr-array.h"
+#include "util/hashmap.h"
+#include "util/hashset.h"
+#include "util/ptr-array.h"
+#include "util/string-view.h"
 
 typedef enum {
     COND_BUFIS,
+    COND_BUFIS_ICASE,
     COND_CHAR,
     COND_CHAR_BUFFER,
     COND_CHAR1,
@@ -31,55 +34,42 @@ typedef struct {
     char *emit_name;
 
     // Set after all colors have been added (config loaded).
-    HlColor *emit_color;
+    TermColor *emit_color;
 } Action;
 
 typedef struct {
-    char *name;
     HashSet strings;
     bool used;
     bool defined;
 } StringList;
 
+typedef union {
+    BitSetWord bitset[BITSET_NR_WORDS(256)];
+    StringView heredocend;
+    StringList *str_list;
+    unsigned char ch;
+    size_t recolor_len;
+    struct {
+        uint8_t len;
+        unsigned char buf[31];
+    } str;
+} ConditionData;
+
 typedef struct {
-    union {
-        struct {
-            uint8_t len;
-            bool icase;
-            char str[30];
-        } cond_bufis;
-        struct {
-            BitSet bitset;
-        } cond_char;
-        struct {
-            unsigned char ch;
-        } cond_single_char;
-        struct {
-            StringList *list;
-        } cond_inlist;
-        struct {
-            size_t len;
-        } cond_recolor;
-        struct {
-            uint8_t len;
-            char str[31];
-        } cond_str;
-        struct {
-            size_t len;
-            char *str;
-        } cond_heredocend;
-    } u;
-    Action a;
     ConditionType type;
+    ConditionData u;
+    Action a;
 } Condition;
 
 typedef struct {
     char *name;
-    PointerArray states;
-    PointerArray string_lists;
-    PointerArray default_colors;
+    HashMap states;
+    struct State *start_state;
+    HashMap string_lists;
+    HashMap default_colors;
     bool heredoc;
     bool used;
+    bool warned_unused_subsyntax;
 } Syntax;
 
 typedef struct State {
@@ -134,5 +124,6 @@ Syntax *find_syntax(const char *name);
 void update_syntax_colors(Syntax *syn);
 void update_all_syntax_colors(void);
 void find_unused_subsyntaxes(void);
+void free_syntaxes(void);
 
 #endif

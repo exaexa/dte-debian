@@ -5,19 +5,20 @@
 #include "string.h"
 #include "utf8.h"
 #include "xmalloc.h"
-#include "../debug.h"
+#include "debug.h"
 
 static void string_grow(String *s, size_t more)
 {
+    BUG_ON(more == 0);
     const size_t len = s->len + more;
     size_t alloc = s->alloc;
-    if (alloc >= len) {
+    if (likely(alloc >= len)) {
         return;
     }
     while (alloc < len) {
         alloc = (alloc * 3 + 2) / 2;
     }
-    alloc = ROUND_UP(alloc, 16);
+    alloc = round_size_to_next_multiple(alloc, 16);
     xrenew(s->buffer, alloc);
     s->alloc = alloc;
 }
@@ -25,21 +26,30 @@ static void string_grow(String *s, size_t more)
 void string_free(String *s)
 {
     free(s->buffer);
-    string_init(s);
+    *s = (String) STRING_INIT;
 }
 
-void string_add_byte(String *s, unsigned char byte)
+void string_append_byte(String *s, unsigned char byte)
 {
     string_grow(s, 1);
     s->buffer[s->len++] = byte;
 }
 
-size_t string_add_ch(String *s, CodePoint u)
+size_t string_append_codepoint(String *s, CodePoint u)
 {
     size_t len = u_char_size(u);
     string_grow(s, len);
     u_set_char_raw(s->buffer, &s->len, u);
     return len;
+}
+
+static void string_make_space(String *s, size_t pos, size_t len)
+{
+    BUG_ON(pos > s->len);
+    BUG_ON(len == 0);
+    string_grow(s, len);
+    memmove(s->buffer + pos + len, s->buffer + pos, s->len - pos);
+    s->len += len;
 }
 
 size_t string_insert_ch(String *s, size_t pos, CodePoint u)
@@ -50,17 +60,31 @@ size_t string_insert_ch(String *s, size_t pos, CodePoint u)
     return len;
 }
 
-void string_add_str(String *s, const char *str)
+void string_insert_buf(String *s, size_t pos, const char *buf, size_t len)
 {
-    string_add_buf(s, str, strlen(str));
+    if (len == 0) {
+        return;
+    }
+    string_make_space(s, pos, len);
+    memcpy(s->buffer + pos, buf, len);
 }
 
-void string_add_string_view(String *s, const StringView *sv)
+void string_append_cstring(String *s, const char *cstr)
 {
-    string_add_buf(s, sv->data, sv->length);
+    string_append_buf(s, cstr, strlen(cstr));
 }
 
-void string_add_buf(String *s, const char *ptr, size_t len)
+void string_append_string(String *s1, const String *s2)
+{
+    string_append_buf(s1, s2->buffer, s2->len);
+}
+
+void string_append_strview(String *s, const StringView *sv)
+{
+    string_append_buf(s, sv->data, sv->length);
+}
+
+void string_append_buf(String *s, const char *ptr, size_t len)
 {
     if (!len) {
         return;
@@ -93,19 +117,17 @@ void string_sprintf(String *s, const char *fmt, ...)
     va_end(ap);
 }
 
-char *string_steal(String *s, size_t *len)
+static void null_terminate(String *s)
 {
-    char *b = s->buffer;
-    *len = s->len;
-    string_init(s);
-    return b;
+    string_grow(s, 1);
+    s->buffer[s->len] = '\0';
 }
 
 char *string_steal_cstring(String *s)
 {
-    string_add_byte(s, '\0');
+    null_terminate(s);
     char *b = s->buffer;
-    string_init(s);
+    *s = (String) STRING_INIT;
     return b;
 }
 
@@ -121,12 +143,6 @@ char *string_clone_cstring(const String *s)
     return b;
 }
 
-void string_ensure_null_terminated(String *s)
-{
-    string_grow(s, 1);
-    s->buffer[s->len] = '\0';
-}
-
 /*
  * This method first ensures that the String buffer is null-terminated
  * and then returns a const pointer to it, without doing any copying.
@@ -139,16 +155,8 @@ void string_ensure_null_terminated(String *s)
  */
 const char *string_borrow_cstring(String *s)
 {
-    string_ensure_null_terminated(s);
+    null_terminate(s);
     return s->buffer;
-}
-
-void string_make_space(String *s, size_t pos, size_t len)
-{
-    BUG_ON(pos > s->len);
-    string_grow(s, len);
-    memmove(s->buffer + pos + len, s->buffer + pos, s->len - pos);
-    s->len += len;
 }
 
 void string_remove(String *s, size_t pos, size_t len)

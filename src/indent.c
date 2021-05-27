@@ -29,43 +29,46 @@ char *make_indent(size_t width)
     return str;
 }
 
-static bool indent_inc(const char *line, size_t len)
+static bool indent_inc(const StringView *line)
 {
     const char *re1 = "\\{[\t ]*(//.*|/\\*.*\\*/[\t ]*)?$";
     const char *re2 = "\\}[\t ]*(//.*|/\\*.*\\*/[\t ]*)?$";
 
     if (buffer->options.brace_indent) {
-        if (regexp_match_nosub(re1, line, len)) {
+        if (regexp_match_nosub(re1, line)) {
             return true;
         }
-        if (regexp_match_nosub(re2, line, len)) {
+        if (regexp_match_nosub(re2, line)) {
             return false;
         }
     }
 
     re1 = buffer->options.indent_regex;
-    return re1 && *re1 && regexp_match_nosub(re1, line, len);
+    return re1 && *re1 && regexp_match_nosub(re1, line);
 }
 
-char *get_indent_for_next_line(const char *line, size_t len)
+char *get_indent_for_next_line(const StringView *line)
 {
     IndentInfo info;
-    get_indent_info(line, len, &info);
-    if (indent_inc(line, len)) {
+    get_indent_info(line, &info);
+    if (indent_inc(line)) {
         size_t w = buffer->options.indent_width;
         info.width = (info.width + w) / w * w;
     }
     return make_indent(info.width);
 }
 
-void get_indent_info(const char *buf, size_t len, IndentInfo *info)
+void get_indent_info(const StringView *line, IndentInfo *info)
 {
+    const char *buf = line->data;
+    const size_t len = line->length;
     size_t spaces = 0;
     size_t tabs = 0;
     size_t pos = 0;
 
     MEMZERO(info);
     info->sane = true;
+
     while (pos < len) {
         if (buf[pos] == ' ') {
             info->width++;
@@ -79,11 +82,11 @@ void get_indent_info(const char *buf, size_t len, IndentInfo *info)
         }
         info->bytes++;
         pos++;
-
         if (info->width % buffer->options.indent_width == 0 && info->sane) {
             info->sane = use_spaces_for_indent() ? !tabs : !spaces;
         }
     }
+
     info->level = info->width / buffer->options.indent_width;
     info->wsonly = pos == len;
 }
@@ -129,29 +132,28 @@ static ssize_t get_current_indent_bytes(const char *buf, size_t cursor_offset)
 
 size_t get_indent_level_bytes_left(void)
 {
-    LineRef lr;
-    size_t cursor_offset = fetch_this_line(&view->cursor, &lr);
+    StringView line;
+    size_t cursor_offset = fetch_this_line(&view->cursor, &line);
     if (!cursor_offset) {
         return 0;
     }
-    ssize_t ibytes = get_current_indent_bytes(lr.line, cursor_offset);
+    ssize_t ibytes = get_current_indent_bytes(line.data, cursor_offset);
     return (ibytes < 0) ? 0 : (size_t)ibytes;
 }
 
 size_t get_indent_level_bytes_right(void)
 {
-    LineRef lr;
-    size_t cursor_offset = fetch_this_line(&view->cursor, &lr);
-
-    ssize_t ibytes = get_current_indent_bytes(lr.line, cursor_offset);
+    StringView line;
+    size_t cursor_offset = fetch_this_line(&view->cursor, &line);
+    ssize_t ibytes = get_current_indent_bytes(line.data, cursor_offset);
     if (ibytes < 0) {
         return 0;
     }
 
     size_t tw = buffer->options.tab_width;
     size_t iwidth = 0;
-    for (size_t i = cursor_offset, n = lr.size; i < n; i++) {
-        switch (lr.line[i]) {
+    for (size_t i = cursor_offset, n = line.length; i < n; i++) {
+        switch (line.data[i]) {
         case '\t':
             iwidth = (iwidth + tw) / tw * tw;
             break;

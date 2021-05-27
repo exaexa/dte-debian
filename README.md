@@ -1,7 +1,7 @@
 dte
 ===
 
-dte is a small and easy to use console text editor.
+A small and easy to use console text editor.
 
 Features
 --------
@@ -14,7 +14,7 @@ Features
 * Customizable key bindings
 * Support for all xterm Ctrl/Alt/Shift key codes
 * Command language with auto-completion
-* Unicode 12.1 compatible text rendering
+* Unicode 13 compatible text rendering
 * Support for multiple encodings (using [iconv])
 * Jump to definition (using [ctags])
 * Jump to compiler error
@@ -25,25 +25,44 @@ Screenshot
 
 ![dte screenshot](https://craigbarnes.gitlab.io/dte/screenshot.png)
 
-Requirements
-------------
+Installing
+----------
+
+`dte` can be installed via package manager on the following platforms:
+
+| OS                        | Install command                            |
+|---------------------------|--------------------------------------------|
+| [Debian Testing]          | `apt-get install dte`                      |
+| [Ubuntu]                  | `apt-get install dte`                      |
+| Arch Linux ([AUR])        | `$AUR_HELPER -S dte`                       |
+| [Void Linux]              | `xbps-install -S dte`                      |
+| Slackware ([SlackBuilds]) | See: [SlackBuild Usage HOWTO]              |
+| [FreeBSD]                 | `pkg install dte`                          |
+| DragonFly BSD ([DPorts])  | `pkg install dte`                          |
+| [OpenBSD]                 | `pkg_add dte`                              |
+| NetBSD ([pkgsrc])         | `pkg_add dte`                              |
+| OS X ([Homebrew])         | `brew tap yumitsu/dte && brew install dte` |
+| Android ([Termux])        | `pkg install dte`                          |
+
+Building
+--------
+
+To build from source, first ensure the following dependencies are
+installed:
 
 * [GCC] 4.6+ or [Clang]
 * [GNU Make] 3.81+
-* [terminfo] library (may be provided by [ncurses], depending on OS)
-* [iconv] library (may be included in libc, depending on OS)
-* [POSIX]-compatible [`sh`] and [`awk`]
+* [iconv] library (usually provided by libc on Linux/FreeBSD)
 
-Installation
-------------
+...then download and unpack the latest release tarball:
 
-To build `dte` from source, first install the requirements listed above,
-then use the following commands:
+    curl -LO https://craigbarnes.gitlab.io/dist/dte/dte-1.10.tar.gz
+    tar -xzf dte-1.10.tar.gz
+    cd dte-1.10
 
-    curl -LO https://craigbarnes.gitlab.io/dist/dte/dte-1.9.1.tar.gz
-    tar -xzf dte-1.9.1.tar.gz
-    cd dte-1.9.1
-    make -j8 && sudo make install
+...and compile and install:
+
+    make && sudo make install
 
 Documentation
 -------------
@@ -53,99 +72,15 @@ via `man 1 dte`, `man 5 dterc` and `man 5 dte-syntax`.
 
 Online documentation is also available at <https://craigbarnes.gitlab.io/dte/>.
 
-Testing
--------
-
-`dte` is tested on the following platforms:
-
-| Platform          | Testing Method        |
-|-------------------|-----------------------|
-| Debian            | [GitLab CI]           |
-| CentOS            | GitLab CI             |
-| Alpine Linux      | GitLab CI             |
-| Void Linux (musl) | GitLab CI             |
-| Mac OS X          | [Travis CI]           |
-| Ubuntu            | GitLab CI + Travis CI |
-| FreeBSD           | Manual testing        |
-| NetBSD            | Manual testing        |
-| OpenBSD           | Manual testing        |
-| Cygwin            | Manual testing        |
-
-Other [POSIX] 2008 compatible platforms should also work, but may
-require build system changes.
-
 Packaging
 ---------
 
-**Stable releases**:
-
-The [releases] page contains a short summary of changes for each
-stable version and links to the corresponding source tarballs.
-
-Note: auto-generated tarballs from GitHub/GitLab can (and
-[do][libgit issue #4343]) change over time and cannot be guaranteed to
-have long-term stable checksums. Use the tarballs from the [releases]
-page, unless you're prepared to deal with future checksum failures.
-
-**Build variables**:
-
-The following build variables may be useful when packaging `dte`:
-
-* `prefix`: Top-level installation prefix (defaults to `/usr/local`).
-* `bindir`: Installation prefix for program binary (defaults to
-  `$prefix/bin`).
-* `mandir`: Installation prefix for manual pages (defaults to
-  `$prefix/share/man`).
-* `DESTDIR`: Standard variable used for [staged installs].
-* `V=1`: Enable verbose build output.
-* `TERMINFO_DISABLE=1`: Use built-in terminal support, instead of
-  linking to the system [terminfo]/curses library. This makes it much
-  easier to build a portable, statically linked binary. The built-in
-  terminal support currently works with `tmux`, `screen`, `st`, `xterm`
-  (and many other `xterm`-compatible terminals) and falls back to
-  [ECMA-48] mode for other terminals.
-* `ICONV_DISABLE=1`: Disable support for all file encodings except
-  UTF-8, to avoid the need to link with the system [iconv] library.
-  This can significantly reduce the size of statically linked builds,
-  but is generally not recommended.
-
-Example usage:
-
-    make V=1
-    make install V=1 prefix=/usr DESTDIR=PKG
-
-**Persistent configuration**:
-
-Build variables can also be configured persistently by adding them to
-a `Config.mk` file, for example:
-
-    prefix = /usr
-    mandir = $(prefix)/man
-    DESTDIR = ~/buildroot
-    V = 1
-
-The `Config.mk` file should be in the project base directory alongside
-`GNUmakefile` and *must* be valid GNU make syntax.
-
-**Desktop menu entry**:
-
-A desktop menu entry for `dte` can be added by running:
-
-    make install-desktop-file
-
-Any variable overrides specified for `make install` must also be specified
-for `make install-desktop-file`. The easiest way to do this is simply to
-run both at the same time, e.g.:
-
-    make install install-desktop-file V=1 prefix=/usr DESTDIR=PKG
-
-**Note**: the `install-desktop-file` target requires [desktop-file-utils]
-to be installed.
+See [`docs/packaging.md`](https://gitlab.com/craigbarnes/dte/blob/master/docs/packaging.md).
 
 License
 -------
 
-Copyright (C) 2017-2019 Craig Barnes.  
+Copyright (C) 2017-2021 Craig Barnes.  
 Copyright (C) 2010-2015 Timo Hirvonen.
 
 This program is free software; you can redistribute it and/or modify it
@@ -158,24 +93,23 @@ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General
 Public License version 2 for more details.
 
 
-[ctags]: https://en.wikipedia.org/wiki/Ctags
+[ctags]: https://ctags.io/
 [EditorConfig]: https://editorconfig.org/
 [GCC]: https://gcc.gnu.org/
 [Clang]: https://clang.llvm.org/
 [GNU Make]: https://www.gnu.org/software/make/
-[ncurses]: https://www.gnu.org/software/ncurses/
-[terminfo]: https://en.wikipedia.org/wiki/Terminfo
-[ECMA-48]: https://www.ecma-international.org/publications/standards/Ecma-048.htm "ANSI X3.64 / ECMA-48 / ISO/IEC 6429"
-[desktop-file-utils]: https://www.freedesktop.org/wiki/Software/desktop-file-utils
 [`GNUmakefile`]: https://gitlab.com/craigbarnes/dte/blob/master/GNUmakefile
-[syntax files]: https://gitlab.com/craigbarnes/dte/tree/master/config/syntax
-[staged installs]: https://www.gnu.org/prep/standards/html_node/DESTDIR.html
-[POSIX]: https://pubs.opengroup.org/onlinepubs/9699919799/
 [iconv]: https://pubs.opengroup.org/onlinepubs/9699919799/basedefs/iconv.h.html
-[`sh`]:  https://pubs.opengroup.org/onlinepubs/9699919799/utilities/sh.html
-[`awk`]: https://pubs.opengroup.org/onlinepubs/9699919799/utilities/awk.html
-[GitLab CI]: https://gitlab.com/craigbarnes/dte/pipelines
-[Travis CI]: https://travis-ci.org/craigbarnes/dte
-[General Public License version 2]: https://www.gnu.org/licenses/gpl-2.0.html
-[releases]: https://craigbarnes.gitlab.io/dte/releases.html
-[libgit issue #4343]: https://github.com/libgit2/libgit2/issues/4343
+[General Public License version 2]: https://www.gnu.org/licenses/old-licenses/gpl-2.0.html
+[Debian Testing]: https://packages.debian.org/testing/dte
+[Ubuntu]: https://launchpad.net/ubuntu/+source/dte
+[AUR]: https://aur.archlinux.org/packages/dte/
+[Void Linux]: https://github.com/void-linux/void-packages/tree/master/srcpkgs/dte
+[SlackBuilds]: https://slackbuilds.org/repository/14.2/development/dte/
+[SlackBuild Usage HOWTO]: https://slackbuilds.org/howto/
+[FreeBSD]: https://svnweb.freebsd.org/ports/head/editors/dte/
+[DPorts]: https://gitweb.dragonflybsd.org/dports.git/tree/HEAD:/editors/dte
+[OpenBSD]: https://cvsweb.openbsd.org/cgi-bin/cvsweb/ports/editors/dte/
+[pkgsrc]: https://pkgsrc.se/editors/dte
+[Homebrew]: https://github.com/yumitsu/homebrew-dte
+[Termux]: https://github.com/termux/termux-packages/tree/master/packages/dte

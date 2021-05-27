@@ -4,7 +4,7 @@ include -b compiler/gcc
 include -b compiler/go
 
 alias builtin 'include -b'
-alias help 'run man dte'
+alias help 'run man dterc'
 alias make 'compile gcc make'
 alias man 'run man'
 alias read 'pipe-from cat'
@@ -13,9 +13,11 @@ alias sort-lines 'filter sh -c "LC_COLLATE=C sort"'
 alias split-words 'replace -g "[ \t]+" "\n"'
 alias trim-lines 'replace "[ \t]+$" ""'
 alias xsel 'pipe-to xsel -b'
+alias exit quit
 
-errorfmt gitgrep '^([^:]+):([0-9]+):' file line
-alias git-grep 'compile -1s gitgrep git grep -n'
+errorfmt basic '^([^:]+):([0-9]+):([0-9]+):' file line column
+errorfmt basic '^([^:]+):([0-9]+):' file line
+alias git-grep 'compile -1s basic git grep -n'
 
 # Remove possible 'F' from $LESS so that less will always wait
 # for keypress and "run" can be used without "-p".
@@ -58,3 +60,5 @@ option diff,mail ws-error 0
 # Aliases for renamed built-in commands (for backwards compatibility)
 alias format-paragraph wrap-paragraph
 alias pass-through pipe-from
+alias git-open 'exec-open sh -c "git ls-files $(git rev-parse --show-cdup) | fzf -m --reverse"'
+alias insert-builtin 'show include'

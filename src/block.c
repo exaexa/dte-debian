@@ -1,7 +1,7 @@
 #include "block.h"
 #include "buffer.h"
-#include "debug.h"
 #include "syntax/highlight.h"
+#include "util/debug.h"
 #include "util/str-util.h"
 #include "util/xmalloc.h"
 #include "view.h"
@@ -32,7 +32,7 @@ static void sanity_check(void)
 
 static size_t ALLOC_ROUND(size_t size)
 {
-    return ROUND_UP(size, 64);
+    return round_size_to_next_multiple(size, 64);
 }
 
 Block *block_new(size_t alloc)
@@ -51,7 +51,7 @@ static void delete_block(Block *blk)
     free(blk);
 }
 
-static size_t copy_count_nl(char *dst, const char *const src, size_t len)
+static size_t copy_count_nl(char *dst, const char *src, size_t len)
 {
     size_t nl = 0;
     for (size_t i = 0; i < len; i++) {
@@ -236,12 +236,11 @@ static size_t insert_bytes(const char *buf, size_t len)
 void do_insert(const char *buf, size_t len)
 {
     size_t nl = insert_bytes(buf, len);
-
     buffer->nl += nl;
     sanity_check();
 
     view_update_cursor_y(view);
-    buffer_mark_lines_changed(view->buffer, view->cy, nl ? INT_MAX : view->cy);
+    buffer_mark_lines_changed(buffer, view->cy, nl ? LONG_MAX : view->cy);
     if (buffer->syn) {
         hl_insert(buffer, view->cy, nl);
     }
@@ -336,11 +335,7 @@ char *do_delete(size_t len)
     sanity_check();
 
     view_update_cursor_y(view);
-    buffer_mark_lines_changed (
-        view->buffer,
-        view->cy,
-        deleted_nl ? INT_MAX : view->cy
-    );
+    buffer_mark_lines_changed(buffer, view->cy, deleted_nl ? LONG_MAX : view->cy);
     if (buffer->syn) {
         hl_delete(buffer, view->cy, deleted_nl);
     }
@@ -393,9 +388,9 @@ char *do_replace(size_t del, const char *buf, size_t ins)
     view_update_cursor_y(view);
     if (del_nl == ins_nl) {
         // Some line(s) changed but lines after them did not move up or down
-        buffer_mark_lines_changed(view->buffer, view->cy, view->cy + del_nl);
+        buffer_mark_lines_changed(buffer, view->cy, view->cy + del_nl);
     } else {
-        buffer_mark_lines_changed(view->buffer, view->cy, INT_MAX);
+        buffer_mark_lines_changed(buffer, view->cy, LONG_MAX);
     }
     if (buffer->syn) {
         hl_delete(buffer, view->cy, del_nl);

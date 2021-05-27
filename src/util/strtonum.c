@@ -4,24 +4,32 @@
 #include "ascii.h"
 #include "checked-arith.h"
 
-int number_width(long n)
-{
-    int width = 0;
+enum {
+    I = HEX_INVALID
+};
 
-    if (n < 0) {
-        n *= -1;
-        width++;
-    }
-    do {
-        n /= 10;
-        width++;
-    } while (n);
-    return width;
-}
+const uint8_t hex_table[256] = {
+     I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,
+     I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,
+     I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,
+     0,  1,  2,  3,  4,  5,  6,  7,  8,  9,  I,  I,  I,  I,  I,  I,
+     I, 10, 11, 12, 13, 14, 15,  I,  I,  I,  I,  I,  I,  I,  I,  I,
+     I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,
+     I, 10, 11, 12, 13, 14, 15,  I,  I,  I,  I,  I,  I,  I,  I,  I,
+     I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,
+     I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,
+     I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,
+     I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,
+     I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,
+     I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,
+     I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,
+     I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,
+     I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I
+};
 
 size_t buf_parse_uintmax(const char *str, size_t size, uintmax_t *valp)
 {
-    if (size == 0 || !ascii_isdigit(str[0])) {
+    if (unlikely(size == 0 || !ascii_isdigit(str[0]))) {
         return 0;
     }
 
@@ -29,10 +37,10 @@ size_t buf_parse_uintmax(const char *str, size_t size, uintmax_t *valp)
     size_t i = 1;
 
     while (i < size && ascii_isdigit(str[i])) {
-        if (umax_multiply_overflows(val, 10, &val)) {
+        if (unlikely(umax_multiply_overflows(val, 10, &val))) {
             return 0;
         }
-        if (umax_add_overflows(val, str[i++] - '0', &val)) {
+        if (unlikely(umax_add_overflows(val, str[i++] - '0', &val))) {
             return 0;
         }
     }
@@ -65,21 +73,21 @@ size_t buf_parse_uint(const char *str, size_t size, unsigned int *valp)
 
 static size_t buf_parse_long(const char *str, size_t size, long *valp)
 {
+    if (unlikely(size == 0)) {
+        return 0;
+    }
+
     bool negative = false;
     size_t skipped = 0;
-    if (size == 0) {
-        return 0;
-    } else {
-        switch (str[0]) {
-        case '-':
-            negative = true;
-            // Fallthrough
-        case '+':
-            skipped = 1;
-            str++;
-            size--;
-            break;
-        }
+    switch (str[0]) {
+    case '-':
+        negative = true;
+        // Fallthrough
+    case '+':
+        skipped = 1;
+        str++;
+        size--;
+        break;
     }
 
     uintmax_t val;
@@ -100,7 +108,7 @@ static size_t buf_parse_long(const char *str, size_t size, long *valp)
 bool str_to_int(const char *str, int *valp)
 {
     const size_t len = strlen(str);
-    if (len == 0) {
+    if (unlikely(len == 0)) {
         return false;
     }
     long val;
@@ -115,7 +123,7 @@ bool str_to_int(const char *str, int *valp)
 bool str_to_uint(const char *str, unsigned int *valp)
 {
     const size_t len = strlen(str);
-    if (len == 0) {
+    if (unlikely(len == 0)) {
         return false;
     }
     uintmax_t val;
@@ -130,7 +138,7 @@ bool str_to_uint(const char *str, unsigned int *valp)
 bool str_to_size(const char *str, size_t *valp)
 {
     const size_t len = strlen(str);
-    if (len == 0) {
+    if (unlikely(len == 0)) {
         return false;
     }
     uintmax_t val;
@@ -145,7 +153,7 @@ bool str_to_size(const char *str, size_t *valp)
 bool str_to_ulong(const char *str, unsigned long *valp)
 {
     const size_t len = strlen(str);
-    if (len == 0) {
+    if (unlikely(len == 0)) {
         return false;
     }
     unsigned long val;
@@ -155,4 +163,14 @@ bool str_to_ulong(const char *str, unsigned long *valp)
     }
     *valp = val;
     return true;
+}
+
+size_t size_str_width(size_t x)
+{
+    size_t width = 0;
+    do {
+        x /= 10;
+        width++;
+    } while (x);
+    return width;
 }

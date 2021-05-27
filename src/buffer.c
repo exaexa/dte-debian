@@ -1,7 +1,9 @@
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #include "block.h"
+#include "block-iter.h"
 #include "buffer.h"
 #include "editor.h"
 #include "file-option.h"
@@ -15,9 +17,8 @@
 #include "util/xmalloc.h"
 
 Buffer *buffer;
-PointerArray buffers = PTR_ARRAY_INIT;
 
-static void set_display_filename(Buffer *b, char *name)
+void set_display_filename(Buffer *b, char *name)
 {
     free(b->display_filename);
     b->display_filename = name;
@@ -49,22 +50,38 @@ void buffer_mark_lines_changed(Buffer *b, long min, long max)
 
 const char *buffer_filename(const Buffer *b)
 {
-    return b->display_filename;
+    return b->display_filename ? b->display_filename : "(No name)";
+}
+
+void buffer_set_encoding(Buffer *b, Encoding encoding)
+{
+    if (
+        b->encoding.type != encoding.type
+        || b->encoding.name != encoding.name
+    ) {
+        const EncodingType type = encoding.type;
+        if (type == UTF8) {
+            b->bom = editor.options.utf8_bom;
+        } else {
+            b->bom = type < NR_ENCODING_TYPES && get_bom_for_encoding(type);
+        }
+        b->encoding = encoding;
+    }
 }
 
 Buffer *buffer_new(const Encoding *encoding)
 {
-    static unsigned int id;
+    static unsigned long id;
 
     Buffer *b = xnew0(Buffer, 1);
     list_init(&b->blocks);
     b->cur_change = &b->change_head;
     b->saved_change = &b->change_head;
     b->id = ++id;
-    b->newline = editor.options.newline;
+    b->crlf_newlines = editor.options.crlf_newlines;
 
     if (encoding) {
-        b->encoding = *encoding;
+        buffer_set_encoding(b, *encoding);
     } else {
         b->encoding.type = ENCODING_AUTODETECT;
     }
@@ -74,7 +91,7 @@ Buffer *buffer_new(const Encoding *encoding)
     b->options.filetype = str_intern("none");
     b->options.indent_regex = NULL;
 
-    ptr_array_add(&buffers, b);
+    ptr_array_append(&editor.buffers, b);
     return b;
 }
 
@@ -86,53 +103,56 @@ Buffer *open_empty_buffer(void)
     Block *blk = block_new(1);
     list_add_before(&blk->node, &b->blocks);
 
-    set_display_filename(b, xmemdup_literal("(No name)"));
     return b;
+}
+
+void free_blocks(Buffer *b)
+{
+    ListHead *item = b->blocks.next;
+    while (item != &b->blocks) {
+        ListHead *next = item->next;
+        Block *blk = BLOCK(item);
+        free(blk->data);
+        free(blk);
+        item = next;
+    }
 }
 
 void free_buffer(Buffer *b)
 {
-    ptr_array_remove(&buffers, b);
+    ptr_array_remove(&editor.buffers, b);
 
     if (b->locked) {
         unlock_file(b->abs_filename);
     }
 
-    ListHead *item = b->blocks.next;
-    while (item != &b->blocks) {
-        ListHead *next = item->next;
-        Block *blk = BLOCK(item);
-
-        free(blk->data);
-        free(blk);
-        item = next;
-    }
     free_changes(&b->change_head);
     free(b->line_start_states.ptrs);
     free(b->views.ptrs);
     free(b->display_filename);
     free(b->abs_filename);
+
+    if (b->stdout_buffer) {
+        return;
+    }
+
+    free_blocks(b);
     free(b);
 }
 
-static bool same_file(const struct stat *const a, const struct stat *const b)
+static bool same_file(const Buffer *b, const struct stat *st)
 {
-    return a->st_dev == b->st_dev && a->st_ino == b->st_ino;
+    return (st->st_dev == b->file.dev) && (st->st_ino == b->file.ino);
 }
 
 Buffer *find_buffer(const char *abs_filename)
 {
     struct stat st;
     bool st_ok = stat(abs_filename, &st) == 0;
-
-    for (size_t i = 0; i < buffers.count; i++) {
-        Buffer *b = buffers.ptrs[i];
+    for (size_t i = 0, n = editor.buffers.count; i < n; i++) {
+        Buffer *b = editor.buffers.ptrs[i];
         const char *f = b->abs_filename;
-
-        if (
-            (f != NULL && streq(f, abs_filename))
-            || (st_ok && same_file(&st, &b->st))
-        ) {
+        if ((f && streq(f, abs_filename)) || (st_ok && same_file(b, &st))) {
             return b;
         }
     }
@@ -141,8 +161,8 @@ Buffer *find_buffer(const char *abs_filename)
 
 Buffer *find_buffer_by_id(unsigned long id)
 {
-    for (size_t i = 0; i < buffers.count; i++) {
-        Buffer *b = buffers.ptrs[i];
+    for (size_t i = 0, n = editor.buffers.count; i < n; i++) {
+        Buffer *b = editor.buffers.ptrs[i];
         if (b->id == id) {
             return b;
         }
@@ -152,54 +172,53 @@ Buffer *find_buffer_by_id(unsigned long id)
 
 bool buffer_detect_filetype(Buffer *b)
 {
-    const char *ft = NULL;
+    StringView line = STRING_VIEW_INIT;
     if (BLOCK(b->blocks.next)->size) {
         BlockIter bi = BLOCK_ITER_INIT(&b->blocks);
-        LineRef lr;
-        fill_line_ref(&bi, &lr);
-        const StringView line = string_view(lr.line, lr.size);
-        ft = find_ft(b->abs_filename, line);
-    } else if (b->abs_filename) {
-        const StringView line = STRING_VIEW_INIT;
-        ft = find_ft(b->abs_filename, line);
+        fill_line_ref(&bi, &line);
+    } else if (!b->abs_filename) {
+        return false;
     }
 
+    const char *ft = find_ft(b->abs_filename, line);
     if (ft && !streq(ft, b->options.filetype)) {
         b->options.filetype = str_intern(ft);
         return true;
     }
+
     return false;
 }
 
 static char *short_filename_cwd(const char *absolute, const char *cwd)
 {
-    char *f = relative_filename(absolute, cwd);
-    size_t home_len = strlen(editor.home_dir);
+    char *relative = relative_filename(absolute, cwd);
+    size_t home_len = editor.home_dir.length;
     size_t abs_len = strlen(absolute);
-    size_t f_len = strlen(f);
+    size_t rel_len = strlen(relative);
 
-    if (f_len >= abs_len) {
+    if (rel_len >= abs_len) {
         // Prefer absolute if relative isn't shorter
-        free(f);
-        f = xstrdup(absolute);
-        f_len = abs_len;
+        free(relative);
+        relative = xstrdup(absolute);
+        rel_len = abs_len;
     }
 
     if (
         abs_len > home_len
-        && !memcmp(absolute, editor.home_dir, home_len)
+        && mem_equal(absolute, editor.home_dir.data, home_len)
         && absolute[home_len] == '/'
     ) {
         size_t len = abs_len - home_len + 1;
-        if (len < f_len) {
+        if (len < rel_len) {
             char *filename = xmalloc(len + 1);
             filename[0] = '~';
             memcpy(filename + 1, absolute + home_len, len);
-            free(f);
+            free(relative);
             return filename;
         }
     }
-    return f;
+
+    return relative;
 }
 
 char *short_filename(const char *absolute)
@@ -248,10 +267,9 @@ void buffer_update_syntax(Buffer *b)
         // Start state of first line is constant
         PointerArray *s = &b->line_start_states;
         if (!s->alloc) {
-            s->alloc = 64;
-            s->ptrs = xnew(void *, s->alloc);
+            ptr_array_init(s, 64);
         }
-        s->ptrs[0] = syn->states.ptrs[0];
+        s->ptrs[0] = syn->start_state;
         s->count = 1;
     }
 
@@ -321,12 +339,10 @@ static bool detect_indent(Buffer *b)
     int space_count = 0;
 
     for (unsigned int i = 0; i < 200; i++) {
-        LineRef lr;
-        int indent;
+        StringView line;
+        fill_line_ref(&bi, &line);
         bool tab;
-
-        fill_line_ref(&bi, &lr);
-        indent = indent_len(b, lr.line, lr.size, &tab);
+        int indent = indent_len(b, line.data, line.length, &tab);
         if (indent == -2) {
             // Ignore mixed indent because tab width might not be 8
         } else if (indent == -1) {
@@ -360,40 +376,45 @@ static bool detect_indent(Buffer *b)
             break;
         }
     }
+
     if (tab_count == 0 && space_count == 0) {
         return false;
     }
+
     if (tab_count > space_count) {
         b->options.emulate_tab = false;
         b->options.expand_tab = false;
         b->options.indent_width = b->options.tab_width;
-    } else {
-        size_t m = 0;
-        for (size_t i = 1; i < ARRAY_COUNT(counts); i++) {
-            if (b->options.detect_indent & 1 << (i - 1)) {
-                if (counts[i] > counts[m]) {
-                    m = i;
-                }
-            }
-        }
-        if (m == 0) {
-            return false;
-        }
-        b->options.emulate_tab = true;
-        b->options.expand_tab = true;
-        b->options.indent_width = m;
+        return true;
     }
+
+    size_t m = 0;
+    for (size_t i = 1; i < ARRAY_COUNT(counts); i++) {
+        unsigned int bit = 1u << (i - 1);
+        if ((b->options.detect_indent & bit) && counts[i] > counts[m]) {
+            m = i;
+        }
+    }
+
+    if (m == 0) {
+        return false;
+    }
+
+    b->options.emulate_tab = true;
+    b->options.expand_tab = true;
+    b->options.indent_width = m;
     return true;
 }
 
 void buffer_setup(Buffer *b)
 {
+    const char *filename = b->abs_filename;
     b->setup = true;
     buffer_detect_filetype(b);
     set_file_options(b);
     set_editorconfig_options(b);
     buffer_update_syntax(b);
-    if (b->options.detect_indent && b->abs_filename != NULL) {
+    if (b->options.detect_indent && filename) {
         detect_indent(b);
     }
 }

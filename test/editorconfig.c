@@ -1,8 +1,8 @@
 #include <stdlib.h>
 #include "test.h"
-#include "../src/editorconfig/editorconfig.h"
-#include "../src/editorconfig/match.h"
-#include "../src/util/path.h"
+#include "editorconfig/editorconfig.h"
+#include "editorconfig/match.h"
+#include "util/path.h"
 
 static void test_editorconfig_pattern_match(void)
 {
@@ -41,9 +41,19 @@ static void test_editorconfig_pattern_match(void)
     EXPECT_TRUE(patmatch("file.{,,x,,y,,}", "file."));
     EXPECT_FALSE(patmatch("file.{,,x,,y,,}", "file.z"));
 
+    EXPECT_TRUE(patmatch("*.x,y,z", "file.x,y,z"));
+    EXPECT_TRUE(patmatch("*.{x,y,z}", "file.y"));
+    EXPECT_FALSE(patmatch("*.{x,y,z}", "file.x,y,z"));
+    EXPECT_FALSE(patmatch("*.{x,y,z}", "file.{x,y,z}"));
+
     EXPECT_TRUE(patmatch("file.{{{a,b,{c,,d}}}}", "file.d"));
     EXPECT_TRUE(patmatch("file.{{{a,b,{c,,d}}}}", "file."));
     EXPECT_FALSE(patmatch("file.{{{a,b,{c,d}}}}", "file."));
+
+    EXPECT_TRUE(patmatch("file.{c[vl]d,inc}", "file.cvd"));
+    EXPECT_TRUE(patmatch("file.{c[vl]d,inc}", "file.cld"));
+    EXPECT_TRUE(patmatch("file.{c[vl]d,inc}", "file.inc"));
+    EXPECT_FALSE(patmatch("file.{c[vl]d,inc}", "file.cd"));
 
     EXPECT_TRUE(patmatch("a?b.c", "a_b.c"));
     EXPECT_FALSE(patmatch("a?b.c", "a/b.c"));
@@ -57,6 +67,11 @@ static void test_editorconfig_pattern_match(void)
 
     EXPECT_TRUE(patmatch("{{{a}}}", "a"));
     EXPECT_FALSE(patmatch("{{{a}}", "a"));
+
+    // It's debatable whether this edge case behavior is sensible,
+    // but it's tested here anyway for the sake of UBSan coverage
+    EXPECT_TRUE(patmatch("*.xyz\\", "file.xyz\\"));
+    EXPECT_FALSE(patmatch("*.xyz\\", "file.xyz"));
 
     #undef patmatch
 }
@@ -85,10 +100,9 @@ static void test_get_editorconfig_options(void)
     EXPECT_FALSE(opts.indent_size_is_tab);
 }
 
-DISABLE_WARNING("-Wmissing-prototypes")
+static const TestEntry tests[] = {
+    TEST(test_editorconfig_pattern_match),
+    TEST(test_get_editorconfig_options),
+};
 
-void test_editorconfig(void)
-{
-    test_editorconfig_pattern_match();
-    test_get_editorconfig_options();
-}
+const TestGroup editorconfig_tests = TEST_GROUP(tests);

@@ -13,15 +13,15 @@ typedef enum {
 
 void move_to_preferred_x(long preferred_x)
 {
-    LineRef lr;
+    StringView line;
     view->preferred_x = preferred_x;
     block_iter_bol(&view->cursor);
-    fill_line_ref(&view->cursor, &lr);
+    fill_line_ref(&view->cursor, &line);
 
-    if (buffer->options.emulate_tab && view->preferred_x < lr.size) {
+    if (buffer->options.emulate_tab && view->preferred_x < line.length) {
         const size_t iw = buffer->options.indent_width;
         const size_t ilevel = view->preferred_x / iw;
-        for (size_t i = 0; i < lr.size && lr.line[i] == ' '; i++) {
+        for (size_t i = 0; i < line.length && line.data[i] == ' '; i++) {
             if (i + 1 == (ilevel + 1) * iw) {
                 // Force cursor to beginning of the indentation level
                 view->cursor.offset += ilevel * iw;
@@ -33,10 +33,10 @@ void move_to_preferred_x(long preferred_x)
     const unsigned int tw = buffer->options.tab_width;
     unsigned long x = 0;
     size_t i = 0;
-    while (x < view->preferred_x && i < lr.size) {
-        CodePoint u = lr.line[i++];
-        if (u < 0x80) {
-            if (!ascii_iscntrl(u)) {
+    while (x < view->preferred_x && i < line.length) {
+        CodePoint u = line.data[i++];
+        if (likely(u < 0x80)) {
+            if (likely(!ascii_iscntrl(u))) {
                 x++;
             } else if (u == '\t') {
                 x = (x + tw) / tw * tw;
@@ -48,7 +48,7 @@ void move_to_preferred_x(long preferred_x)
         } else {
             const size_t next = i;
             i--;
-            u = u_get_nonascii(lr.line, lr.size, &i);
+            u = u_get_nonascii(line.data, line.length, &i);
             x += u_char_width(u);
             if (x > view->preferred_x) {
                 i = next;
@@ -62,7 +62,6 @@ void move_to_preferred_x(long preferred_x)
     view->cursor.offset += i;
 
     // If cursor stopped on a zero-width char, move to the next spacing char.
-    // TODO: Incorporate this cursor fixup into the logic above.
     CodePoint u;
     if (block_iter_get_char(&view->cursor, &u) && u_is_zero_width(u)) {
         block_iter_next_column(&view->cursor);
@@ -105,11 +104,11 @@ void move_bol(void)
 
 void move_bol_smart(void)
 {
-    LineRef lr;
-    const size_t cursor_offset = fetch_this_line(&view->cursor, &lr);
+    StringView line;
+    const size_t cursor_offset = fetch_this_line(&view->cursor, &line);
 
     size_t indent_bytes = 0;
-    while (ascii_isblank(*lr.line++)) {
+    while (ascii_isblank(*line.data++)) {
         indent_bytes++;
     }
 

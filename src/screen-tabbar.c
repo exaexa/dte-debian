@@ -1,20 +1,19 @@
 #include "screen.h"
-#include "debug.h"
 #include "editor.h"
 #include "terminal/output.h"
-#include "terminal/terminal.h"
+#include "util/debug.h"
+#include "util/numtostr.h"
 #include "util/strtonum.h"
 #include "util/utf8.h"
-#include "util/xsnprintf.h"
 
-static int tab_title_width(int number, const char *filename)
+static size_t tab_title_width(size_t tab_number, const char *filename)
 {
-    return 3 + number_width(number) + u_str_width(filename);
+    return 3 + size_str_width(tab_number) + u_str_width(filename);
 }
 
-static void update_tab_title_width(View *v, int tab_number)
+static void update_tab_title_width(View *v, size_t tab_number)
 {
-    int w = tab_title_width(tab_number, buffer_filename(v->buffer));
+    size_t w = tab_title_width(tab_number, buffer_filename(v->buffer));
     v->tt_width = w;
     v->tt_truncated_width = w;
 }
@@ -129,182 +128,61 @@ static void calculate_tabbar(Window *win)
     win->first_tab_idx = 0;
 }
 
-static void print_horizontal_tab_title(const View *v, size_t idx)
+static void print_tab_title(const View *v, size_t idx)
 {
-    int skip = v->tt_width - v->tt_truncated_width;
     const char *filename = buffer_filename(v->buffer);
+    int skip = v->tt_width - v->tt_truncated_width;
     if (skip > 0) {
         filename += u_skip_chars(filename, &skip);
     }
 
-    char buf[16];
-    xsnprintf (
-        buf,
-        sizeof(buf),
-        "%c%zu%c",
-        obuf.x == 0 && idx > 0 ? '<' : ' ',
-        idx + 1,
-        buffer_modified(v->buffer) ? '+' : ':'
-    );
+    const char *tab_number = uint_to_str((unsigned int)idx + 1);
+    bool is_active_tab = (v == v->window->view);
+    bool is_modified = buffer_modified(v->buffer);
+    bool left_overflow = (obuf.x == 0 && idx > 0);
 
-    if (v == v->window->view) {
-        set_builtin_color(BC_ACTIVETAB);
-    } else {
-        set_builtin_color(BC_INACTIVETAB);
-    }
-
-    term_add_str(buf);
+    set_builtin_color(is_active_tab ? BC_ACTIVETAB : BC_INACTIVETAB);
+    term_put_char(left_overflow ? '<' : ' ');
+    term_add_str(tab_number);
+    term_put_char(is_modified ? '+' : ':');
     term_add_str(filename);
 
-    if (obuf.x == obuf.width - 1 && idx < v->window->views.count - 1) {
-        term_put_char('>');
-    } else {
-        term_put_char(' ');
-    }
-}
-
-static void print_horizontal_tabbar(Window *win)
-{
-    term_output_reset(win->x, win->w, 0);
-    terminal.move_cursor(win->x, win->y);
-
-    calculate_tabbar(win);
-    size_t i;
-    for (i = win->first_tab_idx; i < win->views.count; i++) {
-        const View *v = win->views.ptrs[i];
-        if (obuf.x + v->tt_truncated_width > win->w) {
-            break;
-        }
-        print_horizontal_tab_title(v, i);
-    }
-    set_builtin_color(BC_TABBAR);
-    if (i != win->views.count) {
-        while (obuf.x < obuf.width - 1) {
-            term_put_char(' ');
-        }
-        if (obuf.x == obuf.width - 1) {
-            term_put_char('>');
-        }
-    } else {
-        term_clear_eol();
-    }
-}
-
-static void print_vertical_tab_title(const View *v, int idx, int width)
-{
-    const char *orig_filename = buffer_filename(v->buffer);
-    const char *filename = orig_filename;
-    unsigned int max = editor.options.tab_bar_max_components;
-    char buf[16];
-
-    xsnprintf (
-        buf,
-        sizeof(buf),
-        "%2d%s",
-        idx + 1,
-        buffer_modified(v->buffer) ? "+" : " "
-    );
-    if (max) {
-        int count = 1;
-        for (size_t i = 0; filename[i]; i++) {
-            if (filename[i] == '/') {
-                count++;
-            }
-        }
-        // Ignore first slash because it does not separate components
-        if (filename[0] == '/') {
-            count--;
-        }
-
-        if (count > max) {
-            // Skip possible first slash
-            size_t i;
-            for (i = 1; ; i++) {
-                if (filename[i] == '/' && --count == max) {
-                    i++;
-                    break;
-                }
-            }
-            filename += i;
-        }
-    } else {
-        int skip = strlen(buf) + u_str_width(filename) - width + 1;
-        if (skip > 0) {
-            filename += u_skip_chars(filename, &skip);
-        }
-    }
-    if (filename != orig_filename) {
-        // filename was shortened. Add "<<" symbol.
-        size_t i = strlen(buf);
-        u_set_char(buf, &i, 0xab);
-        buf[i] = '\0';
-    }
-
-    if (v == v->window->view) {
-        set_builtin_color(BC_ACTIVETAB);
-    } else {
-        set_builtin_color(BC_INACTIVETAB);
-    }
-    term_add_str(buf);
-    term_add_str(filename);
-    term_clear_eol();
-}
-
-static void print_vertical_tabbar(Window *win)
-{
-    int width = vertical_tabbar_width(win);
-    int h = win->edit_h;
-    size_t cur_idx = 0;
-
-    for (size_t i = 0; i < win->views.count; i++) {
-        if (win->view == win->views.ptrs[i]) {
-            cur_idx = i;
-            break;
-        }
-    }
-    if (win->views.count <= h) {
-        // All tabs fit
-        win->first_tab_idx = 0;
-    } else {
-        size_t max_y = win->first_tab_idx + h - 1;
-        if (win->first_tab_idx > cur_idx) {
-            win->first_tab_idx = cur_idx;
-        }
-        if (cur_idx > max_y) {
-            win->first_tab_idx += cur_idx - max_y;
-        }
-    }
-
-    term_output_reset(win->x, width, 0);
-    int n = h;
-    if (n + win->first_tab_idx > win->views.count) {
-        n = win->views.count - win->first_tab_idx;
-    }
-    size_t i;
-    for (i = 0; i < n; i++) {
-        size_t idx = win->first_tab_idx + i;
-        obuf.x = 0;
-        terminal.move_cursor(win->x, win->y + i);
-        print_vertical_tab_title(win->views.ptrs[idx], idx, width);
-    }
-    set_builtin_color(BC_TABBAR);
-    for (; i < h; i++) {
-        obuf.x = 0;
-        terminal.move_cursor(win->x, win->y + i);
-        term_clear_eol();
-    }
+    size_t ntabs = v->window->views.count;
+    bool right_overflow = (obuf.x == (obuf.width - 1) && idx < (ntabs - 1));
+    term_put_char(right_overflow ? '>' : ' ');
 }
 
 void print_tabbar(Window *win)
 {
-    switch (tabbar_visibility(win)) {
-    case TAB_BAR_HORIZONTAL:
-        print_horizontal_tabbar(win);
-        break;
-    case TAB_BAR_VERTICAL:
-        print_vertical_tabbar(win);
-        break;
-    default:
-        break;
+    if (!editor.options.tab_bar) {
+        return;
+    }
+
+    term_output_reset(win->x, win->w, 0);
+    term_move_cursor(win->x, win->y);
+    calculate_tabbar(win);
+
+    size_t i = win->first_tab_idx;
+    size_t n = win->views.count;
+    for (; i < n; i++) {
+        const View *v = win->views.ptrs[i];
+        if (obuf.x + v->tt_truncated_width > win->w) {
+            break;
+        }
+        print_tab_title(v, i);
+    }
+
+    set_builtin_color(BC_TABBAR);
+
+    if (i == n) {
+        term_clear_eol();
+        return;
+    }
+
+    while (obuf.x < obuf.width - 1) {
+        term_put_char(' ');
+    }
+    if (obuf.x == obuf.width - 1) {
+        term_put_char('>');
     }
 }

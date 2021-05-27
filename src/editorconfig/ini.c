@@ -1,17 +1,10 @@
 #include <stdlib.h>
-#include <string.h>
 #include "ini.h"
-#include "../debug.h"
-#include "../util/ascii.h"
-#include "../util/readfile.h"
-
-static char *trim_left(char *str)
-{
-    while (ascii_isspace(*str)) {
-        str++;
-    }
-    return str;
-}
+#include "util/ascii.h"
+#include "util/debug.h"
+#include "util/macros.h"
+#include "util/readfile.h"
+#include "util/str-util.h"
 
 static void strip_trailing_comments_and_whitespace(StringView *line)
 {
@@ -38,9 +31,9 @@ static void strip_trailing_comments_and_whitespace(StringView *line)
 
 UNITTEST {
     StringView tmp = STRING_VIEW(" \t  key = val   #   inline comment    ");
-    string_view_trim_left(&tmp);
+    strview_trim_left(&tmp);
     strip_trailing_comments_and_whitespace(&tmp);
-    BUG_ON(!string_view_equal_literal(&tmp, "key = val"));
+    BUG_ON(!strview_equal_cstring(&tmp, "key = val"));
 }
 
 int ini_parse(const char *filename, IniCallback callback, void *userdata)
@@ -53,7 +46,7 @@ int ini_parse(const char *filename, IniCallback callback, void *userdata)
 
     const size_t size = ssize;
     size_t pos = 0;
-    if (size >= 3 && memcmp(buf, "\xEF\xBB\xBF", 3) == 0) {
+    if (size >= 3 && mem_equal(buf, "\xEF\xBB\xBF", 3)) {
         // Skip past UTF-8 BOM
         pos += 3;
     }
@@ -63,18 +56,13 @@ int ini_parse(const char *filename, IniCallback callback, void *userdata)
 
     while (pos < size) {
         StringView line = buf_slice_next_line(buf, &pos, size);
-        string_view_trim_left(&line);
-
-        if (line.length < 2) {
+        strview_trim_left(&line);
+        if (line.length < 2 || line.data[0] == '#' || line.data[0] == ';') {
             continue;
         }
 
-        switch (line.data[0]) {
-        case ';':
-        case '#':
-            continue;
-        case '[':
-            strip_trailing_comments_and_whitespace(&line);
+        strip_trailing_comments_and_whitespace(&line);
+        if (line.data[0] == '[') {
             if (line.length > 1 && line.data[line.length - 1] == ']') {
                 section = string_view(line.data + 1, line.length - 2);
                 nameidx = 0;
@@ -82,32 +70,29 @@ int ini_parse(const char *filename, IniCallback callback, void *userdata)
             continue;
         }
 
-        strip_trailing_comments_and_whitespace(&line);
-        char *delim = string_view_memchr(&line, '=');
-        if (delim) {
-            const size_t before_delim_len = delim - line.data;
-            size_t name_len = before_delim_len;
-            while (name_len > 0 && ascii_isblank(line.data[name_len - 1])) {
-                name_len--;
-            }
-            if (name_len == 0) {
-                continue;
-            }
-
-            char *after_delim = delim + 1;
-            char *value = trim_left(after_delim);
-            size_t diff = value - after_delim;
-            size_t value_len = line.length - before_delim_len - 1 - diff;
-
-            const IniData data = {
-                .section = section,
-                .name = string_view(line.data, name_len),
-                .value = string_view(value, value_len),
-                .name_idx = nameidx++,
-            };
-
-            callback(&data, userdata);
+        size_t val_offset = 0;
+        StringView name = get_delim(line.data, &val_offset, line.length, '=');
+        if (val_offset >= line.length) {
+            continue;
         }
+
+        strview_trim_right(&name);
+        if (name.length == 0) {
+            continue;
+        }
+
+        StringView value = line;
+        strview_remove_prefix(&value, val_offset);
+        strview_trim_left(&value);
+
+        const IniData data = {
+            .section = section,
+            .name = name,
+            .value = value,
+            .name_idx = nameidx++,
+        };
+
+        callback(&data, userdata);
     }
 
     free(buf);

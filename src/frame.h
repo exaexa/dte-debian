@@ -3,6 +3,7 @@
 
 #include <stdbool.h>
 #include "util/ptr-array.h"
+#include "util/string.h"
 
 typedef struct Frame {
     struct Frame *parent;
@@ -35,8 +36,9 @@ void update_window_coordinates(void);
 Frame *split_frame(struct Window *w, bool vertical, bool before);
 Frame *split_root(bool vertical, bool before);
 void remove_frame(Frame *f);
+String dump_frames(void);
 
-#ifdef DEBUG_FRAMES
+#if DEBUG >= 1
   void debug_frames(void);
 #else
   static inline void debug_frames(void) {}

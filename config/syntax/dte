@@ -1,3 +1,5 @@
+require c-uchar
+
 syntax dte
 
 state start code
@@ -24,15 +26,19 @@ state sq string
     eat this
 
 state dq string
-    char -b "\\" dq-escape
+    char "\\" dq-escape
     char '"' command string
     char "\n" start
     eat this
 
 state dq-escape special
-    char "abfnrtv'\\\"" dq special
+    char "abefnrtv'\\\"" dq special
     char x hex1
-    eat dq error
+    char u .c-uchar4:dq special
+    char U .c-uchar8:dq special
+    recolor error 1
+    char -n "\n" dq error
+    noeat dq
 
 state hex1 special
     char 0-9a-fA-F hex2

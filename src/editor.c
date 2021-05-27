@@ -1,48 +1,57 @@
+#include <errno.h>
 #include <langinfo.h>
 #include <locale.h>
-#include <signal.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include <unistd.h>
 #include "editor.h"
+#include "alias.h"
 #include "buffer.h"
-#include "command.h"
-#include "config.h"
-#include "debug.h"
 #include "error.h"
 #include "mode.h"
+#include "regexp.h"
 #include "screen.h"
-#include "search.h"
 #include "terminal/input.h"
+#include "terminal/mode.h"
 #include "terminal/output.h"
 #include "terminal/terminal.h"
 #include "util/ascii.h"
-#include "util/str-util.h"
+#include "util/debug.h"
+#include "util/exitcode.h"
+#include "util/hashset.h"
+#include "util/utf8.h"
 #include "util/xmalloc.h"
+#include "util/xsnprintf.h"
 #include "view.h"
 #include "window.h"
 #include "../build/version.h"
-
-static volatile sig_atomic_t terminal_resized;
-
-static void resize(void);
-static void ui_end(void);
 
 EditorState editor = {
     .status = EDITOR_INITIALIZING,
     .input_mode = INPUT_NORMAL,
     .child_controls_terminal = false,
     .everything_changed = false,
-    .search_history = PTR_ARRAY_INIT,
-    .command_history = PTR_ARRAY_INIT,
+    .resized = false,
+    .exit_code = EX_OK,
+    .buffers = PTR_ARRAY_INIT,
     .version = version,
     .cmdline_x = 0,
-    .resize = resize,
-    .ui_end = ui_end,
     .cmdline = {
         .buf = STRING_INIT,
         .pos = 0,
-        .search_pos = -1,
+        .search_pos = NULL,
         .search_text = NULL
+    },
+    .command_history = {
+        .filename = NULL,
+        .max_entries = 512,
+        .entries = HASHMAP_INIT
+    },
+    .search_history = {
+        .filename = NULL,
+        .max_entries = 128,
+        .entries = HASHMAP_INIT
     },
     .options = {
         .auto_indent = true,
@@ -59,50 +68,56 @@ EditorState editor = {
 
         // Global-only options
         .case_sensitive_search = CSS_TRUE,
+        .crlf_newlines = false,
         .display_invisible = false,
         .display_special = false,
         .esc_timeout = 100,
+        .filesize_limit = 250,
         .lock_files = true,
-        .newline = NEWLINE_UNIX,
         .scroll_margin = 0,
+        .select_cursor_char = true,
         .set_window_title = false,
         .show_line_numbers = false,
-        .statusline_left = NULL,
-        .statusline_right = NULL,
-        .tab_bar = TAB_BAR_HORIZONTAL,
-        .tab_bar_max_components = 0,
-        .tab_bar_width = 25,
-        .filesize_limit = 250,
-    },
-    .mode_ops = {
-        [INPUT_NORMAL] = &normal_mode_ops,
-        [INPUT_COMMAND] = &command_mode_ops,
-        [INPUT_SEARCH] = &search_mode_ops,
-        [INPUT_GIT_OPEN] = &git_open_ops
+        .statusline_left = " %f%s%m%r%s%M",
+        .statusline_right = " %y,%X   %u   %E%s%b%s%n %t   %p ",
+        .tab_bar = true,
+        .utf8_bom = false,
     }
 };
 
 void init_editor_state(void)
 {
-    const char *const pager = getenv("PAGER");
-    const char *const home = getenv("HOME");
-    const char *const dte_home = getenv("DTE_HOME");
+    const char *home = getenv("HOME");
+    const char *dte_home = getenv("DTE_HOME");
+    editor.xdg_runtime_dir = getenv("XDG_RUNTIME_DIR");
 
-    editor.pager = xstrdup(pager ? pager : "less");
-    editor.home_dir = xstrdup(home ? home : "");
+    editor.home_dir = strview_intern(home ? home : "");
 
     if (dte_home) {
         editor.user_config_dir = xstrdup(dte_home);
     } else {
-        editor.user_config_dir = xasprintf("%s/.dte", editor.home_dir);
+        editor.user_config_dir = xasprintf("%s/.dte", editor.home_dir.data);
     }
 
-    setlocale(LC_CTYPE, "");
+    log_init("DTE_LOG");
+    DEBUG_LOG("version: %s", version);
+
+    const char *locale = setlocale(LC_CTYPE, "");
+    if (unlikely(!locale)) {
+        fatal_error("setlocale", errno);
+    }
+
+    DEBUG_LOG("locale: %s", locale);
     editor.charset = encoding_from_name(nl_langinfo(CODESET));
     editor.term_utf8 = (editor.charset.type == UTF8);
 
-    editor.options.statusline_left = " %f%s%m%r%s%M";
-    editor.options.statusline_right = " %y,%X   %u   %E %n %t   %p ";
+    // Allow child processes to detect that they're running under dte
+    if (unlikely(setenv("DTE_VERSION", version, true) != 0)) {
+        fatal_error("setenv", errno);
+    }
+
+    regexp_init_word_boundary_tokens();
+    init_aliases();
 }
 
 static void sanity_check(void)
@@ -148,20 +163,19 @@ static void update_window_full(Window *w)
 
 static void restore_cursor(void)
 {
-    View *v = window->view;
     switch (editor.input_mode) {
     case INPUT_NORMAL:
-        terminal.move_cursor (
-            window->edit_x + v->cx_display - v->vx,
-            window->edit_y + v->cy - v->vy
+        term_move_cursor (
+            window->edit_x + view->cx_display - view->vx,
+            window->edit_y + view->cy - view->vy
         );
         break;
     case INPUT_COMMAND:
     case INPUT_SEARCH:
-        terminal.move_cursor(editor.cmdline_x, terminal.height - 1);
+        term_move_cursor(editor.cmdline_x, terminal.height - 1);
         break;
-    case INPUT_GIT_OPEN:
-        break;
+    default:
+        BUG("unhandled input mode");
     }
 }
 
@@ -181,8 +195,8 @@ static void end_update(void)
     term_show_cursor();
     term_output_flush();
 
-    window->view->buffer->changed_line_min = INT_MAX;
-    window->view->buffer->changed_line_max = -1;
+    buffer->changed_line_min = LONG_MAX;
+    buffer->changed_line_max = -1;
     for_each_window(clear_update_tabbar);
 }
 
@@ -202,7 +216,7 @@ static void update_window(Window *w)
     View *v = w->view;
     if (editor.options.show_line_numbers) {
         // Force updating lines numbers if all lines changed
-        update_line_numbers(w, v->buffer->changed_line_max == INT_MAX);
+        update_line_numbers(w, v->buffer->changed_line_max == LONG_MAX);
     }
 
     long y1 = v->buffer->changed_line_min;
@@ -219,7 +233,7 @@ static void update_window(Window *w)
 }
 
 // Update all visible views containing this buffer
-static void update_buffer_windows(const Buffer *const b)
+static void update_buffer_windows(const Buffer *b)
 {
     for (size_t i = 0, n = b->views.count; i < n; i++) {
         View *v = b->views.ptrs[i];
@@ -243,51 +257,52 @@ static void update_buffer_windows(const Buffer *const b)
 void normal_update(void)
 {
     start_update();
-    update_term_title(window->view->buffer);
+    update_term_title(buffer);
     update_all_windows();
     update_command_line();
     end_update();
 }
 
-void handle_sigwinch(int UNUSED_ARG(signum))
+static void ui_resize(void)
 {
-    terminal_resized = true;
-}
-
-static void resize(void)
-{
-    terminal_resized = false;
+    if (editor.status == EDITOR_INITIALIZING) {
+        return;
+    }
+    editor.resized = false;
     update_screen_size();
-
-    // Turn keypad on (makes cursor keys work)
-    terminal.put_control_code(terminal.control_codes.keypad_on);
-
-    // Use alternate buffer if possible
-    terminal.put_control_code(terminal.control_codes.cup_mode_on);
-
-    editor.mode_ops[editor.input_mode]->update();
+    normal_update();
 }
 
-static void ui_end(void)
+void ui_start(void)
 {
-    terminal.put_control_code(terminal.control_codes.reset_colors);
-    terminal.put_control_code(terminal.control_codes.reset_attrs);
+    if (editor.status == EDITOR_INITIALIZING) {
+        return;
+    }
+    terminal.put_control_code(terminal.control_codes.init);
+    terminal.put_control_code(terminal.control_codes.keypad_on);
+    terminal.put_control_code(terminal.control_codes.cup_mode_on);
+    ui_resize();
+}
+
+void ui_end(void)
+{
+    if (editor.status == EDITOR_INITIALIZING) {
+        return;
+    }
     terminal.clear_screen();
-
-    terminal.move_cursor(0, terminal.height - 1);
+    term_move_cursor(0, terminal.height - 1);
     term_show_cursor();
-
     terminal.put_control_code(terminal.control_codes.cup_mode_off);
     terminal.put_control_code(terminal.control_codes.keypad_off);
-
+    terminal.put_control_code(terminal.control_codes.deinit);
     term_output_flush();
-    terminal.cooked();
+    term_cooked();
 }
 
 void suspend(void)
 {
     if (getpid() == getsid(0)) {
-        // Session leader can't suspend
+        error_msg("Session leader can't suspend");
         return;
     }
     if (
@@ -296,110 +311,163 @@ void suspend(void)
     ) {
         ui_end();
     }
-    kill(0, SIGSTOP);
+    int r = kill(0, SIGSTOP);
+    if (unlikely(r != 0)) {
+        perror_msg("kill");
+        term_raw();
+        ui_start();
+    }
 }
 
-char *editor_file(const char *name)
-{
-    return xasprintf("%s/%s", editor.user_config_dir, name);
-}
-
-char get_confirmation(const char *choices, const char *format, ...)
+const char *editor_file(const char *name)
 {
     char buf[4096];
-    va_list ap;
-    va_start(ap, format);
-    vsnprintf(buf, sizeof(buf), format, ap);
-    va_end(ap);
+    size_t n = xsnprintf(buf, sizeof buf, "%s/%s", editor.user_config_dir, name);
+    return mem_intern(buf, n);
+}
 
-    size_t pos = strlen(buf);
-    buf[pos++] = ' ';
-    buf[pos++] = '[';
-
-    unsigned char def = 0;
-    for (size_t i = 0, n = strlen(choices); i < n; i++) {
-        if (ascii_isupper(choices[i])) {
-            def = ascii_tolower(choices[i]);
-        }
-        buf[pos++] = choices[i];
-        buf[pos++] = '/';
+static char get_choice(const char *choices)
+{
+    KeyCode key;
+    if (!term_read_key(&key)) {
+        return 0;
     }
 
-    buf[pos - 1] = ']';
-    buf[pos] = '\0';
+    switch (key) {
+    case KEY_PASTE:
+        term_discard_paste();
+        return 0;
+    case CTRL('C'):
+    case CTRL('G'):
+    case CTRL('['):
+        return 0x18; // Cancel
+    case KEY_ENTER:
+        return choices[0]; // Default
+    }
 
+    if (key < 128) {
+        char ch = ascii_tolower(key);
+        if (strchr(choices, ch)) {
+            return ch;
+        }
+    }
+    return 0;
+}
+
+static void show_dialog(const char *question)
+{
+    unsigned int question_width = u_str_width(question);
+    unsigned int min_width = question_width + 2;
+    if (terminal.height < 12 || terminal.width < min_width) {
+        return;
+    }
+
+    unsigned int height = terminal.height / 4;
+    unsigned int mid = terminal.height / 2;
+    unsigned int top = mid - (height / 2);
+    unsigned int bot = top + height;
+    unsigned int width = MAX(terminal.width / 2, min_width);
+    unsigned int x = (terminal.width - width) / 2;
+
+    // The "underline" and "strikethrough" attributes should only apply
+    // to the text, not the whole dialog background:
+    const TermColor *text_color = &builtin_colors[BC_DIALOG];
+    TermColor dialog_color = *text_color;
+    dialog_color.attr &= ~(ATTR_UNDERLINE | ATTR_STRIKETHROUGH);
+    set_color(&dialog_color);
+
+    for (unsigned int y = top; y < bot; y++) {
+        term_output_reset(x, width, 0);
+        term_move_cursor(x, y);
+        if (y == mid) {
+            term_set_bytes(' ', (width - question_width) / 2);
+            set_color(text_color);
+            term_add_str(question);
+            set_color(&dialog_color);
+        }
+        term_clear_eol();
+    }
+}
+
+char dialog_prompt(const char *question, const char *choices)
+{
+    normal_update();
+    term_hide_cursor();
+    show_dialog(question);
+    show_message(question, false);
+    term_output_flush();
+
+    char choice;
+    while ((choice = get_choice(choices)) == 0) {
+        if (!editor.resized) {
+            continue;
+        }
+        ui_resize();
+        term_hide_cursor();
+        show_dialog(question);
+        show_message(question, false);
+        term_output_flush();
+    }
+
+    mark_everything_changed();
+    return (choice >= 'a') ? choice : 0;
+}
+
+char status_prompt(const char *question, const char *choices)
+{
     // update_windows() assumes these have been called for the current view
-    View *v = window->view;
-    view_update_cursor_x(v);
-    view_update_cursor_y(v);
-    view_update(v);
+    view_update_cursor_x(view);
+    view_update_cursor_y(view);
+    view_update(view);
 
     // Set changed_line_min and changed_line_max before calling update_range()
-    mark_all_lines_changed(v->buffer);
+    mark_all_lines_changed(buffer);
 
     start_update();
-    update_term_title(v->buffer);
-    update_buffer_windows(v->buffer);
-    show_message(buf, false);
+    update_term_title(buffer);
+    update_buffer_windows(buffer);
+    show_message(question, false);
     end_update();
 
-    KeyCode key;
-    while (1) {
-        if (term_read_key(&key)) {
-            if (key == KEY_PASTE) {
-                term_discard_paste();
-                continue;
-            }
-            if (key == CTRL('C') || key == CTRL('G') || key == CTRL('[')) {
-                key = 0;
-                break;
-            }
-            if (key == KEY_ENTER && def) {
-                key = def;
-                break;
-            }
-            if (key > 127) {
-                continue;
-            }
-            key = ascii_tolower(key);
-            if (strchr(choices, key)) {
-                break;
-            }
-            if (key == def) {
-                break;
-            }
-        } else if (terminal_resized) {
-            resize();
+    char choice;
+    while ((choice = get_choice(choices)) == 0) {
+        if (!editor.resized) {
+            continue;
         }
+        ui_resize();
+        term_hide_cursor();
+        show_message(question, false);
+        restore_cursor();
+        term_show_cursor();
+        term_output_flush();
     }
-    return key;
+
+    return (choice >= 'a') ? choice : 0;
 }
 
 typedef struct {
     bool is_modified;
-    unsigned int id;
+    unsigned long id;
     long cy;
     long vx;
     long vy;
 } ScreenState;
 
-static void update_screen(const ScreenState *const s)
+static void update_screen(const ScreenState *s)
 {
     if (editor.everything_changed) {
-        editor.mode_ops[editor.input_mode]->update();
+        normal_update();
         editor.everything_changed = false;
         return;
     }
 
-    View *v = window->view;
-    view_update_cursor_x(v);
-    view_update_cursor_y(v);
-    view_update(v);
+    view_update_cursor_x(view);
+    view_update_cursor_y(view);
+    view_update(view);
 
-    Buffer *b = v->buffer;
-    if (s->id == b->id) {
-        if (s->vx != v->vx || s->vy != v->vy) {
-            mark_all_lines_changed(b);
+    if (s->id == buffer->id) {
+        if (s->vx != view->vx || s->vy != view->vy) {
+            mark_all_lines_changed(buffer);
         } else {
             // Because of trailing whitespace highlighting and
             // highlighting current line in different color
@@ -407,21 +475,21 @@ static void update_screen(const ScreenState *const s)
             // to be updated.
             //
             // Always update at least current line.
-            buffer_mark_lines_changed(b, s->cy, v->cy);
+            buffer_mark_lines_changed(buffer, s->cy, view->cy);
         }
-        if (s->is_modified != buffer_modified(b)) {
-            mark_buffer_tabbars_changed(b);
+        if (s->is_modified != buffer_modified(buffer)) {
+            mark_buffer_tabbars_changed(buffer);
         }
     } else {
         window->update_tabbar = true;
-        mark_all_lines_changed(b);
+        mark_all_lines_changed(buffer);
     }
 
     start_update();
     if (window->update_tabbar) {
-        update_term_title(b);
+        update_term_title(buffer);
     }
-    update_buffer_windows(b);
+    update_buffer_windows(buffer);
     update_command_line();
     end_update();
 }
@@ -429,8 +497,8 @@ static void update_screen(const ScreenState *const s)
 void main_loop(void)
 {
     while (editor.status == EDITOR_RUNNING) {
-        if (terminal_resized) {
-            resize();
+        if (editor.resized) {
+            ui_resize();
         }
 
         KeyCode key;
@@ -439,25 +507,16 @@ void main_loop(void)
         }
 
         clear_error();
-        if (editor.input_mode == INPUT_GIT_OPEN) {
-            editor.mode_ops[editor.input_mode]->keypress(key);
-            editor.mode_ops[editor.input_mode]->update();
-        } else {
-            const View *v = window->view;
-            const ScreenState s = {
-                .is_modified = buffer_modified(v->buffer),
-                .id = v->buffer->id,
-                .cy = v->cy,
-                .vx = v->vx,
-                .vy = v->vy
-            };
-            editor.mode_ops[editor.input_mode]->keypress(key);
-            sanity_check();
-            if (editor.input_mode == INPUT_GIT_OPEN) {
-                editor.mode_ops[INPUT_GIT_OPEN]->update();
-            } else {
-                update_screen(&s);
-            }
-        }
+        const ScreenState s = {
+            .is_modified = buffer_modified(buffer),
+            .id = buffer->id,
+            .cy = view->cy,
+            .vx = view->vx,
+            .vy = view->vy
+        };
+
+        handle_input(key);
+        sanity_check();
+        update_screen(&s);
     }
 }

@@ -1,91 +1,81 @@
-#include <inttypes.h>
 #include <string.h>
 #include "color.h"
-#include "../debug.h"
-#include "../error.h"
-#include "../util/ascii.h"
-#include "../util/strtonum.h"
+#include "completion.h"
+#include "error.h"
+#include "util/ascii.h"
+#include "util/debug.h"
+#include "util/str-util.h"
+#include "util/strtonum.h"
+#include "util/xmalloc.h"
+#include "util/xsnprintf.h"
 
-#define CMP(str, val) cmp_str = str; cmp_val = val; goto compare
+static const char attr_names[][16] = {
+    "keep",
+    "underline",
+    "reverse",
+    "blink",
+    "dim",
+    "bold",
+    "invisible",
+    "italic",
+    "strikethrough"
+};
 
-static unsigned int lookup_attr(const char *s, size_t len)
+static const char color_names[][16] = {
+    "keep",
+    "default",
+    "black",
+    "red",
+    "green",
+    "yellow",
+    "blue",
+    "magenta",
+    "cyan",
+    "gray",
+    "darkgray",
+    "lightred",
+    "lightgreen",
+    "lightyellow",
+    "lightblue",
+    "lightmagenta",
+    "lightcyan",
+    "white"
+};
+
+static unsigned int lookup_attr(const char *s)
 {
-    const char *cmp_str;
-    unsigned int cmp_val;
-    switch (len) {
-    case 3: CMP("dim", ATTR_DIM);
-    case 5: CMP("blink", ATTR_BLINK);
-    case 6: CMP("italic", ATTR_ITALIC);
-    case 7: CMP("reverse", ATTR_REVERSE);
-    case 12: CMP("lowintensity", ATTR_DIM);
-    case 13: CMP("strikethrough", ATTR_STRIKETHROUGH);
-    case 4:
-        switch (s[0]) {
-        case 'b': CMP("bold", ATTR_BOLD);
-        case 'k': CMP("keep", ATTR_KEEP);
+    for (size_t i = 0; i < ARRAY_COUNT(attr_names); i++) {
+        if (streq(s, attr_names[i])) {
+            return 1U << i;
         }
-        break;
-    case 9:
-        switch (s[0]) {
-        case 'i': CMP("invisible", ATTR_INVIS);
-        case 'u': CMP("underline", ATTR_UNDERLINE);
-        }
-        break;
+    }
+    if (streq(s, "lowintensity")) {
+        return ATTR_DIM;
     }
     return 0;
-compare:
-    return memcmp(s, cmp_str, len) ? 0 : cmp_val;
 }
 
-static int32_t lookup_color(const char *s, size_t len)
+static int32_t lookup_color(const char *s)
 {
-    const char *cmp_str;
-    int32_t cmp_val;
-    switch (len) {
-    case 3: CMP("red", COLOR_RED);
-    case 6: CMP("yellow", COLOR_YELLOW);
-    case 8: CMP("darkgray", 8);
-    case 4:
-        switch (s[0]) {
-        case 'b': CMP("blue", COLOR_BLUE);
-        case 'c': CMP("cyan", COLOR_CYAN);
-        case 'g': CMP("gray", COLOR_GRAY);
-        case 'k': CMP("keep", COLOR_KEEP);
+    for (size_t i = 0; i < ARRAY_COUNT(color_names); i++) {
+        if (streq(s, color_names[i])) {
+            return i - 2;
         }
-        break;
-    case 5:
-        switch (s[0]) {
-        case 'b': CMP("black", COLOR_BLACK);
-        case 'g': CMP("green", COLOR_GREEN);
-        case 'w': CMP("white", 15);
-        }
-        break;
-    case 7:
-        switch (s[0]) {
-        case 'd': CMP("default", COLOR_DEFAULT);
-        case 'm': CMP("magenta", COLOR_MAGENTA);
-        }
-        break;
     }
     return COLOR_INVALID;
-compare:
-    return memcmp(s, cmp_str, len) ? COLOR_INVALID : cmp_val;
 }
 
 static int32_t parse_rrggbb(const char *str)
 {
-    uint8_t digits[6];
+    int32_t color = 0;
     for (size_t i = 0; i < 6; i++) {
-        int val = hex_decode(str[i]);
-        if (val < 0) {
+        unsigned int digit = hex_decode(str[i]);
+        if (unlikely(digit > 0xF)) {
             return COLOR_INVALID;
         }
-        digits[i] = val;
+        color = (color << 4) | digit;
     }
-    int32_t r = (digits[0] << 4) | digits[1];
-    int32_t g = (digits[2] << 4) | digits[3];
-    int32_t b = (digits[4] << 4) | digits[5];
-    return r << 16 | g << 8 | b | COLOR_FLAG_RGB;
+    return COLOR_RGB(color);
 }
 
 UNITTEST {
@@ -93,19 +83,20 @@ UNITTEST {
     BUG_ON(parse_rrggbb("011011") != COLOR_RGB(0x011011));
     BUG_ON(parse_rrggbb("fffffg") != COLOR_INVALID);
     BUG_ON(parse_rrggbb(".") != COLOR_INVALID);
+    BUG_ON(parse_rrggbb("") != COLOR_INVALID);
     BUG_ON(parse_rrggbb("11223") != COLOR_INVALID);
 }
 
 static int32_t parse_color(const char *str)
 {
     size_t len = strlen(str);
-    if (len == 0) {
+    if (unlikely(len == 0)) {
         return COLOR_INVALID;
     }
 
     // Parse #rrggbb
     if (str[0] == '#') {
-        if (len != 7) {
+        if (unlikely(len != 7)) {
             return COLOR_INVALID;
         }
         return parse_rrggbb(str + 1);
@@ -116,54 +107,51 @@ static int32_t parse_color(const char *str)
         uint8_t r = ((uint8_t)str[0]) - '0';
         uint8_t g = ((uint8_t)str[2]) - '0';
         uint8_t b = ((uint8_t)str[4]) - '0';
-        if (r > 5 || g > 5 || b > 5 || str[3] != '/') {
+        if (unlikely(r > 5 || g > 5 || b > 5 || str[3] != '/')) {
             return COLOR_INVALID;
         }
         // Convert to color index 16..231 (xterm 6x6x6 color cube)
-        return 16 + r * 36 + g * 6 + b;
+        return 16 + (r * 36) + (g * 6) + b;
     }
 
     // Parse -2 .. 255
     if (len <= 3 && (str[0] == '-' || ascii_isdigit(str[0]))) {
         int x;
-        if (!str_to_int(str, &x) || x < -2 || x > 255) {
+        if (unlikely(!str_to_int(str, &x) || x < -2 || x > 255)) {
             return COLOR_INVALID;
         }
         return x;
     }
 
-    bool light = false;
-    if (len >= 8 && memcmp(str, "light", 5) == 0) {
-        light = true;
-        str += 5;
-        len -= 5;
-    }
-
-    const int32_t c = lookup_color(str, len);
-    switch (c) {
-    case COLOR_INVALID:
-        return COLOR_INVALID;
-    case COLOR_RED:
-    case COLOR_GREEN:
-    case COLOR_YELLOW:
-    case COLOR_BLUE:
-    case COLOR_MAGENTA:
-    case COLOR_CYAN:
-        return light ? c + 8 : c;
-    default:
-        return light ? COLOR_INVALID : c;
-    }
+    return lookup_color(str);
 }
 
-static bool parse_attr(const char *str, unsigned int *attr)
-{
-    const unsigned int a = lookup_attr(str, strlen(str));
-    if (a) {
-        *attr |= a;
-        return true;
-    }
-
-    return false;
+UNITTEST {
+    BUG_ON(parse_color("-2") != COLOR_KEEP);
+    BUG_ON(parse_color("-1") != COLOR_DEFAULT);
+    BUG_ON(parse_color("0") != COLOR_BLACK);
+    BUG_ON(parse_color("1") != COLOR_RED);
+    BUG_ON(parse_color("255") != 255);
+    BUG_ON(parse_color("0/0/0") != 16);
+    BUG_ON(parse_color("2/3/4") != 110);
+    BUG_ON(parse_color("5/5/5") != 231);
+    BUG_ON(parse_color("black") != COLOR_BLACK);
+    BUG_ON(parse_color("white") != COLOR_WHITE);
+    BUG_ON(parse_color("keep") != COLOR_KEEP);
+    BUG_ON(parse_color("default") != COLOR_DEFAULT);
+    BUG_ON(parse_color("#abcdef") != COLOR_RGB(0xABCDEF));
+    BUG_ON(parse_color("#a1b2c3") != COLOR_RGB(0xA1B2C3));
+    BUG_ON(parse_color("-3") != COLOR_INVALID);
+    BUG_ON(parse_color("256") != COLOR_INVALID);
+    BUG_ON(parse_color("//0/0") != COLOR_INVALID);
+    BUG_ON(parse_color("0/0/:") != COLOR_INVALID);
+    BUG_ON(parse_color("lightblack") != COLOR_INVALID);
+    BUG_ON(parse_color("lightwhite") != COLOR_INVALID);
+    BUG_ON(parse_color("light_") != COLOR_INVALID);
+    BUG_ON(parse_color("") != COLOR_INVALID);
+    BUG_ON(parse_color(".") != COLOR_INVALID);
+    BUG_ON(parse_color("#11223") != COLOR_INVALID);
+    BUG_ON(parse_color("#fffffg") != COLOR_INVALID);
 }
 
 bool parse_term_color(TermColor *color, char **strs)
@@ -191,10 +179,15 @@ bool parse_term_color(TermColor *color, char **strs)
                 }
                 count++;
             }
-        } else if (!parse_attr(str, &color->attr)) {
-            error_msg("invalid color or attribute %s", str);
-            return false;
+            continue;
         }
+        const unsigned int attr = lookup_attr(str);
+        if (attr) {
+            color->attr |= attr;
+            continue;
+        }
+        error_msg("invalid color or attribute %s", str);
+        return false;
     }
     return true;
 }
@@ -209,11 +202,8 @@ static int color_dist_sq (
 // Convert RGB color component (0-255) to nearest xterm color cube index (0-5)
 static uint8_t nearest_cube_index(uint8_t c)
 {
-    if (c < 48) {
-        return 0;
-    }
-    if (c < 114) {
-        return 1;
+    if (c < 75) {
+        c += 27;
     }
     return (c - 35) / 40;
 }
@@ -245,9 +235,9 @@ static uint8_t color_rgb_to_256(uint32_t color, bool *exact)
         return 16 + (36 * r_idx) + (6 * g_idx) + b_idx;
     }
 
-    if (r >= 8 && r <= 238 && r == g && r == b) {
+    if (r == g && r == b) {
         uint8_t v = r - 8;
-        if (v % 10 == 0) {
+        if (v <= 230 && v % 10 == 0) {
             *exact = true;
             return (v / 10) + 232;
         }
@@ -358,4 +348,55 @@ int32_t color_to_nearest(int32_t color, TermColorCapabilityType type)
     // when DEBUG == 0 and __builtin_unreachable() isn't supported
     // (i.e. BUG() expands to nothing).
     return COLOR_DEFAULT;
+}
+
+void collect_colors_and_attributes(const char *prefix)
+{
+    for (size_t i = 1; i < ARRAY_COUNT(color_names); i++) {
+        if (str_has_prefix(color_names[i], prefix)) {
+            add_completion(xstrdup(color_names[i]));
+        }
+    }
+    for (size_t i = 0; i < ARRAY_COUNT(attr_names); i++) {
+        if (str_has_prefix(attr_names[i], prefix)) {
+            add_completion(xstrdup(attr_names[i]));
+        }
+    }
+}
+
+static size_t append_color(char *buf, int32_t color)
+{
+    if (color < 16) {
+        BUG_ON(color <= COLOR_INVALID);
+        const char *name = color_names[color + 2];
+        size_t len = strlen(name);
+        memcpy(buf, name, len);
+        return len;
+    } else if (color < 256) {
+        return xsnprintf(buf, 4, "%u", (unsigned int)color);
+    }
+    BUG_ON((color & COLOR_FLAG_RGB) == 0);
+    uint8_t r, g, b;
+    color_split_rgb(color, &r, &g, &b);
+    return xsnprintf(buf, 8, "#%02hhx%02hhx%02hhx", r, g, b);
+}
+
+const char *term_color_to_string(const TermColor *color)
+{
+    static char buf[128];
+    size_t pos = append_color(buf, color->fg);
+    if (color->bg != COLOR_DEFAULT || (color->attr & ATTR_KEEP) != 0) {
+        buf[pos++] = ' ';
+        pos += append_color(buf + pos, color->bg);
+    }
+    for (size_t i = 0; i < ARRAY_COUNT(attr_names); i++) {
+        if (color->attr & (1U << i)) {
+            buf[pos++] = ' ';
+            size_t len = strlen(attr_names[i]);
+            memcpy(buf + pos, attr_names[i], len);
+            pos += len;
+        }
+    }
+    buf[pos] = '\0';
+    return buf;
 }

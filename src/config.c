@@ -1,19 +1,21 @@
-#include <stdio.h>
+#include <errno.h>
+#include <stdbool.h>
 #include <sys/types.h>
 #include "config.h"
+#include "commands.h"
 #include "completion.h"
-#include "debug.h"
 #include "error.h"
+#include "syntax/color.h"
 #include "terminal/terminal.h"
 #include "util/ascii.h"
+#include "util/debug.h"
 #include "util/readfile.h"
 #include "util/str-util.h"
 #include "util/string.h"
 #include "util/xmalloc.h"
 #include "../build/builtin-config.h"
 
-const char *config_file;
-int config_line;
+ConfigState current_config;
 
 static bool is_command(const char *str, size_t len)
 {
@@ -38,50 +40,54 @@ static bool has_line_continuation(const char *str, size_t len)
     return (len - 1 - pos) % 2;
 }
 
-void exec_config(const Command *cmds, const char *buf, size_t size)
+void exec_config(const CommandSet *cmds, const char *buf, size_t size)
 {
     const char *ptr = buf;
-    String line = STRING_INIT;
+    String line = string_new(1024);
 
     while (ptr < buf + size) {
         size_t n = buf + size - ptr;
         char *end = memchr(ptr, '\n', n);
-
         if (end) {
             n = end - ptr;
         }
 
         if (line.len || is_command(ptr, n)) {
             if (has_line_continuation(ptr, n)) {
-                string_add_buf(&line, ptr, n - 1);
+                string_append_buf(&line, ptr, n - 1);
             } else {
-                string_add_buf(&line, ptr, n);
-                handle_command(cmds, string_borrow_cstring(&line));
+                string_append_buf(&line, ptr, n);
+                handle_command(cmds, string_borrow_cstring(&line), false);
                 string_clear(&line);
             }
         }
-        config_line++;
+
+        current_config.line++;
         ptr += n + 1;
     }
+
     if (line.len) {
-        handle_command(cmds, string_borrow_cstring(&line));
+        handle_command(cmds, string_borrow_cstring(&line), false);
     }
+
     string_free(&line);
 }
 
-void list_builtin_configs(void)
+String dump_builtin_configs(void)
 {
+    String str = string_new(1024);
     for (size_t i = 0; i < ARRAY_COUNT(builtin_configs); i++) {
-        fputs(builtin_configs[i].name, stdout);
-        fputc('\n', stdout);
+        string_append_cstring(&str, builtin_configs[i].name);
+        string_append_byte(&str, '\n');
     }
+    return str;
 }
 
-void collect_builtin_configs(const char *const prefix, bool syntaxes)
+void collect_builtin_configs(const char *prefix)
 {
     for (size_t i = 0; i < ARRAY_COUNT(builtin_configs); i++) {
         const BuiltinConfig *cfg = &builtin_configs[i];
-        if (syntaxes == false && str_has_prefix(cfg->name, "syntax/")) {
+        if (str_has_prefix(cfg->name, "syntax/")) {
             return;
         } else if (str_has_prefix(cfg->name, prefix)) {
             add_completion(xstrdup(cfg->name));
@@ -89,7 +95,7 @@ void collect_builtin_configs(const char *const prefix, bool syntaxes)
     }
 }
 
-const BuiltinConfig *get_builtin_config(const char *const name)
+const BuiltinConfig *get_builtin_config(const char *name)
 {
     for (size_t i = 0; i < ARRAY_COUNT(builtin_configs); i++) {
         if (streq(name, builtin_configs[i].name)) {
@@ -99,7 +105,13 @@ const BuiltinConfig *get_builtin_config(const char *const name)
     return NULL;
 }
 
-int do_read_config(const Command *cmds, const char *filename, ConfigFlags flags)
+const BuiltinConfig *get_builtin_configs_array(size_t *nconfigs)
+{
+    *nconfigs = ARRAY_COUNT(builtin_configs);
+    return &builtin_configs[0];
+}
+
+int do_read_config(const CommandSet *cmds, const char *filename, ConfigFlags flags)
 {
     const bool must_exist = flags & CFG_MUST_EXIST;
     const bool builtin = flags & CFG_BUILTIN;
@@ -107,8 +119,8 @@ int do_read_config(const Command *cmds, const char *filename, ConfigFlags flags)
     if (builtin) {
         const BuiltinConfig *cfg = get_builtin_config(filename);
         if (cfg) {
-            config_file = filename;
-            config_line = 1;
+            current_config.file = filename;
+            current_config.line = 1;
             exec_config(cmds, cfg->text.data, cfg->text.length);
             return 0;
         } else if (must_exist) {
@@ -133,30 +145,35 @@ int do_read_config(const Command *cmds, const char *filename, ConfigFlags flags)
         return err;
     }
 
-    config_file = filename;
-    config_line = 1;
+    current_config.file = filename;
+    current_config.line = 1;
 
     exec_config(cmds, buf, size);
     free(buf);
     return 0;
 }
 
-int read_config(const Command *cmds, const char *filename, ConfigFlags flags)
+int read_config(const CommandSet *cmds, const char *filename, ConfigFlags flags)
 {
     // Recursive
-    const char *saved_config_file = config_file;
-    int saved_config_line = config_line;
+    const ConfigState saved = current_config;
     int ret = do_read_config(cmds, filename, flags);
-    config_file = saved_config_file;
-    config_line = saved_config_line;
+    current_config = saved;
     return ret;
 }
 
-void exec_reset_colors_rc(void)
+void exec_builtin_color_reset(void)
 {
+    clear_hl_colors();
     bool colors = terminal.color_type >= TERM_8_COLOR;
     const char *cfg = colors ? "color/reset" : "color/reset-basic";
-    read_config(commands, cfg, CFG_MUST_EXIST | CFG_BUILTIN);
+    read_config(&commands, cfg, CFG_MUST_EXIST | CFG_BUILTIN);
+}
+
+void exec_builtin_rc(void)
+{
+    exec_builtin_color_reset();
+    read_config(&commands, "rc", CFG_MUST_EXIST | CFG_BUILTIN);
 }
 
 UNITTEST {

@@ -1,76 +1,81 @@
 #include <errno.h>
-#include <fcntl.h>
+#include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
-#include <unistd.h>
+#include <sys/types.h>
 #include "file-history.h"
 #include "error.h"
 #include "util/path.h"
-#include "util/ptr-array.h"
+#include "util/hashmap.h"
 #include "util/readfile.h"
+#include "util/str-util.h"
 #include "util/strtonum.h"
-#include "util/wbuf.h"
 #include "util/xmalloc.h"
-#include "util/xsnprintf.h"
+#include "util/xstdio.h"
+
+typedef struct FileHistoryEntry {
+    struct FileHistoryEntry *next;
+    struct FileHistoryEntry *prev;
+    char *filename;
+    unsigned long row;
+    unsigned long col;
+} FileHistoryEntry;
 
 typedef struct {
-    unsigned long row, col;
-    size_t filename_len;
-    char filename[];
-} HistoryEntry;
+    HashMap entries;
+    FileHistoryEntry *first;
+    FileHistoryEntry *last;
+} FileHistory;
 
-static PointerArray history = PTR_ARRAY_INIT;
+enum {
+    MAX_ENTRIES = 512
+};
 
-#define max_history_size 500
-
-static bool entry_match(const HistoryEntry *e, const char *filename, size_t len)
-{
-    return len == e->filename_len && memcmp(filename, e->filename, len) == 0;
-}
-
-static ssize_t lookup_entry_index(const char *filename, size_t filename_len)
-{
-    for (size_t i = 0, n = history.count; i < n; i++) {
-        const HistoryEntry *e = history.ptrs[i];
-        if (entry_match(e, filename, filename_len)) {
-            return i;
-        }
-    }
-    return -1;
-}
+static FileHistory history;
 
 void add_file_history(unsigned long row, unsigned long col, const char *filename)
 {
-    const size_t filename_len = strlen(filename);
-    const ssize_t idx = lookup_entry_index(filename, filename_len);
-    if (idx >= 0) {
-        HistoryEntry *e = history.ptrs[idx];
-        ptr_array_remove_idx(&history, (size_t)idx);
-        if (row > 1 || col > 1) {
+    HashMap *map = &history.entries;
+    FileHistoryEntry *e = hashmap_get(map, filename);
+    if (e) {
+        if (e == history.last) {
             e->row = row;
             e->col = col;
-            // Re-insert at end of array
-            ptr_array_add(&history, e);
-        } else {
-            free(e);
+            return;
         }
-        return;
+        e->next->prev = e->prev;
+        if (unlikely(e == history.first)) {
+            history.first = e->next;
+        } else {
+            e->prev->next = e->next;
+        }
+    } else {
+        if (map->count == MAX_ENTRIES) {
+            // History is full; recycle the oldest entry
+            FileHistoryEntry *old_first = history.first;
+            FileHistoryEntry *new_first = old_first->next;
+            new_first->prev = NULL;
+            history.first = new_first;
+            e = hashmap_remove(map, old_first->filename);
+            BUG_ON(e != old_first);
+        } else {
+            e = xnew(FileHistoryEntry, 1);
+        }
+        e->filename = xstrdup(filename);
+        hashmap_insert(map, e->filename, e);
     }
 
-    if (row <= 1 && col <= 1) {
-        return;
-    }
-
-    while (history.count >= max_history_size) {
-        free(ptr_array_remove_idx(&history, 0));
-    }
-
-    HistoryEntry *e = xmalloc(sizeof(HistoryEntry) + filename_len);
+    // Insert the entry at the end of the list
+    FileHistoryEntry *old_last = history.last;
+    e->next = NULL;
+    e->prev = old_last;
     e->row = row;
     e->col = col;
-    e->filename_len = filename_len;
-    memcpy(e->filename, filename, filename_len);
-    ptr_array_add(&history, e);
+    history.last = e;
+    if (likely(old_last)) {
+        old_last->next = e;
+    } else {
+        history.first = e;
+    }
 }
 
 static bool parse_ulong(const char **strp, unsigned long *valp)
@@ -96,9 +101,8 @@ void load_file_history(const char *filename)
         return;
     }
 
-    const size_t size = ssize;
-    size_t pos = 0;
-    while (pos < size) {
+    hashmap_init(&history.entries, MAX_ENTRIES);
+    for (size_t pos = 0, size = ssize; pos < size; ) {
         const char *line = buf_next_line(buf, &pos, size);
         unsigned long row, col;
         if (!parse_ulong(&line, &row) || row == 0 || *line++ != ' ') {
@@ -119,33 +123,26 @@ void load_file_history(const char *filename)
 
 void save_file_history(const char *filename)
 {
-    WriteBuffer buf = WBUF_INIT;
-    buf.fd = open(filename, O_CREAT | O_WRONLY | O_TRUNC, 0666);
-    if (buf.fd < 0) {
+    FILE *f = xfopen(filename, "w", O_CLOEXEC, 0666);
+    if (!f) {
         error_msg("Error creating %s: %s", filename, strerror(errno));
         return;
     }
 
-    for (size_t i = 0, n = history.count; i < n; i++) {
-        const HistoryEntry *e = history.ptrs[i];
-        wbuf_need_space(&buf, 64);
-        buf.fill += xsnprintf(buf.buf + buf.fill, 64, "%lu %lu ", e->row, e->col);
-        wbuf_write(&buf, e->filename, e->filename_len);
-        wbuf_write_ch(&buf, '\n');
+    for (const FileHistoryEntry *e = history.first; e; e = e->next) {
+        fprintf(f, "%lu %lu %s\n", e->row, e->col, e->filename);
     }
 
-    wbuf_flush(&buf);
-    close(buf.fd);
+    fclose(f);
 }
 
 bool find_file_in_history(const char *filename, unsigned long *row, unsigned long *col)
 {
-    const ssize_t idx = lookup_entry_index(filename, strlen(filename));
-    if (idx >= 0) {
-        const HistoryEntry *e = history.ptrs[idx];
-        *row = e->row;
-        *col = e->col;
-        return true;
+    const FileHistoryEntry *e = hashmap_get(&history.entries, filename);
+    if (!e) {
+        return false;
     }
-    return false;
+    *row = e->row;
+    *col = e->col;
+    return true;
 }

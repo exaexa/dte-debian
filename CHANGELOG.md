@@ -1,6 +1,85 @@
 Releases
 ========
 
+v1.10 (not yet released)
+------------------------
+
+**Additions:**
+
+* Added 7 new commands:
+  * [`blkdown`]
+  * [`blkup`]
+  * [`delete-line`]
+  * [`exec-open`]
+  * [`exec-tag`]
+  * [`macro`]
+  * [`match-bracket`]
+* Added 12 new command flags:
+  * [`include -q`][`include`]
+  * [`hi -c`][`hi`]
+  * [`filter -l`][`filter`]
+  * [`pipe-to -l`][`pipe-to`]
+  * [`close -p`][`close`]
+  * [`wclose -p`][`wclose`]
+  * [`open -t`][`open`]
+  * [`save -b`][`save`]
+  * [`save -B`][`save`]
+  * [`wsplit -t`][`wsplit`]
+  * [`wsplit -g`][`wsplit`]
+  * [`wsplit -n`][`wsplit`]
+* Added 2 new global options:
+  * [`select-cursor-char`]
+  * [`utf8-bom`]
+* Added an optional *exitcode* argument to the [`quit`] command.
+* Added `color`, `command`, `env`, `errorfmt`, `ft`, `macro`, `option`,
+  `search` and `wsplit` arguments to the [`show`] command.
+* Added support for the `\e` escape sequence in [double-quoted] command
+  arguments.
+* Added syntax highlighting for Lisp and Scheme files.
+* Added an Alt+Enter key binding to search mode, for performing
+  plain-text searches.
+* Added a Shift+Tab key binding to command mode, for iteratating
+  auto-completions in reverse order.
+* Added `%b`, `%N` and `%S` [statusline] format specifiers.
+* Added a large confirmation dialog, shown when [`quit -p`][`quit`] is
+  run with unsaved changes.
+* Added the ability to exclude individual commands from command history
+  (by prepending a space character when in command mode).
+
+**Improvements:**
+
+* Updated Unicode support to version 13.
+* Bound Ctrl+c to [`copy -k`][`copy`] by default.
+* Re-introduced built-in support for rxvt Ctrl/Alt/Shift key combinations.
+* Fixed the handling of optional capture groups in [`errorfmt`] patterns.
+* Improved the legibility of the default color scheme on a wider range
+  of terminals.
+* Changed the `filter` and `pipe-from` commands to set `$LINES`/`$COLUMNS`
+  to the current window height/width, before running the specified program.
+* Clarified which command flags in the [`dterc`] man page are mutually
+  exclusive (by separating them with `|`).
+* Fixed signal handling, to allow interrupting unresponsive/deadlocked
+  child processes with Ctrl+c.
+* Fixed command-line auto-completion to work properly when option flags
+  are present.
+* Improved the documentation for [`tag`], [`replace`], and [`errorfmt`].
+* Various syntax highlighting improvements.
+* Various terminal compatibility improvements.
+* Various performance improvements.
+
+**Breaking changes:**
+
+* Removed support for linking to the system terminfo library. The
+  terminfo database has only been used as a last resort source of
+  information for several releases now. Most terminals that people
+  are likely to be using already have built-in support in the editor,
+  including several capabilities not available from terminfo. This is
+  listed as a breaking change because it may break support for a few
+  archaic hardware terminals (primarily those that aren't ECMA-48
+  compatible or whose terminfo strings contain mandatory padding).
+* Removed support for vertical tab bars (the `tab-bar` option was
+  changed from an enum to a Boolean).
+
 v1.9.1 (latest release)
 -----------------------
 
@@ -345,8 +424,52 @@ Checksums
 A list of SHA256 checksums for all release tarballs and signatures is
 available at <https://craigbarnes.gitlab.io/dist/dte/dte-sha256sums.txt>.
 
+Portable Builds for Linux
+=========================
+
+Some pre-built, portable binaries are available for Linux. They're
+statically-linked with [musl] libc and require nothing of the host
+system except a somewhat recent kernel.
+
+* [`dte-master-linux-x86_64.tar.gz`](https://craigbarnes.gitlab.io/dte/dte-master-linux-x86_64.tar.gz)
+* [`dte-1.9.1-linux-x86_64.tar.gz`](https://craigbarnes.gitlab.io/dist/dte/dte-1.9.1-linux-x86_64.tar.gz)
+
+*Note*: only `x86_64` builds are available for now. Feel free to open an
+[issue] if you need builds for other architectures.
+
 
 [website]: https://craigbarnes.gitlab.io/dte/
 [dex]: https://github.com/tihirvon/dex
 [dex v1.0]: https://github.com/tihirvon/dex/releases/tag/v1.0
 [ECMA-48]: https://www.ecma-international.org/publications/standards/Ecma-048.htm
+[musl]: https://www.musl-libc.org/
+[issue]: https://gitlab.com/craigbarnes/dte/-/issues
+[`dterc`]: https://craigbarnes.gitlab.io/dte/dterc.html
+
+[`blkdown`]: https://craigbarnes.gitlab.io/dte/dterc.html#blkdown
+[`blkup`]: https://craigbarnes.gitlab.io/dte/dterc.html#blkup
+[`close`]: https://craigbarnes.gitlab.io/dte/dterc.html#close
+[`copy`]: https://craigbarnes.gitlab.io/dte/dterc.html#copy
+[`delete-line`]: https://craigbarnes.gitlab.io/dte/dterc.html#delete-line
+[`errorfmt`]: https://craigbarnes.gitlab.io/dte/dterc.html#errorfmt
+[`exec-open`]: https://craigbarnes.gitlab.io/dte/dterc.html#exec-open
+[`exec-tag`]: https://craigbarnes.gitlab.io/dte/dterc.html#exec-tag
+[`filter`]: https://craigbarnes.gitlab.io/dte/dterc.html#filter
+[`hi`]: https://craigbarnes.gitlab.io/dte/dterc.html#hi
+[`include`]: https://craigbarnes.gitlab.io/dte/dterc.html#include
+[`macro`]: https://craigbarnes.gitlab.io/dte/dterc.html#macro
+[`match-bracket`]: https://craigbarnes.gitlab.io/dte/dterc.html#match-bracket
+[`open`]: https://craigbarnes.gitlab.io/dte/dterc.html#open
+[`pipe-to`]: https://craigbarnes.gitlab.io/dte/dterc.html#pipe-to
+[`quit`]: https://craigbarnes.gitlab.io/dte/dterc.html#quit
+[`replace`]: https://craigbarnes.gitlab.io/dte/dterc.html#replace
+[`save`]: https://craigbarnes.gitlab.io/dte/dterc.html#save
+[`show`]: https://craigbarnes.gitlab.io/dte/dterc.html#show
+[`tag`]: https://craigbarnes.gitlab.io/dte/dterc.html#tag
+[`wclose`]: https://craigbarnes.gitlab.io/dte/dterc.html#wclose
+[`wsplit`]: https://craigbarnes.gitlab.io/dte/dterc.html#wsplit
+
+[double-quoted]: https://craigbarnes.gitlab.io/dte/dterc.html#double-quoted-strings
+[`select-cursor-char`]: https://craigbarnes.gitlab.io/dte/dterc.html#select-cursor-char
+[`utf8-bom`]: https://craigbarnes.gitlab.io/dte/dterc.html#utf8-bom
+[statusline]: https://craigbarnes.gitlab.io/dte/dterc.html#statusline-left

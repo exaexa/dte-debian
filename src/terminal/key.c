@@ -1,8 +1,8 @@
 #include <string.h>
 #include "key.h"
-#include "../debug.h"
-#include "../util/ascii.h"
-#include "../util/utf8.h"
+#include "util/ascii.h"
+#include "util/utf8.h"
+#include "util/xsnprintf.h"
 
 // Note: these strings must be kept in sync with the enum in key.h
 static const char special_names[][8] = {
@@ -12,10 +12,11 @@ static const char special_names[][8] = {
     "down",
     "right",
     "left",
-    "pgdown",
+    "begin",
     "end",
-    "pgup",
+    "pgdown",
     "home",
+    "pgup",
     "F1",
     "F2",
     "F3",
@@ -29,9 +30,8 @@ static const char special_names[][8] = {
     "F11",
     "F12",
 };
-static_assert(ARRAY_COUNT(special_names) == NR_SPECIAL_KEYS);
 
-static size_t parse_modifiers(const char *const str, KeyCode *modifiersp)
+static size_t parse_modifiers(const char *str, KeyCode *modifiersp)
 {
     KeyCode modifiers = 0;
     size_t i = 0;
@@ -63,7 +63,7 @@ end:
     return i;
 }
 
-bool parse_key(KeyCode *key, const char *str)
+bool parse_key_string(KeyCode *key, const char *str)
 {
     KeyCode modifiers;
     if (str[0] == '^' && str[1] != '\0') {
@@ -82,7 +82,7 @@ bool parse_key(KeyCode *key, const char *str)
             switch (ch) {
             case 'i':
             case 'I':
-                ch = '\t';
+                ch = KEY_TAB;
                 modifiers = 0;
                 break;
             case 'm':
@@ -96,11 +96,11 @@ bool parse_key(KeyCode *key, const char *str)
         return true;
     }
     if (ascii_streq_icase(str, "space")) {
-        *key = modifiers | ' ';
+        *key = modifiers | KEY_SPACE;
         return true;
     }
     if (ascii_streq_icase(str, "tab")) {
-        *key = modifiers | '\t';
+        *key = modifiers | KEY_TAB;
         return true;
     }
     if (ascii_streq_icase(str, "enter")) {
@@ -108,6 +108,7 @@ bool parse_key(KeyCode *key, const char *str)
         return true;
     }
 
+    static_assert(ARRAY_COUNT(special_names) == NR_SPECIAL_KEYS);
     for (i = 0; i < NR_SPECIAL_KEYS; i++) {
         if (ascii_streq_icase(str, special_names[i])) {
             *key = modifiers | (KEY_SPECIAL_MIN + i);
@@ -120,7 +121,7 @@ bool parse_key(KeyCode *key, const char *str)
 
 #define COPY(dest, src) memcpy(dest, src, STRLEN(src) + 1)
 
-const char *key_to_string(KeyCode k)
+const char *keycode_to_string(KeyCode k)
 {
     static char buf[32];
     size_t i = 0;
@@ -142,31 +143,28 @@ const char *key_to_string(KeyCode k)
     const KeyCode key = keycode_get_key(k);
     if (u_is_unicode(key)) {
         switch (key) {
-        case '\t':
+        case KEY_TAB:
             COPY(ptr, "tab");
             break;
         case KEY_ENTER:
             COPY(ptr, "enter");
             break;
-        case ' ':
+        case KEY_SPACE:
             COPY(ptr, "space");
             break;
         default:
             u_set_char(buf, &i, key);
             buf[i] = '\0';
         }
-    } else if (key >= KEY_SPECIAL_MIN && key <= KEY_SPECIAL_MAX) {
-        static_assert(sizeof(special_names[0]) == 8);
-        memcpy (
-            ptr,
-            special_names[key - KEY_SPECIAL_MIN],
-            sizeof(special_names[0])
-        );
-    } else if (key == KEY_PASTE) {
-        COPY(ptr, "paste");
-    } else {
-        COPY(ptr, "???");
+        return buf;
     }
 
+    if (key >= KEY_SPECIAL_MIN && key <= KEY_SPECIAL_MAX) {
+        const char *name = special_names[key - KEY_SPECIAL_MIN];
+        memcpy(ptr, name, sizeof(special_names[0]));
+        return buf;
+    }
+
+    xsnprintf(buf, sizeof buf, "INVALID (0x%08X)", (unsigned int)k);
     return buf;
 }

@@ -4,10 +4,10 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <string.h>
+#include "debug.h"
 #include "macros.h"
 #include "string-view.h"
 #include "xmalloc.h"
-#include "../debug.h"
 
 NONNULL_ARGS
 static inline bool path_is_absolute(const char *path)
@@ -26,8 +26,8 @@ static inline const char *path_basename(const char *filename)
 NONNULL_ARGS
 static inline StringView path_slice_dirname(const char *filename)
 {
-    const char *const slash = strrchr(filename, '/');
-    if (slash == NULL) {
+    const char *slash = strrchr(filename, '/');
+    if (!slash) {
         return string_view(".", 1);
     }
     bool slash_is_root_dir = (slash == filename);
@@ -40,6 +40,21 @@ static inline char *path_dirname(const char *filename)
 {
     const StringView dir = path_slice_dirname(filename);
     return xstrcut(dir.data, dir.length);
+}
+
+XSTRDUP
+static inline char *path_join(const char *s1, const char *s2)
+{
+    size_t n1 = strlen(s1);
+    size_t n2 = strlen(s2);
+    char *path = xmalloc(n1 + n2 + 2);
+    memcpy(path, s1, n1);
+    char *ptr = path + n1;
+    if (n1 && n2 && s1[n1 - 1] != '/') {
+        *ptr++ = '/';
+    }
+    memcpy(ptr, s2, n2 + 1);
+    return path;
 }
 
 // If path is the root directory, return false. Otherwise, mutate
@@ -62,7 +77,7 @@ static inline bool path_parent(StringView *path)
         BUG_ON(data[length - 1] == '/');
     }
 
-    const char *slash = string_view_memrchr(path, '/');
+    const char *slash = strview_memrchr(path, '/');
     BUG_ON(slash == NULL);
 
     length = (size_t)(slash - data);

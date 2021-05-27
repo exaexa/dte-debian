@@ -1,54 +1,50 @@
-#include <stdio.h>
+#include <string.h>
 #include "screen.h"
-#include "cmdline.h"
 #include "editor.h"
 #include "frame.h"
-#include "search.h"
-#include "terminal/input.h"
-#include "terminal/no-op.h"
 #include "terminal/output.h"
 #include "terminal/terminal.h"
-#include "util/path.h"
-#include "util/utf8.h"
-#include "util/xsnprintf.h"
-#include "view.h"
+#include "terminal/winsize.h"
 
 void set_color(const TermColor *color)
 {
     TermColor tmp = *color;
-
     // NOTE: -2 (keep) is treated as -1 (default)
     if (tmp.fg < 0) {
-        tmp.fg = builtin_colors[BC_DEFAULT]->fg;
+        tmp.fg = builtin_colors[BC_DEFAULT].fg;
     }
     if (tmp.bg < 0) {
-        tmp.bg = builtin_colors[BC_DEFAULT]->bg;
+        tmp.bg = builtin_colors[BC_DEFAULT].bg;
+    }
+    if (same_color(&tmp, &obuf.color)) {
+        return;
     }
     terminal.set_color(&tmp);
+    obuf.color = tmp;
 }
 
-void set_builtin_color(enum builtin_color c)
+void set_builtin_color(BuiltinColorEnum c)
 {
-    set_color(builtin_colors[c]);
+    set_color(&builtin_colors[c]);
 }
 
 void update_term_title(const Buffer *b)
 {
-    if (!editor.options.set_window_title || terminal.set_title == no_op_s) {
+    if (
+        !editor.options.set_window_title
+        || terminal.control_codes.set_title_begin.length == 0
+    ) {
         return;
     }
 
     // FIXME: title must not contain control characters
-    char title[1024];
-    snprintf (
-        title,
-        sizeof title,
-        "%s %c dte",
-        buffer_filename(b),
-        buffer_modified(b) ? '+' : '-'
-    );
-
-    terminal.set_title(title);
+    const char *filename = buffer_filename(b);
+    terminal.put_control_code(terminal.control_codes.set_title_begin);
+    term_add_bytes(filename, strlen(filename));
+    term_add_byte(' ');
+    term_add_byte(buffer_modified(b) ? '+' : '-');
+    term_add_bytes(STRN(" dte"));
+    terminal.put_control_code(terminal.control_codes.set_title_end);
 }
 
 void mask_color(TermColor *color, const TermColor *over)
@@ -69,9 +65,8 @@ static void print_separator(Window *win)
     if (win->x + win->w == terminal.width) {
         return;
     }
-
-    for (int y = 0; y < win->h; y++) {
-        terminal.move_cursor(win->x + win->w, win->y + y);
+    for (int y = 0, h = win->h; y < h; y++) {
+        term_move_cursor(win->x + win->w, win->y + y);
         term_add_byte('|');
     }
 }
@@ -86,10 +81,9 @@ void update_line_numbers(Window *win, bool force)
 {
     const View *v = win->view;
     size_t lines = v->buffer->nl;
-    int x = win->x + vertical_tabbar_width(win);
+    int x = win->x;
 
     calculate_line_numbers(win);
-
     long first = v->vy + 1;
     long last = v->vy + win->edit_h;
     if (last > lines) {
@@ -107,20 +101,24 @@ void update_line_numbers(Window *win, bool force)
     win->line_numbers.first = first;
     win->line_numbers.last = last;
 
+    char buf[DECIMAL_STR_MAX(unsigned long) + 1];
+    size_t width = win->line_numbers.width;
+    BUG_ON(width > sizeof(buf));
+    BUG_ON(width < LINE_NUMBERS_MIN_WIDTH);
     term_output_reset(win->x, win->w, 0);
     set_builtin_color(BC_LINENUMBER);
-    for (int i = 0; i < win->edit_h; i++) {
-        long line = v->vy + i + 1;
-        int w = win->line_numbers.width - 1;
-        char buf[32];
 
-        if (line > lines) {
-            xsnprintf(buf, sizeof(buf), "%*s ", w, "");
-        } else {
-            xsnprintf(buf, sizeof(buf), "%*ld ", w, line);
+    for (int y = 0, h = win->edit_h, edit_y = win->edit_y; y < h; y++) {
+        unsigned long line = v->vy + y + 1;
+        memset(buf, ' ', width);
+        if (line <= lines) {
+            size_t i = width - 2;
+            do {
+                buf[i--] = (line % 10) + '0';
+            } while (line /= 10);
         }
-        terminal.move_cursor(x, win->edit_y + i);
-        term_add_bytes(buf, win->line_numbers.width);
+        term_move_cursor(x, edit_y + y);
+        term_add_bytes(buf, width);
     }
 }
 

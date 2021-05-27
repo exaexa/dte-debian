@@ -1,279 +1,378 @@
-.TH DTE 1 "November 2017"
+.TH DTE 1 "February 2021"
 .nh
 .ad l
 .
 .SH NAME
-.
-dte \- A small and flexible text editor
-.
+dte \- A small, configurable text editor
 .SH SYNOPSIS
-.
-.B dte
-.RB [ \-hBHKRV ]
+\fBdte\fR
+[\fB\-HR\fR]
 [\fB\-c\fR \fIcommand\fR]
 [\fB\-t\fR \fIctag\fR]
 [\fB\-r\fR \fIrcfile\fR]
-[\fB\-b\fR \fIrcname\fR]
-.RI [[+ line ] " file" ]...
-.
+[[\fB+\fRline] \fIfile\fR]...
+.br
+\fBdte\fR [\fB\-h\fR|\fB\-B\fR|\fB\-K\fR|\fB\-V\fR|\fB\-b\fR \fIrcname\fR|\fB\-s\fR \fIfile\fR]
+.P
 .SH OPTIONS
-.
 .TP
-.BI \-c " command"
+\fB\-c\fR \fIcommand\fR
 Run \fIcommand\fR, after reading the rc file and opening any \fIfile\fR
 arguments. See \fBdterc\fR(5) for available commands.
-.
+.PP
 .TP
-.BI \-t " ctag"
+\fB\-t\fR \fIctag\fR
 Jump to source location of \fIctag\fR. Requires \fBtags\fR file generated
 by \fBctags\fR(1).
-.
+.PP
 .TP
-.BI \-r " rcfile"
+\fB\-r\fR \fIrcfile\fR
 Read configuration from \fIrcfile\fR instead of \fB~/.dte/rc\fR.
-.
+.PP
 .TP
-.BI \-s " file"
+\fB\-s\fR \fIfile\fR
 Load \fIfile\fR as a \fBdte\-syntax\fR(5) file and exit. Any errors
 encountered are printed to \fBstderr\fR(3) and the exit status is
 set appropriately.
-.
+.PP
 .TP
-.BI \-b " rcname"
+\fB\-b\fR \fIrcname\fR
 Dump the contents of the built\-in rc or syntax file named \fIrcname\fR
 and exit.
-.
+.PP
 .TP
-.B \-B
+\fB\-B\fR
 Print a list of all built\-in config names that can be used with the
 \fB\-b\fR option and exit.
-.
+.PP
 .TP
-.B \-H
+\fB\-H\fR
 Don't load history files at startup or save history files on exit (see
 \fBFILES\fR section below). History features will work as usual but will
-be in-memory only and not persisted to the filesystem.
-.
+be in\-memory only and not persisted to the filesystem.
+.PP
 .TP
-.B \-R
+\fB\-R\fR
 Don't read the rc file.
-.
+.PP
 .TP
-.B \-K
+\fB\-K\fR
 Start in a special mode that continuously reads input and prints the
-name and numeric code of each pressed key.
-.
+symbolic name of each pressed key.
+.PP
 .TP
-.B \-h
+\fB\-h\fR
 Display the help summary and exit.
-.
+.PP
 .TP
-.B \-V
+\fB\-V\fR
 Display the version number and exit.
-.
-.SH BASIC USAGE
-.
-Here are some of the default key bindings. \fBM\-x\fR is Alt+x,
-\fB^V\fR (or \fBC\-V\fR) is Ctrl+v and \fBS\-left\fR is Shift+left.
-.
-.TP
-.BR S\-up ", " S\-down ", " S\-left ", " S\-right
-Move cursor and select characters
-.
-.TP
-.BR C\-S\-left ", " C\-S\-right
-Move cursor and select whole words
-.
-.TP
-.BR C\-S\-up ", " C\-S\-down
-Move cursor and select whole lines
-.
-.TP
-.B ^C
-Copy current line or selection
-.
-.TP
-.B ^X
-Cut current line or selection
-.
-.TP
-.B ^V
-Paste
-.
-.TP
-.B ^Z
-Undo
-.
-.TP
-.B ^Y
-Redo
-.
-.TP
-.B M\-x
-Enter command mode
-.
-.TP
-.B ^F
-Enter search mode
-.
-.TP
-.B F3
-Search next
-.
-.TP
-.B F4
-Search previous
-.
-.TP
-.B ^T
-Open new tab
-.
-.TP
-.BI M\- N
-Activate \fIN\fRth tab
-.
-.TP
-.B ^W
-Close tab
-.
-.TP
-.B ^S
-Save file
-.
-.TP
-.B ^Q
-Quit
-.
-.SH COMMAND MODE
-.
-Command mode allows you to run various editor commands by using a
-language similar to Unix shell. The \fBnext\fR and \fBprev\fR commands
-switch to the next/previous file. The \fBopen\fR, \fBsave\fR and
-\fBquit\fR commands should be self\-explanatory. For a full list of
-available commands, see \fBdterc\fR(5).
+.PP
+.SH KEY BINDINGS
+There are 3 editor modes, each having a different set of key bindings.
+Normal mode bindings can be customized by using the \fBbind\fR command
+(see \fBdterc\fR(5)) or displayed using the \fBshow bind\fR command.
 .P
-The default key bindings for command mode are:
-.
+The key bindings listed below are in the same format as accepted by
+the \fBbind\fR command. In particular, key combinations are represented
+as follows:
+.P
+\(bu \fBM\-x\fR is Alt+x
+.br
+\(bu \fBC\-V\fR (or \fB^V\fR) is Ctrl+v
+.br
+\(bu \fBS\-left\fR is Shift+left
+.br
+\(bu \fBC\-M\-S\-left\fR is Ctrl+Alt+Shift+left
+.br
+.P
+.SS Normal Mode
+Normal mode is the mode the editor starts in. Pressing basic keys
+(i.e. without modifiers) simply inserts text into the buffer. There
+are also various key combinations bound by default:
+.P
 .TP
-.BR up ", " down
+\fBS\-up\fR, \fBS\-down\fR, \fBS\-left\fR, \fBS\-right\fR
+Move cursor and select characters
+.PP
+.TP
+\fBC\-S\-left\fR, \fBC\-S\-right\fR
+Move cursor and select whole words
+.PP
+.TP
+\fBC\-S\-up\fR, \fBC\-S\-down\fR
+Move cursor and select whole lines
+.PP
+.TP
+\fB^C\fR
+Copy current line or selection
+.PP
+.TP
+\fB^X\fR
+Cut current line or selection
+.PP
+.TP
+\fB^V\fR
+Paste
+.PP
+.TP
+\fB^Z\fR
+Undo
+.PP
+.TP
+\fB^Y\fR
+Redo
+.PP
+.TP
+\fBM\-x\fR
+Enter command mode
+.PP
+.TP
+\fB^F\fR
+Enter search mode
+.PP
+.TP
+\fBF3\fR
+Search next
+.PP
+.TP
+\fBF4\fR
+Search previous
+.PP
+.TP
+\fB^T\fR
+Open new buffer
+.PP
+.TP
+\fBM\-1\fR, \fBM\-2\fR ... \fBM\-9\fR
+Switch to buffer 1 (or 2, 3, 4, etc.)
+.PP
+.TP
+\fB^W\fR
+Close current buffer
+.PP
+.TP
+\fB^S\fR
+Save
+.PP
+.TP
+\fB^Q\fR
+Quit
+.PP
+.SS Command Mode
+Command mode allows running various editor commands using a language
+similar to Unix shell. The \fBnext\fR and \fBprev\fR commands switch
+to the next/previous file. The \fBopen\fR, \fBsave\fR and \fBquit\fR
+commands should be self\-explanatory. For a full list of available
+commands, see \fBdterc\fR(5).
+.P
+The key bindings for command mode are:
+.P
+.TP
+\fBup\fR, \fBdown\fR
 Browse previous command history.
-.
+.PP
 .TP
-.B tab
+\fBtab\fR
 Auto\-complete current command or argument
-.
+.PP
 .TP
-.B ^A
+\fB^A\fR, \fBhome\fR
 Go to beginning of command line
-.
+.PP
 .TP
-.B ^B
+\fB^B\fR, \fBleft\fR
 Move left
-.
+.PP
 .TP
-.B ^C
+\fB^C\fR, \fB^G\fR, \fBEsc\fR
 Exit command mode
-.
+.PP
 .TP
-.B ^D
+\fB^D\fR, \fBdelete\fR
 Delete
-.
+.PP
 .TP
-.B ^E
+\fB^E\fR, \fBend\fR
 Go to end of command line
-.
+.PP
 .TP
-.B ^F
+\fB^F\fR, \fBright\fR
 Move right
-.
+.PP
 .TP
-.B ^K
+\fB^K\fR, \fBM\-delete\fR
 Delete to end of command line
-.
+.PP
 .TP
-.B ^U
+\fB^U\fR
 Delete to beginning of command line
-.
+.PP
 .TP
-.B ^W
+\fB^W\fR, \fBM\-C\-?\fR (Alt+Backspace)
 Erase word
-.
-.TP
-.B Esc
-Exit command mode
-.
-.SH SEARCH MODE
-.
-Search mode allows you to enter an extended regular expression to search
-in the current buffer.
+.PP
+.SS Search Mode
+Search mode allows entering a regular expression to search in the
+current buffer.
 .P
 The key bindings for search mode are mostly the same as in command mode,
 plus these additional keys:
-.
+.P
 .TP
-.B M\-c
+\fBM\-c\fR
 Toggle case sensitive search option.
-.
+.PP
 .TP
-.B M\-r
+\fBM\-r\fR
 Reverse search direction.
-.
+.PP
+.TP
+\fBEnter\fR
+Perform regex search.
+.PP
+.TP
+\fBM\-Enter\fR
+Perform plain\-text search (escapes the regex).
+.PP
 .SH ENVIRONMENT
-.
+The following environment variables are inspected at startup:
+.P
 .TP
-.B DTE_HOME
+\fBDTE_HOME\fR
 User configuration directory. Defaults to \fB$HOME/.dte\fR if not set.
-.
+.PP
 .TP
-.B DTE_FORCE_TERMINFO
-Force \fBdte\fR to use \fBterminfo\fR(5) database, even for terminals
-with built-in support. Enabled if set.
-.
+\fBHOME\fR
+User home directory. Used when expanding \fB~/\fR in filenames and also
+to determine the default value for \fBDTE_HOME\fR.
+.PP
 .TP
-.B TERM
-Identifier used to determine which \fBterminfo\fR(5) entry or built-in
-terminal support to use.
-.
+\fBXDG_RUNTIME_DIR\fR
+Directory used to store lock files. Defaults to \fB$DTE_HOME\fR if not set.
+.PP
+.TP
+\fBTERM\fR
+Terminal identifier. Used to determine which terminal capabilities are
+supported.
+.PP
+.TP
+\fBCOLORTERM\fR
+Enables support for 24\-bit terminal colors, if set to \fBtruecolor\fR.
+.PP
 .SH FILES
-.
 .TP
-.B $DTE_HOME/rc
-Your personal configuration file. See \fBdterc\fR(5) for a full list of
+\fB$DTE_HOME/rc\fR
+User configuration file. See \fBdterc\fR(5) for a full list of
 available commands and options or run "dte \-b rc" to see the built\-in,
 default config.
-.
+.PP
 .TP
-.B $DTE_HOME/syntax/*
-Your personal syntax files. These override the syntax files that come
-with the program. See \fBdte\-syntax\fR(5) for more information or run
+\fB$DTE_HOME/syntax/*\fR
+User syntax files. These override the syntax files that come with
+the program. See \fBdte\-syntax\fR(5) for more information or run
 "dte \-b syntax/dte" for a basic example.
-.
+.PP
 .TP
-.B $DTE_HOME/file\-locks
-Records open files to protect you from accidentally editing files opened
-in another process. Used only if the \fBlock\-files\fR option is
-enabled.
-.
-.TP
-.B $DTE_HOME/file\-history
+\fB$DTE_HOME/file\-history\fR
 History of edited files and cursor positions. Used only if the
 \fBfile\-history\fR option is enabled.
-.
+.PP
 .TP
-.B $DTE_HOME/command\-history
+\fB$DTE_HOME/command\-history\fR
 History of \fBdterc\fR(5) commands used while in command mode.
-.
+.PP
 .TP
-.B $DTE_HOME/search\-history
+\fB$DTE_HOME/search\-history\fR
 History of search patterns used while in search mode.
+.PP
+.TP
+\fB$XDG_RUNTIME_DIR/dte\-locks\fR
+List of files currently open in a dte process (if the \fBlock\-files\fR
+option is enabled).
+.PP
+.SH EXIT STATUS
+.TP
+\fB0\fR
+Program exited normally.
+.PP
+.TP
+\fB64\fR
+Command\-line usage error (see "synopsis" above).
+.PP
+.TP
+\fB65\fR
+Input data error (e.g. data specified by the \fB\-s\fR option).
+.PP
+.TP
+\fB71\fR
+Operating system error.
+.PP
+.TP
+\fB74\fR
+Input/output error.
+.PP
+Note: the above exit codes are set by the editor itself, with values in
+accordance with \fBsysexits\fR(3). The exit code may also be set to values
+in the range \fB0\fR..\fB125\fR by the \fBquit\fR command.
+.P
+.SH EXAMPLES
+Open \fB/etc/passwd\fR with cursor on line 3:
+.P
+.IP
+.nf
+\f[C]
+dte\ +3\ /etc/passwd
+\f[]
+.fi
+.PP
+Run several commands at startup:
+.P
+.IP
+.nf
+\f[C]
+dte\ \-c\ 'set\ filetype\ sh;\ insert\ \-m\ "#!/bin/sh\\n"'
+\f[]
+.fi
+.PP
+Read a buffer from standard input:
+.P
+.IP
+.nf
+\f[C]
+echo\ 'Hello,\ World!'\ |\ dte
+\f[]
+.fi
+.PP
+Interactively filter a shell pipeline:
+.P
+.IP
+.nf
+\f[C]
+echo\ 'A\ B\ C\ D\ E\ F'\ |\ tr\ '\ '\ '\\n'\ |\ dte\ |\ tac
+\f[]
+.fi
+.PP
+.SH NOTES
+It's advised to NOT run shell pipelines with multiple interactive
+programs that try to control the terminal. For example:
+.P
+.IP
+.nf
+\f[C]
+echo\ 'Don't\ run\ this\ example!!'\ |\ dte\ |\ less
+\f[]
+.fi
+.PP
+A shell will run these processes in parallel and both \fBdte\fR(1) and \fBless\fR
+will then try to control the terminal at the same time; clobbering the
+input/output of both.
+.P
 .
 .SH SEE ALSO
-.
-.BR dterc (5),
-.BR dte\-syntax (5)
-.
+\fBdterc\fR(5),
+\fBdte\-syntax\fR(5)
 .SH AUTHORS
-.
-Craig Barnes <cr@igbarn.es>
+Craig Barnes
 .br
-Timo Hirvonen <tihirvon@gmail.com>
+Timo Hirvonen

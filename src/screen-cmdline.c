@@ -1,21 +1,20 @@
 #include "screen.h"
-#include "debug.h"
 #include "editor.h"
 #include "error.h"
 #include "search.h"
 #include "terminal/output.h"
 #include "terminal/terminal.h"
+#include "util/debug.h"
 #include "util/utf8.h"
 
 static void print_message(const char *msg, bool is_error)
 {
-    enum builtin_color c = BC_COMMANDLINE;
+    BuiltinColorEnum c = BC_COMMANDLINE;
     if (msg[0]) {
         c = is_error ? BC_ERRORMSG : BC_INFOMSG;
     }
     set_builtin_color(c);
-    size_t i = 0;
-    while (msg[i]) {
+    for (size_t i = 0; msg[i];) {
         CodePoint u = u_get_char(msg, i + 4, &i);
         if (!term_put_char(u)) {
             break;
@@ -26,12 +25,12 @@ static void print_message(const char *msg, bool is_error)
 void show_message(const char *msg, bool is_error)
 {
     term_output_reset(0, terminal.width, 0);
-    terminal.move_cursor(0, terminal.height - 1);
+    term_move_cursor(0, terminal.height - 1);
     print_message(msg, is_error);
     term_clear_eol();
 }
 
-size_t print_command(char prefix)
+static size_t print_command(char prefix)
 {
     CodePoint u;
 
@@ -70,7 +69,7 @@ void update_command_line(void)
 {
     char prefix = ':';
     term_output_reset(0, terminal.width, 0);
-    terminal.move_cursor(0, terminal.height - 1);
+    term_move_cursor(0, terminal.height - 1);
     switch (editor.input_mode) {
     case INPUT_NORMAL: {
         bool msg_is_error;
@@ -79,13 +78,13 @@ void update_command_line(void)
         break;
     }
     case INPUT_SEARCH:
-        prefix = current_search_direction() == SEARCH_FWD ? '/' : '?';
+        prefix = get_search_direction() == SEARCH_FWD ? '/' : '?';
         // fallthrough
     case INPUT_COMMAND:
         editor.cmdline_x = print_command(prefix);
         break;
-    case INPUT_GIT_OPEN:
-        break;
+    default:
+        BUG("unhandled input mode");
     }
     term_clear_eol();
 }

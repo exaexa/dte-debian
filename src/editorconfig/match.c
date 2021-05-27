@@ -1,11 +1,10 @@
 #include <regex.h>
-#include <stddef.h>
 #include <stdlib.h>
-#include <string.h>
 #include "match.h"
-#include "../debug.h"
-#include "../util/str-util.h"
-#include "../util/string.h"
+#include "util/ascii.h"
+#include "util/debug.h"
+#include "util/str-util.h"
+#include "util/string.h"
 
 static size_t get_last_paired_brace_index(const char *str, size_t len)
 {
@@ -45,7 +44,7 @@ static size_t handle_bracket_expression(const char *pat, size_t len, String *buf
 {
     BUG_ON(len == 0);
     if (len == 1) {
-        string_add_literal(buf, "\\[");
+        string_append_literal(buf, "\\[");
         return 0;
     }
 
@@ -63,20 +62,20 @@ static size_t handle_bracket_expression(const char *pat, size_t len, String *buf
     }
 
     if (!closed) {
-        string_add_literal(buf, "\\[");
+        string_append_literal(buf, "\\[");
         return 0;
     }
 
     // TODO: interpret characters according to editorconfig instead
-    // of just copying the bracket expression to be interpretted as
+    // of just copying the bracket expression to be interpreted as
     // regex
 
-    string_add_byte(buf, '[');
+    string_append_byte(buf, '[');
     if (pat[0] == '!') {
-        string_add_byte(buf, '^');
-        string_add_buf(buf, pat + 1, i - 1);
+        string_append_byte(buf, '^');
+        string_append_buf(buf, pat + 1, i - 1);
     } else {
-        string_add_buf(buf, pat, i);
+        string_append_buf(buf, pat, i);
     }
     return i;
 }
@@ -94,7 +93,7 @@ static size_t skip_empty_alternates(const char *str, size_t len)
 
 bool ec_pattern_match(const char *pattern, size_t pattern_len, const char *path)
 {
-    String buf = STRING_INIT;
+    String buf = string_new(pattern_len * 2);
     size_t brace_level = 0;
     size_t last_paired_brace_index = get_last_paired_brace_index(pattern, pattern_len);
     bool brace_group_has_empty_alternate[32];
@@ -107,22 +106,22 @@ bool ec_pattern_match(const char *pattern, size_t pattern_len, const char *path)
             if (i + 1 < pattern_len) {
                 ch = pattern[++i];
                 if (is_regex_special_char(ch)) {
-                    string_add_byte(&buf, '\\');
+                    string_append_byte(&buf, '\\');
                 }
-                string_add_byte(&buf, ch);
+                string_append_byte(&buf, ch);
             } else {
-                string_add_literal(&buf, "\\\\");
+                string_append_literal(&buf, "\\\\");
             }
             break;
         case '?':
-            string_add_literal(&buf, "[^/]");
+            string_append_literal(&buf, "[^/]");
             break;
         case '*':
             if (i + 1 < pattern_len && pattern[i + 1] == '*') {
-                string_add_literal(&buf, ".*");
+                string_append_literal(&buf, ".*");
                 i++;
             } else {
-                string_add_literal(&buf, "[^/]*");
+                string_append_literal(&buf, "[^/]*");
             }
             break;
         case '[':
@@ -133,7 +132,7 @@ bool ec_pattern_match(const char *pattern, size_t pattern_len, const char *path)
             break;
         case '{': {
             if (i >= last_paired_brace_index) {
-                string_add_literal(&buf, "\\{");
+                string_append_literal(&buf, "\\{");
                 break;
             }
             brace_level++;
@@ -148,7 +147,7 @@ bool ec_pattern_match(const char *pattern, size_t pattern_len, const char *path)
                 i++;
                 brace_level--;
             } else {
-                string_add_byte(&buf, '(');
+                string_append_byte(&buf, '(');
             }
             break;
         }
@@ -156,9 +155,9 @@ bool ec_pattern_match(const char *pattern, size_t pattern_len, const char *path)
             if (i > last_paired_brace_index || brace_level == 0) {
                 goto add_byte;
             }
-            string_add_byte(&buf, ')');
+            string_append_byte(&buf, ')');
             if (brace_group_has_empty_alternate[brace_level]) {
-                string_add_byte(&buf, '?');
+                string_append_byte(&buf, '?');
             }
             brace_group_has_empty_alternate[brace_level] = false;
             brace_level--;
@@ -175,13 +174,13 @@ bool ec_pattern_match(const char *pattern, size_t pattern_len, const char *path)
             if (i + 1 < pattern_len && pattern[i + 1] == '}') {
                 brace_group_has_empty_alternate[brace_level] = true;
             } else {
-                string_add_byte(&buf, '|');
+                string_append_byte(&buf, '|');
             }
             break;
         }
         case '/':
-            if (i + 3 < pattern_len && memcmp(pattern + i, "/**/", 4) == 0) {
-                string_add_literal(&buf, "(/|/.*/)");
+            if (i + 3 < pattern_len && mem_equal(pattern + i, "/**/", 4)) {
+                string_append_literal(&buf, "(/|/.*/)");
                 i += 3;
                 break;
             }
@@ -191,15 +190,15 @@ bool ec_pattern_match(const char *pattern, size_t pattern_len, const char *path)
         case ')':
         case '|':
         case '+':
-            string_add_byte(&buf, '\\');
+            string_append_byte(&buf, '\\');
             // Fallthrough
         default:
         add_byte:
-            string_add_byte(&buf, ch);
+            string_append_byte(&buf, ch);
         }
     }
 
-    string_add_byte(&buf, '$');
+    string_append_byte(&buf, '$');
     char *regex_pattern = string_steal_cstring(&buf);
 
     regex_t re;

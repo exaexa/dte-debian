@@ -1,10 +1,12 @@
 #include <errno.h>
+#include <limits.h>
+#include <stdarg.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include "checked-arith.h"
 #include "xmalloc.h"
-#include "ascii.h"
-#include "../debug.h"
+#include "checked-arith.h"
+#include "debug.h"
 
 static void *check_alloc(void *alloc)
 {
@@ -55,51 +57,34 @@ char *xstrdup(const char *str)
     return check_alloc(strdup(str));
 }
 
-char *xstrndup(const char *str, size_t n)
-{
-    return check_alloc(strndup(str, n));
-}
-
-char *xstrdup_toupper(const char *str)
-{
-    const size_t len = strlen(str);
-    char *upper_str = xmalloc(len + 1);
-    for (size_t i = 0; i < len; i++) {
-        upper_str[i] = ascii_toupper(str[i]);
-    }
-    upper_str[len] = '\0';
-    return upper_str;
-}
-
-char *xstrcut(const char *str, size_t size)
-{
-    char *s = xmalloc(size + 1);
-    memcpy(s, str, size);
-    s[size] = '\0';
-    return s;
-}
-
-VPRINTF(2)
-static int xvasprintf_(char **strp, const char *format, va_list ap)
+VPRINTF(1)
+static char *xvasprintf(const char *format, va_list ap)
 {
     va_list ap2;
     va_copy(ap2, ap);
     int n = vsnprintf(NULL, 0, format, ap2);
-    if (unlikely(n < 0)) {
-        fatal_error("vsnprintf", EILSEQ);
-    }
     va_end(ap2);
-    *strp = xmalloc(n + 1);
-    int m = vsnprintf(*strp, n + 1, format, ap);
-    BUG_ON(m != n);
-    return n;
-}
+    if (unlikely(n < 0)) {
+        goto error;
+    } else if (unlikely(n >= INT_MAX)) {
+        errno = EOVERFLOW;
+        goto error;
+    }
 
-char *xvasprintf(const char *format, va_list ap)
-{
-    char *str;
-    xvasprintf_(&str, format, ap);
+    char *str = malloc(n + 1);
+    if (unlikely(!str)) {
+        goto error;
+    }
+
+    int m = vsnprintf(str, n + 1, format, ap);
+    if (unlikely(m < 0)) {
+        goto error;
+    }
+    BUG_ON(m != n);
     return str;
+
+error:
+    fatal_error(__func__, errno);
 }
 
 char *xasprintf(const char *format, ...)

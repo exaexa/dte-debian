@@ -2,16 +2,32 @@
 #define HISTORY_H
 
 #include <stdbool.h>
-#include <sys/types.h>
-#include "util/ptr-array.h"
+#include <stddef.h>
+#include "util/hashmap.h"
 
-#define search_history_size 100
-#define command_history_size 500
+typedef struct HistoryEntry {
+    struct HistoryEntry *next;
+    struct HistoryEntry *prev;
+    char *text;
+} HistoryEntry;
 
-void history_add(PointerArray *history, const char *text, size_t max_entries);
-bool history_search_forward(const PointerArray *history, ssize_t *pos, const char *text);
-bool history_search_backward(const PointerArray *history, ssize_t *pos, const char *text);
-void history_load(PointerArray *history, const char *filename, size_t max_entries);
-void history_save(const PointerArray *history, const char *filename);
+// This is a HashMap with a doubly-linked list running through the
+// entries, in a way similar to the Java LinkedHashMap class. The
+// HashMap allows duplicates to be found and re-inserted at the end
+// of the list in O(1) time and the doubly-linked entries allow
+// ordered traversal.
+typedef struct {
+    const char *filename;
+    HashMap entries;
+    HistoryEntry *first;
+    HistoryEntry *last;
+    size_t max_entries;
+} History;
+
+void history_add(History *history, const char *text);
+bool history_search_forward(const History *history, const HistoryEntry **pos, const char *text);
+bool history_search_backward(const History *history, const HistoryEntry **pos, const char *text);
+void history_load(History *history, const char *filename);
+void history_save(const History *history);
 
 #endif

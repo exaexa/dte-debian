@@ -1,137 +1,126 @@
-#include <langinfo.h>
 #include <limits.h>
-#include <locale.h>
-#include <string.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <sys/stat.h>
 #include "test.h"
-#include "../src/bind.h"
-#include "../src/buffer.h"
-#include "../src/command.h"
-#include "../src/editor.h"
-#include "../src/regexp.h"
-#include "../src/util/path.h"
-#include "../src/util/xmalloc.h"
+#include "editor.h"
+#include "syntax/syntax.h"
+#include "util/path.h"
 
-void test_cmdline(void);
-void test_command(void);
-void test_editorconfig(void);
-void test_encoding(void);
-void test_filetype(void);
-void test_syntax(void);
-void test_terminal(void);
-void test_util(void);
 void init_headless_mode(void);
-void test_exec_config(void);
-
-static void test_relative_filename(void)
-{
-    static const struct rel_test {
-        const char *cwd, *path, *result;
-    } tests[] = { // NOTE: at most 2 ".." components allowed in relative name
-        { "/", "/", "/" },
-        { "/", "/file", "file" },
-        { "/a/b/c/d", "/a/b/file", "../../file" },
-        { "/a/b/c/d/e", "/a/b/file", "/a/b/file" },
-        { "/a/foobar", "/a/foo/file", "../foo/file" },
-    };
-    FOR_EACH_I(i, tests) {
-        const struct rel_test *t = &tests[i];
-        char *result = relative_filename(t->path, t->cwd);
-        IEXPECT_STREQ(t->result, result);
-        free(result);
-    }
-}
-
-static void test_detect_indent(void)
-{
-    EXPECT_FALSE(editor.options.detect_indent);
-    EXPECT_FALSE(editor.options.expand_tab);
-    EXPECT_EQ(editor.options.indent_width, 8);
-
-    handle_command (
-        commands,
-        "option -r '/test/data/detect-indent\\.ini$' detect-indent 2,4,8;"
-        "open test/data/detect-indent.ini"
-    );
-
-    EXPECT_EQ(buffer->options.detect_indent, 1 << 1 | 1 << 3 | 1 << 7);
-    EXPECT_TRUE(buffer->options.expand_tab);
-    EXPECT_EQ(buffer->options.indent_width, 2);
-
-    handle_command(commands, "close");
-}
-
-static void test_handle_binding(void)
-{
-    handle_command(commands, "bind ^A 'insert zzz'; open");
-
-    // Bound command should be cached
-    const KeyBinding *binding = lookup_binding(MOD_CTRL | 'A');
-    ASSERT_NONNULL(binding);
-    EXPECT_PTREQ(binding->cmd, find_command(commands, "insert"));
-    EXPECT_EQ(binding->a.nr_flags, 0);
-    EXPECT_EQ(binding->a.nr_args, 1);
-    EXPECT_STREQ(binding->a.args[0], "zzz");
-    EXPECT_NULL(binding->a.args[1]);
-
-    handle_binding(MOD_CTRL | 'A');
-    const Block *block = BLOCK(buffer->blocks.next);
-    ASSERT_NONNULL(block);
-    ASSERT_EQ(block->size, 4);
-    EXPECT_EQ(block->nl, 1);
-    EXPECT_EQ(memcmp(block->data, "zzz\n", 4), 0);
-    EXPECT_TRUE(undo());
-    EXPECT_EQ(block->size, 0);
-    EXPECT_EQ(block->nl, 0);
-    EXPECT_FALSE(undo());
-    handle_command(commands, "close");
-}
-
-static void test_regexp_match(void)
-{
-    static const char buf[] = "fn(a);\n";
-
-    PointerArray a = PTR_ARRAY_INIT;
-    bool matched = regexp_match("^[a-z]+\\(", buf, sizeof(buf) - 1, &a);
-    EXPECT_TRUE(matched);
-    EXPECT_EQ(a.count, 1);
-    EXPECT_STREQ(a.ptrs[0], "fn(");
-    ptr_array_free(&a);
-
-    ptr_array_init(&a, 0);
-    matched = regexp_match("^[a-z]+\\([0-9]", buf, sizeof(buf) - 1, &a);
-    EXPECT_FALSE(matched);
-    EXPECT_EQ(a.count, 0);
-    ptr_array_free(&a);
-}
+extern const TestGroup bind_tests;
+extern const TestGroup cmdline_tests;
+extern const TestGroup command_tests;
+extern const TestGroup config_tests;
+extern const TestGroup dump_tests;
+extern const TestGroup editorconfig_tests;
+extern const TestGroup encoding_tests;
+extern const TestGroup filetype_tests;
+extern const TestGroup history_tests;
+extern const TestGroup option_tests;
+extern const TestGroup syntax_tests;
+extern const TestGroup terminal_tests;
+extern const TestGroup util_tests;
 
 static void test_posix_sanity(void)
 {
     // This is not guaranteed by ISO C99, but it is required by POSIX
     // and is relied upon by this codebase:
     ASSERT_EQ(CHAR_BIT, 8);
+    ASSERT_TRUE(sizeof(int) >= 4);
+
+    IGNORE_WARNING("-Wformat-truncation")
+
+    // Some snprintf(3) implementations historically returned -1 in case of
+    // truncation. C99 and POSIX 2001 both require that it return the full
+    // size of the formatted string, as if there had been enough space.
+    char buf[8] = "........";
+    ASSERT_EQ(snprintf(buf, 8, "0123456789"), 10);
+    ASSERT_EQ(buf[7], '\0');
+    EXPECT_STREQ(buf, "0123456");
+
+    // C99 and POSIX 2001 also require the same behavior as above when the
+    // size argument is 0 (and allow the buffer argument to be NULL).
+    ASSERT_EQ(snprintf(NULL, 0, "987654321"), 9);
+
+    UNIGNORE_WARNINGS
 }
+
+static void test_init(void)
+{
+    char *home = path_absolute("build/test/HOME");
+    char *dte_home = path_absolute("build/test/DTE_HOME");
+    ASSERT_NONNULL(home);
+    ASSERT_NONNULL(dte_home);
+
+    ASSERT_TRUE(mkdir(home, 0755) == 0 || errno == EEXIST);
+    ASSERT_TRUE(mkdir(dte_home, 0755) == 0 || errno == EEXIST);
+
+    ASSERT_EQ(setenv("HOME", home, true), 0);
+    ASSERT_EQ(setenv("DTE_HOME", dte_home, true), 0);
+    ASSERT_EQ(setenv("XDG_RUNTIME_DIR", dte_home, true), 0);
+
+    free(home);
+    free(dte_home);
+
+    ASSERT_EQ(unsetenv("TERM"), 0);
+    ASSERT_EQ(unsetenv("COLORTERM"), 0);
+
+    init_editor_state();
+
+    const char *ver = getenv("DTE_VERSION");
+    EXPECT_NONNULL(ver);
+    EXPECT_STREQ(ver, editor.version);
+}
+
+static void run_tests(const TestGroup *g)
+{
+    ASSERT_TRUE(g->nr_tests != 0);
+    ASSERT_NONNULL(g->tests);
+
+    for (const TestEntry *t = g->tests, *end = t + g->nr_tests; t < end; t++) {
+        ASSERT_NONNULL(t->func);
+        ASSERT_NONNULL(t->name);
+        unsigned int prev_failed = failed;
+        unsigned int prev_passed = passed;
+        t->func();
+        unsigned int f = failed - prev_failed;
+        unsigned int p = passed - prev_passed;
+        fprintf(stderr, "   CHECK  %-35s  %4u passed", t->name, p);
+        if (unlikely(f > 0)) {
+            fprintf(stderr, " %4u FAILED", f);
+        }
+        fputc('\n', stderr);
+    }
+}
+
+static const TestEntry tests[] = {
+    TEST(test_posix_sanity),
+    TEST(test_init),
+};
+
+const TestGroup init_tests = TEST_GROUP(tests);
 
 int main(void)
 {
-    test_posix_sanity();
-    init_editor_state();
-
-    test_relative_filename();
-
-    test_command();
-    test_editorconfig();
-    test_encoding();
-    test_filetype();
-    test_util();
-    test_terminal();
-    test_cmdline();
-    test_regexp_match();
-    test_syntax();
+    run_tests(&init_tests);
+    run_tests(&command_tests);
+    run_tests(&option_tests);
+    run_tests(&editorconfig_tests);
+    run_tests(&encoding_tests);
+    run_tests(&filetype_tests);
+    run_tests(&util_tests);
+    run_tests(&terminal_tests);
+    run_tests(&cmdline_tests);
+    run_tests(&history_tests);
 
     init_headless_mode();
-    test_exec_config();
-    test_detect_indent();
-    test_handle_binding();
+    run_tests(&config_tests);
+    run_tests(&bind_tests);
+    run_tests(&syntax_tests);
+    run_tests(&dump_tests);
+    free_syntaxes();
 
+    fprintf(stderr, "\n   TOTAL  %u passed, %u failed\n\n", passed, failed);
     return failed ? 1 : 0;
 }
