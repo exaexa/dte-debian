@@ -1,912 +1,394 @@
+#include <string.h>
 #include "edit.h"
+#include "block.h"
 #include "buffer.h"
-#include "change.h"
-#include "indent.h"
-#include "move.h"
-#include "regexp.h"
-#include "selection.h"
+#include "syntax/highlight.h"
 #include "util/debug.h"
-#include "util/string.h"
-#include "util/string-view.h"
-#include "util/utf8.h"
+#include "util/list.h"
 #include "util/xmalloc.h"
-#include "view.h"
 
-typedef struct {
-    String buf;
-    char *indent;
-    size_t indent_len;
-    size_t indent_width;
-    size_t cur_width;
-    size_t text_width;
-} ParagraphFormatter;
+enum {
+    BLOCK_EDIT_SIZE = 512
+};
 
-static char *copy_buf;
-static size_t copy_len;
-static bool copy_is_lines;
+static void sanity_check_blocks(const View *view, bool check_newlines)
+{
+#if DEBUG >= 1
+    const Buffer *buffer = view->buffer;
+    BUG_ON(list_empty(&buffer->blocks));
+    BUG_ON(view->cursor.offset > view->cursor.blk->size);
 
-static const char spattern[] = "\\{[ \t]*(//.*|/\\*.*\\*/[ \t]*)?$";
-static const char epattern[] = "^[ \t]*\\}";
+    const Block *blk = BLOCK(buffer->blocks.next);
+    if (blk->size == 0) {
+        // The only time a zero-sized block is valid is when it's the
+        // first and only block
+        BUG_ON(buffer->blocks.next->next != &buffer->blocks);
+        BUG_ON(view->cursor.blk != blk);
+        return;
+    }
+
+    bool cursor_seen = false;
+    block_for_each(blk, &buffer->blocks) {
+        const size_t size = blk->size;
+        BUG_ON(size == 0);
+        BUG_ON(size > blk->alloc);
+        if (blk == view->cursor.blk) {
+            cursor_seen = true;
+        }
+        if (check_newlines) {
+            BUG_ON(blk->data[size - 1] != '\n');
+        }
+        if (DEBUG > 2) {
+            BUG_ON(count_nl(blk->data, size) != blk->nl);
+        }
+    }
+    BUG_ON(!cursor_seen);
+#else
+    // Silence "unused parameter" warnings
+    (void)view;
+    (void)check_newlines;
+#endif
+}
+
+static size_t copy_count_nl(char *dst, const char *src, size_t len)
+{
+    size_t nl = 0;
+    for (size_t i = 0; i < len; i++) {
+        dst[i] = src[i];
+        if (src[i] == '\n') {
+            nl++;
+        }
+    }
+    return nl;
+}
+
+static size_t insert_to_current(BlockIter *cursor, const char *buf, size_t len)
+{
+    Block *blk = cursor->blk;
+    size_t offset = cursor->offset;
+    size_t size = blk->size + len;
+
+    if (size > blk->alloc) {
+        blk->alloc = round_size_to_next_multiple(size, BLOCK_ALLOC_MULTIPLE);
+        xrenew(blk->data, blk->alloc);
+    }
+    memmove(blk->data + offset + len, blk->data + offset, blk->size - offset);
+    size_t nl = copy_count_nl(blk->data + offset, buf, len);
+    blk->nl += nl;
+    blk->size = size;
+    return nl;
+}
 
 /*
- * Stupid { ... } block selector.
- *
- * Because braces can be inside strings or comments and writing real
- * parser for many programming languages does not make sense the rules
- * for selecting a block are made very simple. Line that matches \{\s*$
- * starts a block and line that matches ^\s*\} ends it.
+ * Combine current block and new data into smaller blocks:
+ *   - Block _must_ contain whole lines
+ *   - Block _must_ contain at least one line
+ *   - Preferred maximum size of block is BLOCK_EDIT_SIZE
+ *   - Size of any block can be larger than BLOCK_EDIT_SIZE
+ *     only if there's a very long line
  */
-void select_block(void)
+static size_t split_and_insert(BlockIter *cursor, const char *buf, size_t len)
 {
-    BlockIter sbi, ebi, bi = view->cursor;
-    StringView line;
-    int level = 0;
+    Block *blk = cursor->blk;
+    ListHead *prev_node = blk->node.prev;
+    const char *buf1 = blk->data;
+    const char *buf2 = buf;
+    const char *buf3 = blk->data + cursor->offset;
+    size_t size1 = cursor->offset;
+    size_t size2 = len;
+    size_t size3 = blk->size - size1;
+    size_t total = size1 + size2 + size3;
+    size_t start = 0; // Beginning of new block
+    size_t size = 0; // Size of new block
+    size_t pos = 0; // Current position
+    size_t nl_added = 0;
 
-    // If current line does not match \{\s*$ but matches ^\s*\} then
-    // cursor is likely at end of the block you want to select.
-    fetch_this_line(&bi, &line);
-    if (
-        !regexp_match_nosub(spattern, &line)
-        && regexp_match_nosub(epattern, &line)
-    ) {
-        block_iter_prev_line(&bi);
-    }
+    while (start < total) {
+        // Size of new block if next line would be added
+        size_t new_size = 0;
+        size_t copied = 0;
 
-    while (1) {
-        fetch_this_line(&bi, &line);
-        if (regexp_match_nosub(spattern, &line)) {
-            if (level++ == 0) {
-                sbi = bi;
-                block_iter_next_line(&bi);
-                break;
+        if (pos < size1) {
+            const char *nl = memchr(buf1 + pos, '\n', size1 - pos);
+            if (nl) {
+                new_size = nl - buf1 + 1 - start;
             }
         }
-        if (regexp_match_nosub(epattern, &line)) {
-            level--;
-        }
 
-        if (!block_iter_prev_line(&bi)) {
-            return;
-        }
-    }
+        if (!new_size && pos < size1 + size2) {
+            size_t offset = 0;
+            if (pos > size1) {
+                offset = pos - size1;
+            }
 
-    while (1) {
-        fetch_this_line(&bi, &line);
-        if (regexp_match_nosub(epattern, &line)) {
-            if (--level == 0) {
-                ebi = bi;
-                break;
+            const char *nl = memchr(buf2 + offset, '\n', size2 - offset);
+            if (nl) {
+                new_size = size1 + nl - buf2 + 1 - start;
             }
         }
-        if (regexp_match_nosub(spattern, &line)) {
-            level++;
-        }
 
-        if (!block_iter_next_line(&bi)) {
-            return;
-        }
-    }
-
-    view->cursor = sbi;
-    view->sel_so = block_iter_get_offset(&ebi);
-    view->sel_eo = UINT_MAX;
-    view->selection = SELECT_LINES;
-
-    mark_all_lines_changed(buffer);
-}
-
-static int get_indent_of_matching_brace(void)
-{
-    BlockIter bi = view->cursor;
-    StringView line;
-    int level = 0;
-
-    while (block_iter_prev_line(&bi)) {
-        fetch_this_line(&bi, &line);
-        if (regexp_match_nosub(spattern, &line)) {
-            if (level++ == 0) {
-                IndentInfo info;
-                get_indent_info(&line, &info);
-                return info.width;
+        if (!new_size && pos < total) {
+            size_t offset = 0;
+            if (pos > size1 + size2) {
+                offset = pos - size1 - size2;
             }
-        }
-        if (regexp_match_nosub(epattern, &line)) {
-            level--;
-        }
-    }
-    return -1;
-}
 
-void unselect(void)
-{
-    if (view->selection) {
-        view->selection = SELECT_NONE;
-        mark_all_lines_changed(buffer);
-    }
-}
-
-static void record_copy(char *buf, size_t len, bool is_lines)
-{
-    if (copy_buf) {
-        free(copy_buf);
-    }
-    copy_buf = buf;
-    copy_len = len;
-    copy_is_lines = is_lines;
-}
-
-void cut(size_t len, bool is_lines)
-{
-    if (len) {
-        char *buf = block_iter_get_bytes(&view->cursor, len);
-        record_copy(buf, len, is_lines);
-        buffer_delete_bytes(len);
-    }
-}
-
-void copy(size_t len, bool is_lines)
-{
-    if (len) {
-        char *buf = block_iter_get_bytes(&view->cursor, len);
-        record_copy(buf, len, is_lines);
-    }
-}
-
-void insert_text(const char *text, size_t size, bool move_after)
-{
-    size_t del_count = 0;
-    if (view->selection) {
-        del_count = prepare_selection(view);
-        unselect();
-    }
-    buffer_replace_bytes(del_count, text, size);
-    if (move_after) {
-        block_iter_skip_bytes(&view->cursor, size);
-    }
-}
-
-void paste(bool at_cursor)
-{
-    if (!copy_buf) {
-        return;
-    }
-
-    size_t del_count = 0;
-    if (view->selection) {
-        del_count = prepare_selection(view);
-        unselect();
-    }
-
-    if (copy_is_lines && !at_cursor) {
-        const long x = view_get_preferred_x(view);
-        if (!del_count) {
-            block_iter_eat_line(&view->cursor);
-        }
-        buffer_replace_bytes(del_count, copy_buf, copy_len);
-
-        // Try to keep cursor column
-        move_to_preferred_x(x);
-        // New preferred_x
-        view_reset_preferred_x(view);
-    } else {
-        buffer_replace_bytes(del_count, copy_buf, copy_len);
-    }
-}
-
-void delete_ch(void)
-{
-    size_t size = 0;
-    if (view->selection) {
-        size = prepare_selection(view);
-        unselect();
-    } else {
-        begin_change(CHANGE_MERGE_DELETE);
-        if (buffer->options.emulate_tab) {
-            size = get_indent_level_bytes_right();
-        }
-        if (size == 0) {
-            BlockIter bi = view->cursor;
-            size = block_iter_next_column(&bi);
-        }
-    }
-    buffer_delete_bytes(size);
-}
-
-void erase(void)
-{
-    size_t size = 0;
-    if (view->selection) {
-        size = prepare_selection(view);
-        unselect();
-    } else {
-        begin_change(CHANGE_MERGE_ERASE);
-        if (buffer->options.emulate_tab) {
-            size = get_indent_level_bytes_left();
-            block_iter_back_bytes(&view->cursor, size);
-        }
-        if (size == 0) {
-            CodePoint u;
-            size = block_iter_prev_char(&view->cursor, &u);
-        }
-    }
-    buffer_erase_bytes(size);
-}
-
-// Go to beginning of whitespace (tabs and spaces) under cursor and
-// return number of whitespace bytes after cursor after moving cursor
-static size_t goto_beginning_of_whitespace(void)
-{
-    BlockIter bi = view->cursor;
-    size_t count = 0;
-    CodePoint u;
-
-    // Count spaces and tabs at or after cursor
-    while (block_iter_next_char(&bi, &u)) {
-        if (u != '\t' && u != ' ') {
-            break;
-        }
-        count++;
-    }
-
-    // Count spaces and tabs before cursor
-    while (block_iter_prev_char(&view->cursor, &u)) {
-        if (u != '\t' && u != ' ') {
-            block_iter_next_char(&view->cursor, &u);
-            break;
-        }
-        count++;
-    }
-    return count;
-}
-
-static bool ws_only(const StringView *line)
-{
-    for (size_t i = 0, n = line->length; i < n; i++) {
-        char ch = line->data[i];
-        if (ch != ' ' && ch != '\t') {
-            return false;
-        }
-    }
-    return true;
-}
-
-// Non-empty line can be used to determine size of indentation for the next line
-static bool find_non_empty_line_bwd(BlockIter *bi)
-{
-    block_iter_bol(bi);
-    do {
-        StringView line;
-        fill_line_ref(bi, &line);
-        if (!ws_only(&line)) {
-            return true;
-        }
-    } while (block_iter_prev_line(bi));
-    return false;
-}
-
-static void insert_nl(void)
-{
-    size_t del_count = 0;
-    size_t ins_count = 1;
-    char *ins = NULL;
-
-    // Prepare deleted text (selection or whitespace around cursor)
-    if (view->selection) {
-        del_count = prepare_selection(view);
-        unselect();
-    } else {
-        // Trim whitespace around cursor
-        del_count = goto_beginning_of_whitespace();
-    }
-
-    // Prepare inserted indentation
-    if (buffer->options.auto_indent) {
-        // Current line will be split at cursor position
-        BlockIter bi = view->cursor;
-        size_t len = block_iter_bol(&bi);
-        StringView line;
-        fill_line_ref(&bi, &line);
-        line.length = len;
-        if (ws_only(&line)) {
-            // This line is (or will become) white space only.
-            // Find previous non whitespace only line.
-            if (block_iter_prev_line(&bi) && find_non_empty_line_bwd(&bi)) {
-                fill_line_ref(&bi, &line);
-                ins = get_indent_for_next_line(&line);
-            }
-        } else {
-            ins = get_indent_for_next_line(&line);
-        }
-    }
-
-    begin_change(CHANGE_MERGE_NONE);
-    if (ins) {
-        // Add newline before indent
-        ins_count = strlen(ins);
-        memmove(ins + 1, ins, ins_count);
-        ins[0] = '\n';
-        ins_count++;
-
-        buffer_replace_bytes(del_count, ins, ins_count);
-        free(ins);
-    } else {
-        buffer_replace_bytes(del_count, "\n", ins_count);
-    }
-    end_change();
-
-    // Move after inserted text
-    block_iter_skip_bytes(&view->cursor, ins_count);
-}
-
-void insert_ch(CodePoint ch)
-{
-    size_t del_count = 0;
-    size_t ins_count = 0;
-
-    if (ch == '\n') {
-        insert_nl();
-        return;
-    }
-
-    char *ins = xmalloc(8);
-    if (view->selection) {
-        // Prepare deleted text (selection)
-        del_count = prepare_selection(view);
-        unselect();
-    } else if (
-        ch == '}'
-        && buffer->options.auto_indent
-        && buffer->options.brace_indent
-    ) {
-        BlockIter bi = view->cursor;
-        StringView curlr;
-        block_iter_bol(&bi);
-        fill_line_ref(&bi, &curlr);
-        if (ws_only(&curlr)) {
-            int width = get_indent_of_matching_brace();
-            if (width >= 0) {
-                // Replace current (ws only) line with some indent + '}'
-                block_iter_bol(&view->cursor);
-                del_count = curlr.length;
-                if (width) {
-                    free(ins);
-                    ins = make_indent(width);
-                    ins_count = strlen(ins);
-                    // '}' will be replace the terminating NUL
-                }
-            }
-        }
-    }
-
-    // Prepare inserted text
-    if (ch == '\t' && buffer->options.expand_tab) {
-        ins_count = buffer->options.indent_width;
-        memset(ins, ' ', ins_count);
-    } else {
-        u_set_char_raw(ins, &ins_count, ch);
-    }
-
-    // Record change
-    if (del_count) {
-        begin_change(CHANGE_MERGE_NONE);
-    } else {
-        begin_change(CHANGE_MERGE_INSERT);
-    }
-    buffer_replace_bytes(del_count, ins, ins_count);
-    end_change();
-
-    // Move after inserted text
-    block_iter_skip_bytes(&view->cursor, ins_count);
-
-    free(ins);
-}
-
-static void join_selection(void)
-{
-    size_t count = prepare_selection(view);
-    size_t len = 0, join = 0;
-    BlockIter bi;
-    CodePoint ch = 0;
-
-    unselect();
-    bi = view->cursor;
-
-    begin_change_chain();
-    while (count > 0) {
-        if (!len) {
-            view->cursor = bi;
-        }
-
-        count -= block_iter_next_char(&bi, &ch);
-        if (ch == '\t' || ch == ' ') {
-            len++;
-        } else if (ch == '\n') {
-            len++;
-            join++;
-        } else {
-            if (join) {
-                buffer_replace_bytes(len, " ", 1);
-                // Skip the space we inserted and the char we read last
-                block_iter_next_char(&view->cursor, &ch);
-                block_iter_next_char(&view->cursor, &ch);
-                bi = view->cursor;
-            }
-            len = 0;
-            join = 0;
-        }
-    }
-
-    // Don't replace last \n that is at end of the selection
-    if (join && ch == '\n') {
-        join--;
-        len--;
-    }
-
-    if (join) {
-        if (ch == '\n') {
-            // Don't add space to end of line
-            buffer_delete_bytes(len);
-        } else {
-            buffer_replace_bytes(len, " ", 1);
-        }
-    }
-    end_change_chain();
-}
-
-void join_lines(void)
-{
-    BlockIter bi = view->cursor;
-
-    if (view->selection) {
-        join_selection();
-        return;
-    }
-
-    if (!block_iter_next_line(&bi)) {
-        return;
-    }
-    if (block_iter_is_eof(&bi)) {
-        return;
-    }
-
-    BlockIter next = bi;
-    CodePoint u;
-    size_t count = 1;
-    block_iter_prev_char(&bi, &u);
-    while (block_iter_prev_char(&bi, &u)) {
-        if (u != '\t' && u != ' ') {
-            block_iter_next_char(&bi, &u);
-            break;
-        }
-        count++;
-    }
-    while (block_iter_next_char(&next, &u)) {
-        if (u != '\t' && u != ' ') {
-            break;
-        }
-        count++;
-    }
-
-    view->cursor = bi;
-    if (u == '\n') {
-        buffer_delete_bytes(count);
-    } else {
-        buffer_replace_bytes(count, " ", 1);
-    }
-}
-
-static void shift_right(size_t nr_lines, size_t count)
-{
-    size_t indent_size;
-    char *indent = alloc_indent(count, &indent_size);
-    size_t i = 0;
-    while (1) {
-        IndentInfo info;
-        StringView line;
-        fetch_this_line(&view->cursor, &line);
-        get_indent_info(&line, &info);
-        if (info.wsonly) {
-            if (info.bytes) {
-                // Remove indentation
-                buffer_delete_bytes(info.bytes);
-            }
-        } else if (info.sane) {
-            // Insert whitespace
-            buffer_insert_bytes(indent, indent_size);
-        } else {
-            // Replace whole indentation with sane one
-            size_t size;
-            char *buf = alloc_indent(info.level + count, &size);
-            buffer_replace_bytes(info.bytes, buf, size);
-            free(buf);
-        }
-        if (++i == nr_lines) {
-            break;
-        }
-        block_iter_eat_line(&view->cursor);
-    }
-    free(indent);
-}
-
-static void shift_left(size_t nr_lines, size_t count)
-{
-    size_t i = 0;
-    while (1) {
-        IndentInfo info;
-        StringView line;
-        fetch_this_line(&view->cursor, &line);
-        get_indent_info(&line, &info);
-        if (info.wsonly) {
-            if (info.bytes) {
-                // Remove indentation
-                buffer_delete_bytes(info.bytes);
-            }
-        } else if (info.level && info.sane) {
-            size_t n = count;
-            if (n > info.level) {
-                n = info.level;
-            }
-            if (use_spaces_for_indent()) {
-                n *= buffer->options.indent_width;
-            }
-            buffer_delete_bytes(n);
-        } else if (info.bytes) {
-            // Replace whole indentation with sane one
-            if (info.level > count) {
-                size_t size;
-                char *buf = alloc_indent(info.level - count, &size);
-                buffer_replace_bytes(info.bytes, buf, size);
-                free(buf);
+            const char *nl = memchr(buf3 + offset, '\n', size3 - offset);
+            if (nl) {
+                new_size = size1 + size2 + nl - buf3 + 1 - start;
             } else {
-                buffer_delete_bytes(info.bytes);
+                new_size = total - start;
             }
         }
-        if (++i == nr_lines) {
-            break;
-        }
-        block_iter_eat_line(&view->cursor);
-    }
-}
 
-static void do_shift_lines(int count, size_t nr_lines)
-{
-    begin_change_chain();
-    block_iter_bol(&view->cursor);
-    if (count > 0) {
-        shift_right(nr_lines, count);
-    } else {
-        shift_left(nr_lines, -count);
-    }
-    end_change_chain();
-}
-
-void shift_lines(int count)
-{
-    long x = view_get_preferred_x(view) + buffer->options.indent_width * count;
-    if (x < 0) {
-        x = 0;
-    }
-
-    if (view->selection) {
-        SelectionInfo info;
-        view->selection = SELECT_LINES;
-        init_selection(view, &info);
-        view->cursor = info.si;
-        size_t nr_lines = get_nr_selected_lines(&info);
-        do_shift_lines(count, nr_lines);
-        if (info.swapped) {
-            // Cursor should be at beginning of selection
-            block_iter_bol(&view->cursor);
-            view->sel_so = block_iter_get_offset(&view->cursor);
-            while (--nr_lines) {
-                block_iter_prev_line(&view->cursor);
+        if (new_size <= BLOCK_EDIT_SIZE) {
+            // Fits
+            size = new_size;
+            pos = start + new_size;
+            if (pos < total) {
+                continue;
             }
         } else {
-            BlockIter save = view->cursor;
-            while (--nr_lines) {
-                block_iter_prev_line(&view->cursor);
+            // Does not fit
+            if (!size) {
+                // One block containing one very long line
+                size = new_size;
+                pos = start + new_size;
             }
-            view->sel_so = block_iter_get_offset(&view->cursor);
-            view->cursor = save;
         }
-    } else {
-        do_shift_lines(count, 1);
-    }
-    move_to_preferred_x(x);
-}
 
-void clear_lines(void)
-{
-    size_t del_count = 0, ins_count = 0;
-    char *indent = NULL;
-
-    if (buffer->options.auto_indent) {
-        BlockIter bi = view->cursor;
-        if (block_iter_prev_line(&bi) && find_non_empty_line_bwd(&bi)) {
-            StringView line;
-            fill_line_ref(&bi, &line);
-            indent = get_indent_for_next_line(&line);
+        BUG_ON(!size);
+        Block *new = block_new(size);
+        if (start < size1) {
+            size_t avail = size1 - start;
+            size_t count = MIN(size, avail);
+            new->nl += copy_count_nl(new->data, buf1 + start, count);
+            copied += count;
+            start += count;
         }
-    }
-
-    if (view->selection) {
-        view->selection = SELECT_LINES;
-        del_count = prepare_selection(view);
-        unselect();
-
-        // Don't delete last newline
-        if (del_count) {
-            del_count--;
+        if (start >= size1 && start < size1 + size2) {
+            size_t offset = start - size1;
+            size_t avail = size2 - offset;
+            size_t count = MIN(size - copied, avail);
+            new->nl += copy_count_nl(new->data + copied, buf2 + offset, count);
+            copied += count;
+            start += count;
         }
-    } else {
-        block_iter_eol(&view->cursor);
-        del_count = block_iter_bol(&view->cursor);
-    }
-
-    if (!indent && !del_count) {
-        return;
-    }
-
-    if (indent) {
-        ins_count = strlen(indent);
-    }
-    buffer_replace_bytes(del_count, indent, ins_count);
-    free(indent);
-    block_iter_skip_bytes(&view->cursor, ins_count);
-}
-
-void delete_lines(void)
-{
-    long x = view_get_preferred_x(view);
-    size_t del_count;
-    if (view->selection) {
-        view->selection = SELECT_LINES;
-        del_count = prepare_selection(view);
-        unselect();
-    } else {
-        block_iter_bol(&view->cursor);
-        BlockIter tmp = view->cursor;
-        del_count = block_iter_eat_line(&tmp);
-    }
-    buffer_delete_bytes(del_count);
-    move_to_preferred_x(x);
-}
-
-void new_line(void)
-{
-    size_t ins_count = 1;
-    char *ins = NULL;
-
-    block_iter_eol(&view->cursor);
-
-    if (buffer->options.auto_indent) {
-        BlockIter bi = view->cursor;
-        if (find_non_empty_line_bwd(&bi)) {
-            StringView line;
-            fill_line_ref(&bi, &line);
-            ins = get_indent_for_next_line(&line);
+        if (start >= size1 + size2) {
+            size_t offset = start - size1 - size2;
+            size_t avail = size3 - offset;
+            size_t count = size - copied;
+            BUG_ON(count > avail);
+            new->nl += copy_count_nl(new->data + copied, buf3 + offset, count);
+            copied += count;
+            start += count;
         }
+
+        new->size = size;
+        BUG_ON(copied != size);
+        list_add_before(&new->node, &blk->node);
+
+        nl_added += new->nl;
+        size = 0;
     }
 
-    if (ins) {
-        ins_count = strlen(ins);
-        memmove(ins + 1, ins, ins_count);
-        ins[0] = '\n';
-        ins_count++;
-        buffer_insert_bytes(ins, ins_count);
-        free(ins);
-    } else {
-        buffer_insert_bytes("\n", 1);
+    cursor->blk = BLOCK(prev_node->next);
+    while (cursor->offset > cursor->blk->size) {
+        cursor->offset -= cursor->blk->size;
+        cursor->blk = BLOCK(cursor->blk->node.next);
     }
 
-    block_iter_skip_bytes(&view->cursor, ins_count);
+    nl_added -= blk->nl;
+    block_free(blk);
+    return nl_added;
 }
 
-static void add_word(ParagraphFormatter *pf, const char *word, size_t len)
+static size_t insert_bytes(BlockIter *cursor, const char *buf, size_t len)
 {
-    size_t i = 0;
-    size_t word_width = 0;
-    while (i < len) {
-        word_width += u_char_width(u_get_char(word, len, &i));
+    // Blocks must contain whole lines.
+    // Last char of buf might not be newline.
+    block_iter_normalize(cursor);
+
+    Block *blk = cursor->blk;
+    size_t new_size = blk->size + len;
+    if (new_size <= blk->alloc || new_size <= BLOCK_EDIT_SIZE) {
+        return insert_to_current(cursor, buf, len);
     }
 
-    if (pf->cur_width && pf->cur_width + 1 + word_width > pf->text_width) {
-        string_append_byte(&pf->buf, '\n');
-        pf->cur_width = 0;
+    if (blk->nl <= 1 && !memchr(buf, '\n', len)) {
+        // Can't split this possibly very long line.
+        // insert_to_current() is much faster than split_and_insert().
+        return insert_to_current(cursor, buf, len);
     }
-
-    if (pf->cur_width == 0) {
-        if (pf->indent_len) {
-            string_append_buf(&pf->buf, pf->indent, pf->indent_len);
-        }
-        pf->cur_width = pf->indent_width;
-    } else {
-        string_append_byte(&pf->buf, ' ');
-        pf->cur_width++;
-    }
-
-    string_append_buf(&pf->buf, word, len);
-    pf->cur_width += word_width;
+    return split_and_insert(cursor, buf, len);
 }
 
-static bool is_paragraph_separator(const StringView *line)
+void do_insert(View *view, const char *buf, size_t len)
 {
-    return regexp_match_nosub("^[ \t]*(/\\*|\\*/)?[ \t]*$", line);
+    Buffer *buffer = view->buffer;
+    size_t nl = insert_bytes(&view->cursor, buf, len);
+    buffer->nl += nl;
+    sanity_check_blocks(view, true);
+
+    view_update_cursor_y(view);
+    buffer_mark_lines_changed(buffer, view->cy, nl ? LONG_MAX : view->cy);
+    if (buffer->syn) {
+        hl_insert(buffer, view->cy, nl);
+    }
 }
 
-static size_t get_indent_width(const StringView *line)
+static bool only_block(const Buffer *buffer, const Block *blk)
 {
-    IndentInfo info;
-    get_indent_info(line, &info);
-    return info.width;
+    return blk->node.prev == &buffer->blocks && blk->node.next == &buffer->blocks;
 }
 
-static bool in_paragraph(const StringView *line, size_t indent_width)
+char *do_delete(View *view, size_t len, bool sanity_check_newlines)
 {
-    if (get_indent_width(line) != indent_width) {
-        return false;
-    }
-    return !is_paragraph_separator(line);
-}
+    ListHead *saved_prev_node = NULL;
+    Block *blk = view->cursor.blk;
+    size_t offset = view->cursor.offset;
+    size_t pos = 0;
+    size_t deleted_nl = 0;
 
-static size_t paragraph_size(void)
-{
-    BlockIter bi = view->cursor;
-    StringView line;
-    block_iter_bol(&bi);
-    fill_line_ref(&bi, &line);
-    if (is_paragraph_separator(&line)) {
-        // Not in paragraph
-        return 0;
-    }
-    size_t indent_width = get_indent_width(&line);
-
-    // Go to beginning of paragraph
-    while (block_iter_prev_line(&bi)) {
-        fill_line_ref(&bi, &line);
-        if (!in_paragraph(&line, indent_width)) {
-            block_iter_eat_line(&bi);
-            break;
-        }
-    }
-    view->cursor = bi;
-
-    // Get size of paragraph
-    size_t size = 0;
-    do {
-        size_t bytes = block_iter_eat_line(&bi);
-        if (!bytes) {
-            break;
-        }
-        size += bytes;
-        fill_line_ref(&bi, &line);
-    } while (in_paragraph(&line, indent_width));
-    return size;
-}
-
-void format_paragraph(size_t text_width)
-{
-    size_t len;
-    if (view->selection) {
-        view->selection = SELECT_LINES;
-        len = prepare_selection(view);
-    } else {
-        len = paragraph_size();
-    }
     if (!len) {
-        return;
+        return NULL;
     }
 
-    char *sel = block_iter_get_bytes(&view->cursor, len);
-    StringView sv = string_view(sel, len);
-    size_t indent_width = get_indent_width(&sv);
-    char *indent = make_indent(indent_width);
+    if (!offset) {
+        // The block where cursor is can become empty and thereby may be deleted
+        saved_prev_node = blk->node.prev;
+    }
 
-    ParagraphFormatter pf = {
-        .buf = STRING_INIT,
-        .indent = indent,
-        .indent_len = indent ? strlen(indent) : 0,
-        .indent_width = indent_width,
-        .cur_width = 0,
-        .text_width = text_width
-    };
-
-    size_t i = 0;
-    while (1) {
-        size_t start, tmp;
-
-        while (i < len) {
-            tmp = i;
-            if (!u_is_breakable_whitespace(u_get_char(sel, len, &tmp))) {
-                break;
-            }
-            i = tmp;
-        }
-        if (i == len) {
-            break;
+    Buffer *buffer = view->buffer;
+    char *deleted = xmalloc(len);
+    while (pos < len) {
+        ListHead *next = blk->node.next;
+        size_t avail = blk->size - offset;
+        size_t count = MIN(len - pos, avail);
+        size_t nl = copy_count_nl(deleted + pos, blk->data + offset, count);
+        if (count < avail) {
+            memmove (
+                blk->data + offset,
+                blk->data + offset + count,
+                avail - count
+            );
         }
 
-        start = i;
-        while (i < len) {
-            tmp = i;
-            if (u_is_breakable_whitespace(u_get_char(sel, len, &tmp))) {
-                break;
-            }
-            i = tmp;
+        deleted_nl += nl;
+        buffer->nl -= nl;
+        blk->nl -= nl;
+        blk->size -= count;
+        if (!blk->size && !only_block(buffer, blk)) {
+            block_free(blk);
         }
 
-        add_word(&pf, sel + start, i - start);
+        offset = 0;
+        pos += count;
+        blk = BLOCK(next);
+
+        BUG_ON(pos < len && next == &buffer->blocks);
     }
 
-    if (pf.buf.len) {
-        string_append_byte(&pf.buf, '\n');
+    if (saved_prev_node) {
+        // Cursor was at beginning of a block that was possibly deleted
+        if (saved_prev_node->next == &buffer->blocks) {
+            view->cursor.blk = BLOCK(saved_prev_node);
+            view->cursor.offset = view->cursor.blk->size;
+        } else {
+            view->cursor.blk = BLOCK(saved_prev_node->next);
+        }
     }
-    buffer_replace_bytes(len, pf.buf.buffer, pf.buf.len);
-    if (pf.buf.len) {
-        block_iter_skip_bytes(&view->cursor, pf.buf.len - 1);
-    }
-    string_free(&pf.buf);
-    free(pf.indent);
-    free(sel);
 
-    unselect();
+    blk = view->cursor.blk;
+    if (
+        blk->size
+        && blk->data[blk->size - 1] != '\n'
+        && blk->node.next != &buffer->blocks
+    ) {
+        Block *next = BLOCK(blk->node.next);
+        size_t size = blk->size + next->size;
+
+        if (size > blk->alloc) {
+            blk->alloc = round_size_to_next_multiple(size, BLOCK_ALLOC_MULTIPLE);
+            xrenew(blk->data, blk->alloc);
+        }
+        memcpy(blk->data + blk->size, next->data, next->size);
+        blk->size = size;
+        blk->nl += next->nl;
+        block_free(next);
+    }
+
+    sanity_check_blocks(view, sanity_check_newlines);
+
+    view_update_cursor_y(view);
+    buffer_mark_lines_changed(buffer, view->cy, deleted_nl ? LONG_MAX : view->cy);
+    if (buffer->syn) {
+        hl_delete(buffer, view->cy, deleted_nl);
+    }
+    return deleted;
 }
 
-void change_case(char mode)
+char *do_replace(View *view, size_t del, const char *buf, size_t ins)
 {
-    bool was_selecting = false;
-    bool move = true;
-    size_t text_len;
-    if (view->selection) {
-        SelectionInfo info;
-        init_selection(view, &info);
-        view->cursor = info.si;
-        text_len = info.eo - info.so;
-        unselect();
-        was_selecting = true;
-        move = !info.swapped;
-    } else {
-        CodePoint u;
-        if (!block_iter_get_char(&view->cursor, &u)) {
-            return;
-        }
-        text_len = u_char_size(u);
+    block_iter_normalize(&view->cursor);
+    Block *blk = view->cursor.blk;
+    size_t offset = view->cursor.offset;
+
+    size_t avail = blk->size - offset;
+    if (del >= avail) {
+        goto slow;
     }
 
-    String dst = string_new(text_len);
-    char *src = block_iter_get_bytes(&view->cursor, text_len);
-    size_t i = 0;
-    while (i < text_len) {
-        CodePoint u = u_get_char(src, text_len, &i);
-        switch (mode) {
-        case 't':
-            u = u_is_upper(u) ? u_to_lower(u) : u_to_upper(u);
-            break;
-        case 'l':
-            u = u_to_lower(u);
-            break;
-        case 'u':
-            u = u_to_upper(u);
-            break;
-        default:
-            BUG("unhandled case mode");
-        }
-        string_append_codepoint(&dst, u);
-    }
-
-    buffer_replace_bytes(text_len, dst.buffer, dst.len);
-    free(src);
-
-    if (move && dst.len > 0) {
-        if (was_selecting) {
-            // Move cursor back to where it was
-            size_t idx = dst.len;
-            u_prev_char(dst.buffer, &idx);
-            block_iter_skip_bytes(&view->cursor, idx);
-        } else {
-            block_iter_skip_bytes(&view->cursor, dst.len);
+    size_t new_size = blk->size + ins - del;
+    if (new_size > BLOCK_EDIT_SIZE) {
+        // Should split
+        if (blk->nl > 1 || memchr(buf, '\n', ins)) {
+            // Most likely can be split
+            goto slow;
         }
     }
 
-    string_free(&dst);
+    if (new_size > blk->alloc) {
+        blk->alloc = round_size_to_next_multiple(new_size, BLOCK_ALLOC_MULTIPLE);
+        xrenew(blk->data, blk->alloc);
+    }
+
+    // Modification is limited to one block
+    Buffer *buffer = view->buffer;
+    char *ptr = blk->data + offset;
+    char *deleted = xmalloc(del);
+    size_t del_nl = copy_count_nl(deleted, ptr, del);
+    blk->nl -= del_nl;
+    buffer->nl -= del_nl;
+
+    if (del != ins) {
+        memmove(ptr + ins, ptr + del, avail - del);
+    }
+
+    size_t ins_nl = copy_count_nl(ptr, buf, ins);
+    blk->nl += ins_nl;
+    buffer->nl += ins_nl;
+    blk->size = new_size;
+    sanity_check_blocks(view, true);
+    view_update_cursor_y(view);
+
+    // If the number of inserted and removed bytes are the same, some
+    // line(s) changed but the lines after them didn't move up or down
+    long max = (del_nl == ins_nl) ? view->cy + del_nl : LONG_MAX;
+    buffer_mark_lines_changed(buffer, view->cy, max);
+
+    if (buffer->syn) {
+        hl_delete(buffer, view->cy, del_nl);
+        hl_insert(buffer, view->cy, ins_nl);
+    }
+
+    return deleted;
+
+slow:
+    // The "sanity_check_newlines" argument of do_delete() is false here
+    // because it may be removing a terminating newline that do_insert()
+    // is going to insert again at a different position:
+    deleted = do_delete(view, del, false);
+    do_insert(view, buf, ins);
+    return deleted;
 }

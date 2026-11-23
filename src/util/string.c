@@ -1,26 +1,30 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 #include "string.h"
+#include "debug.h"
 #include "utf8.h"
 #include "xmalloc.h"
-#include "debug.h"
 
-static void string_grow(String *s, size_t more)
+static COLD void string_grow(String *s, size_t min_alloc)
 {
-    BUG_ON(more == 0);
-    const size_t len = s->len + more;
     size_t alloc = s->alloc;
-    if (likely(alloc >= len)) {
-        return;
-    }
-    while (alloc < len) {
+    while (alloc < min_alloc) {
         alloc = (alloc * 3 + 2) / 2;
     }
     alloc = round_size_to_next_multiple(alloc, 16);
-    xrenew(s->buffer, alloc);
     s->alloc = alloc;
+    xrenew(s->buffer, alloc);
+}
+
+char *string_reserve_space(String *s, size_t more)
+{
+    BUG_ON(more == 0);
+    size_t min_alloc = size_add(s->len, more);
+    if (unlikely(s->alloc < min_alloc)) {
+        string_grow(s, min_alloc);
+    }
+    return s->buffer + s->len;
 }
 
 void string_free(String *s)
@@ -31,33 +35,29 @@ void string_free(String *s)
 
 void string_append_byte(String *s, unsigned char byte)
 {
-    string_grow(s, 1);
+    string_reserve_space(s, 1);
     s->buffer[s->len++] = byte;
 }
 
 size_t string_append_codepoint(String *s, CodePoint u)
 {
-    size_t len = u_char_size(u);
-    string_grow(s, len);
-    u_set_char_raw(s->buffer, &s->len, u);
-    return len;
+    string_reserve_space(s, 4);
+    return u_set_char_raw(s->buffer, &s->len, u);
 }
 
 static void string_make_space(String *s, size_t pos, size_t len)
 {
     BUG_ON(pos > s->len);
     BUG_ON(len == 0);
-    string_grow(s, len);
+    string_reserve_space(s, len);
     memmove(s->buffer + pos + len, s->buffer + pos, s->len - pos);
     s->len += len;
 }
 
-size_t string_insert_ch(String *s, size_t pos, CodePoint u)
+size_t string_insert_codepoint(String *s, size_t pos, CodePoint u)
 {
-    size_t len = u_char_size(u);
-    string_make_space(s, pos, len);
-    u_set_char_raw(s->buffer, &pos, u);
-    return len;
+    string_make_space(s, pos, u_char_size(u));
+    return u_set_char_raw(s->buffer, &pos, u);
 }
 
 void string_insert_buf(String *s, size_t pos, const char *buf, size_t len)
@@ -69,29 +69,24 @@ void string_insert_buf(String *s, size_t pos, const char *buf, size_t len)
     memcpy(s->buffer + pos, buf, len);
 }
 
-void string_append_cstring(String *s, const char *cstr)
-{
-    string_append_buf(s, cstr, strlen(cstr));
-}
-
-void string_append_string(String *s1, const String *s2)
-{
-    string_append_buf(s1, s2->buffer, s2->len);
-}
-
-void string_append_strview(String *s, const StringView *sv)
-{
-    string_append_buf(s, sv->data, sv->length);
-}
-
 void string_append_buf(String *s, const char *ptr, size_t len)
 {
-    if (!len) {
+    if (len == 0) {
         return;
     }
-    string_grow(s, len);
-    memcpy(s->buffer + s->len, ptr, len);
+    char *reserved = string_reserve_space(s, len);
     s->len += len;
+    memcpy(reserved, ptr, len);
+}
+
+void string_append_memset(String *s, unsigned char byte, size_t len)
+{
+    if (len == 0) {
+        return;
+    }
+    char *reserved = string_reserve_space(s, len);
+    s->len += len;
+    memset(reserved, byte, len);
 }
 
 VPRINTF(2)
@@ -103,7 +98,7 @@ static void string_vsprintf(String *s, const char *fmt, va_list ap)
     int n = vsnprintf(NULL, 0, fmt, ap2);
     va_end(ap2);
     BUG_ON(n < 0);
-    string_grow(s, n + 1);
+    string_reserve_space(s, n + 1);
     int wrote = vsnprintf(s->buffer + s->len, n + 1, fmt, ap);
     BUG_ON(wrote != n);
     s->len += wrote;
@@ -117,30 +112,26 @@ void string_sprintf(String *s, const char *fmt, ...)
     va_end(ap);
 }
 
-static void null_terminate(String *s)
+static char *null_terminate(String *s)
 {
-    string_grow(s, 1);
+    string_reserve_space(s, 1);
     s->buffer[s->len] = '\0';
+    return s->buffer;
 }
 
 char *string_steal_cstring(String *s)
 {
-    null_terminate(s);
-    char *b = s->buffer;
+    char *buf = null_terminate(s);
     *s = (String) STRING_INIT;
-    return b;
+    return buf;
 }
 
 char *string_clone_cstring(const String *s)
 {
-    const size_t len = s->len;
+    size_t len = s->len;
     char *b = xmalloc(len + 1);
-    if (len > 0) {
-        BUG_ON(!s->buffer);
-        memcpy(b, s->buffer, len);
-    }
     b[len] = '\0';
-    return b;
+    return likely(len) ? memcpy(b, s->buffer, len) : b;
 }
 
 /*
@@ -155,13 +146,13 @@ char *string_clone_cstring(const String *s)
  */
 const char *string_borrow_cstring(String *s)
 {
-    null_terminate(s);
-    return s->buffer;
+    return null_terminate(s);
 }
 
 void string_remove(String *s, size_t pos, size_t len)
 {
-    BUG_ON(pos + len > s->len);
-    memmove(s->buffer + pos, s->buffer + pos + len, s->len - pos - len);
+    size_t oldlen = s->len;
+    BUG_ON(pos + len > oldlen);
     s->len -= len;
+    memmove(s->buffer + pos, s->buffer + pos + len, oldlen - pos - len);
 }

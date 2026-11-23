@@ -1,9 +1,8 @@
-#include <stddef.h>
 #include "encoding.h"
 #include "util/ascii.h"
 #include "util/bsearch.h"
 #include "util/debug.h"
-#include "util/hashset.h"
+#include "util/intern.h"
 #include "util/str-util.h"
 
 typedef struct {
@@ -51,21 +50,23 @@ UNITTEST {
     CHECK_BSEARCH_ARRAY(encoding_aliases, alias, ascii_strcmp_icase);
 }
 
+static int enc_alias_cmp(const void *key, const void *elem)
+{
+    const EncodingAlias *a = key;
+    const char *name = elem;
+    return ascii_strcmp_icase(a->alias, name);
+}
+
 EncodingType lookup_encoding(const char *name)
 {
-    static_assert(ARRAY_COUNT(encoding_names) == NR_ENCODING_TYPES - 1);
-    for (size_t i = 0; i < ARRAY_COUNT(encoding_names); i++) {
+    static_assert(ARRAYLEN(encoding_names) == NR_ENCODING_TYPES - 1);
+    for (size_t i = 0; i < ARRAYLEN(encoding_names); i++) {
         if (ascii_streq_icase(name, encoding_names[i])) {
             return (EncodingType) i;
         }
     }
 
-    static_assert(offsetof(EncodingAlias, alias) == 0);
-    const EncodingAlias *a = BSEARCH (
-        name,
-        encoding_aliases,
-        (CompareFunction)ascii_strcmp_icase
-    );
+    const EncodingAlias *a = BSEARCH(name, encoding_aliases, enc_alias_cmp);
     return a ? a->encoding : UNKNOWN_ENCODING;
 }
 
@@ -124,8 +125,8 @@ EncodingType detect_encoding_from_bom(const unsigned char *buf, size_t size)
 
 const ByteOrderMark *get_bom_for_encoding(EncodingType encoding)
 {
-    static_assert(ARRAY_COUNT(boms) == NR_ENCODING_TYPES);
-    BUG_ON(encoding >= ARRAY_COUNT(boms));
+    static_assert(ARRAYLEN(boms) == NR_ENCODING_TYPES);
+    BUG_ON(encoding >= ARRAYLEN(boms));
     const ByteOrderMark *bom = &boms[encoding];
     return bom->len ? bom : NULL;
 }

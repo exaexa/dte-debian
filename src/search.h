@@ -1,32 +1,34 @@
 #ifndef SEARCH_H
 #define SEARCH_H
 
+#include <regex.h>
 #include <stdbool.h>
 #include "util/macros.h"
+#include "view.h"
 
 typedef enum {
-    SEARCH_FWD,
-    SEARCH_BWD,
-} SearchDirection;
+    CSS_FALSE,
+    CSS_TRUE,
+    CSS_AUTO,
+} SearchCaseSensitivity;
 
-typedef enum {
-    REPLACE_CONFIRM = 1 << 0,
-    REPLACE_GLOBAL = 1 << 1,
-    REPLACE_IGNORE_CASE = 1 << 2,
-    REPLACE_BASIC = 1 << 3,
-    REPLACE_CANCEL = 1 << 4,
-} ReplaceFlags;
+typedef struct {
+    regex_t regex;
+    char *pattern;
+    int re_flags; // If zero, regex hasn't been compiled
+    bool reverse;
+} SearchState;
 
-SearchDirection get_search_direction(void) PURE;
-void set_search_direction(SearchDirection dir);
-void toggle_search_direction(void);
+static inline void toggle_search_direction(SearchState *search)
+{
+    search->reverse ^= 1;
+}
 
-bool search_tag(const char *pattern, bool *err);
-void search_set_regexp(const char *pattern);
-void search_prev(void);
-void search_next(void);
-void search_next_word(void);
-
-void reg_replace(const char *pattern, const char *format, ReplaceFlags flags) NONNULL_ARGS;
+bool search_tag(View *view, const char *pattern) NONNULL_ARGS WARN_UNUSED_RESULT;
+void search_set_regexp(SearchState *search, const char *pattern) NONNULL_ARGS;
+void search_free_regexp(SearchState *search) NONNULL_ARGS;
+bool search_prev(View *view, SearchState *search, SearchCaseSensitivity cs) NONNULL_ARGS WARN_UNUSED_RESULT;
+bool search_next(View *view, SearchState *search, SearchCaseSensitivity cs) NONNULL_ARGS WARN_UNUSED_RESULT;
+bool search_next_word(View *view, SearchState *search, SearchCaseSensitivity cs) NONNULL_ARGS WARN_UNUSED_RESULT;
 
 #endif

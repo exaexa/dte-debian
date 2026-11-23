@@ -45,10 +45,9 @@ static inline bool hashmap_next(HashMapIter *iter)
         return false;
     }
 
-    extern char tombstone[16];
     for (size_t i = iter->idx, n = map->mask + 1; i < n; i++) {
         HashMapEntry *e = map->entries + i;
-        if (e->key && e->key != tombstone) {
+        if (e->key) {
             iter->entry = e;
             iter->idx = i + 1;
             return true;
@@ -58,7 +57,7 @@ static inline bool hashmap_next(HashMapIter *iter)
 }
 
 void hashmap_init(HashMap *map, size_t capacity) NONNULL_ARGS;
-void hashmap_insert(HashMap *map, char *key, void *value) NONNULL_ARGS;
+void *hashmap_insert(HashMap *map, char *key, void *value) NONNULL_ARGS_AND_RETURN;
 void *hashmap_insert_or_replace(HashMap *map, char *key, void *value) NONNULL_ARGS;
 void *hashmap_remove(HashMap *map, const char *key) NONNULL_ARGS;
 void hashmap_clear(HashMap *map, FreeFunction free_value) NONNULL_ARG(1);

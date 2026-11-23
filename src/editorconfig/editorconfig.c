@@ -1,10 +1,12 @@
 #include <stddef.h>
+#include <stdlib.h>
 #include <string.h>
 #include "editorconfig.h"
 #include "ini.h"
 #include "match.h"
 #include "util/debug.h"
 #include "util/path.h"
+#include "util/readfile.h"
 #include "util/string.h"
 #include "util/string-view.h"
 #include "util/strtonum.h"
@@ -18,24 +20,66 @@ typedef struct {
 } UserData;
 
 typedef enum {
-    EC_INDENT_STYLE,
+    EC_CHARSET,
+    EC_END_OF_LINE,
     EC_INDENT_SIZE,
-    EC_TAB_WIDTH,
+    EC_INDENT_STYLE,
+    EC_INSERT_FINAL_NL,
     EC_MAX_LINE_LENGTH,
+    EC_TAB_WIDTH,
+    EC_TRIM_TRAILING_WS,
     EC_UNKNOWN_PROPERTY,
 } PropertyType;
 
-#define CMP(s, val) if (mem_equal(name->data, s, STRLEN(s))) return val; break
+#define CMP(s, val) if (mem_equal(name->data, s, STRLEN(s))) return val;
 
 static PropertyType lookup_property(const StringView *name)
 {
     switch (name->length) {
-    case  9: CMP("tab_width", EC_TAB_WIDTH);
-    case 11: CMP("indent_size", EC_INDENT_SIZE);
-    case 12: CMP("indent_style", EC_INDENT_STYLE);
-    case 15: CMP("max_line_length", EC_MAX_LINE_LENGTH);
+    case  7: CMP("charset", EC_CHARSET); break;
+    case  9: CMP("tab_width", EC_TAB_WIDTH); break;
+    case 11:
+        CMP("indent_size", EC_INDENT_SIZE);
+        CMP("end_of_line", EC_END_OF_LINE);
+        break;
+    case 12: CMP("indent_style", EC_INDENT_STYLE); break;
+    case 15: CMP("max_line_length", EC_MAX_LINE_LENGTH); break;
+    case 20: CMP("insert_final_newline", EC_INSERT_FINAL_NL); break;
+    case 24: CMP("trim_trailing_whitespace", EC_TRIM_TRAILING_WS); break;
     }
     return EC_UNKNOWN_PROPERTY;
+}
+
+static EditorConfigIndentStyle lookup_indent_style(const StringView *val)
+{
+    if (strview_equal_cstring_icase(val, "space")) {
+        return INDENT_STYLE_SPACE;
+    } else if (strview_equal_cstring_icase(val, "tab")) {
+        return INDENT_STYLE_TAB;
+    }
+    return INDENT_STYLE_UNSPECIFIED;
+}
+
+static unsigned int parse_indent_digit(const StringView *val)
+{
+    // Valid indent widths are 1-8
+    static_assert_compatible_types(val->data[0], unsigned char);
+    unsigned int n = (val->length != 1) ? 0 : val->data[0] - '0';
+    return (n <= 8) ? n : 0;
+}
+
+static void parse_indent_size(EditorConfigOptions *options, const StringView *val)
+{
+    bool tab = strview_equal_cstring_icase(val, "tab");
+    options->indent_size_is_tab = tab;
+    options->indent_size = tab ? 0 : parse_indent_digit(val);
+}
+
+static unsigned int parse_max_line_length(const StringView *val)
+{
+    unsigned int n = 0;
+    buf_parse_uint(val->data, val->length, &n);
+    return n;
 }
 
 static void editorconfig_option_set (
@@ -43,37 +87,23 @@ static void editorconfig_option_set (
     const StringView *name,
     const StringView *val
 ) {
-    unsigned int n = 0;
     switch (lookup_property(name)) {
     case EC_INDENT_STYLE:
-        if (strview_equal_cstring_icase(val, "space")) {
-            options->indent_style = INDENT_STYLE_SPACE;
-        } else if (strview_equal_cstring_icase(val, "tab")) {
-            options->indent_style = INDENT_STYLE_TAB;
-        } else {
-            options->indent_style = INDENT_STYLE_UNSPECIFIED;
-        }
+        options->indent_style = lookup_indent_style(val);
         break;
     case EC_INDENT_SIZE:
-        if (strview_equal_cstring_icase(val, "tab")) {
-            options->indent_size_is_tab = true;
-            options->indent_size = 0;
-        } else {
-            buf_parse_uint(val->data, val->length, &n);
-            // If buf_parse_uint() failed, n is zero, which is deliberately
-            // used to "reset" the option due to an invalid value
-            options->indent_size = n;
-            options->indent_size_is_tab = false;
-        }
+        parse_indent_size(options, val);
         break;
     case EC_TAB_WIDTH:
-        buf_parse_uint(val->data, val->length, &n);
-        options->tab_width = n;
+        options->tab_width = parse_indent_digit(val);
         break;
     case EC_MAX_LINE_LENGTH:
-        buf_parse_uint(val->data, val->length, &n);
-        options->max_line_length = n;
+        options->max_line_length = parse_max_line_length(val);
         break;
+    case EC_CHARSET:
+    case EC_END_OF_LINE:
+    case EC_INSERT_FINAL_NL:
+    case EC_TRIM_TRAILING_WS:
     case EC_UNKNOWN_PROPERTY:
         break;
     default:
@@ -81,68 +111,76 @@ static void editorconfig_option_set (
     }
 }
 
-static int ini_handler(const IniData *data, void *ud)
+static void editorconfig_parse(const char *buf, size_t size, UserData *data)
 {
-    UserData *userdata = ud;
+    IniParser ini = {
+        .input = buf,
+        .input_len = size,
+    };
 
-    if (data->section.length == 0) {
-        if (
-            strview_equal_cstring_icase(&data->name, "root")
-            && strview_equal_cstring_icase(&data->value, "true")
-        ) {
-            // root=true, clear all previous values
-            userdata->options = editorconfig_options_init();
-        }
-        return 1;
+    if (size >= 3 && mem_equal(buf, "\xEF\xBB\xBF", 3)) {
+        // Skip past UTF-8 BOM
+        ini.pos += 3;
     }
 
-    if (data->name_idx == 0) {
-        // If name_idx is zero, it indicates that the name/value pair is
-        // the first in the section and therefore requires a new pattern
-        // to be built and tested for a match
-        const StringView ecdir = userdata->config_file_dir;
-        String pattern = string_new(ecdir.length + data->section.length + 16);
-
-        // Escape editorconfig special chars in path
-        for (size_t i = 0, n = ecdir.length; i < n; i++) {
-            const char ch = ecdir.data[i];
-            switch (ch) {
-            case '*': case ',': case '-':
-            case '?': case '[': case '\\':
-            case ']': case '{': case '}':
-                string_append_byte(&pattern, '\\');
-                // Fallthrough
-            default:
-                string_append_byte(&pattern, ch);
+    while (ini_parse(&ini)) {
+        if (ini.section.length == 0) {
+            if (
+                strview_equal_cstring_icase(&ini.name, "root")
+                && strview_equal_cstring_icase(&ini.value, "true")
+            ) {
+                // root=true, clear all previous values
+                data->options = editorconfig_options_init();
             }
+            continue;
         }
 
-        if (!strview_memchr(&data->section, '/')) {
-            // No slash in pattern, append "**/"
-            string_append_literal(&pattern, "**/");
-        } else if (data->section.data[0] != '/') {
-            // Pattern contains at least one slash but not at the start, add one
-            string_append_byte(&pattern, '/');
+        if (ini.name_count == 1) {
+            // If name_count is 1, it indicates that the name/value pair is
+            // the first in the section and therefore requires a new pattern
+            // to be built and tested for a match
+            const StringView ecdir = data->config_file_dir;
+            String pattern = string_new(ecdir.length + ini.section.length + 16);
+
+            // Escape editorconfig special chars in path
+            for (size_t i = 0, n = ecdir.length; i < n; i++) {
+                const char ch = ecdir.data[i];
+                switch (ch) {
+                case '*': case ',': case '-':
+                case '?': case '[': case '\\':
+                case ']': case '{': case '}':
+                    string_append_byte(&pattern, '\\');
+                    // Fallthrough
+                default:
+                    string_append_byte(&pattern, ch);
+                }
+            }
+
+            if (!strview_memchr(&ini.section, '/')) {
+                // No slash in pattern, append "**/"
+                string_append_literal(&pattern, "**/");
+            } else if (ini.section.data[0] != '/') {
+                // Pattern contains at least one slash but not at the start, add one
+                string_append_byte(&pattern, '/');
+            }
+
+            string_append_strview(&pattern, &ini.section);
+            data->match = ec_pattern_match (
+                pattern.buffer,
+                pattern.len,
+                data->pathname
+            );
+            string_free(&pattern);
+        } else {
+            // Otherwise, the section is the same as was passed for the first
+            // name/value pair in the section and the value of data->match
+            // can just be reused
         }
 
-        string_append_strview(&pattern, &data->section);
-        userdata->match = ec_pattern_match (
-            pattern.buffer,
-            pattern.len,
-            userdata->pathname
-        );
-        string_free(&pattern);
-    } else {
-        // Otherwise, the section is the same as was passed in the last
-        // callback invocation and the value of userdata->match can
-        // just be reused
+        if (data->match) {
+            editorconfig_option_set(&data->options, &ini.name, &ini.value);
+        }
     }
-
-    if (userdata->match) {
-        editorconfig_option_set(&userdata->options, &data->name, &data->value);
-    }
-
-    return 1;
 }
 
 int get_editorconfig_options(const char *pathname, EditorConfigOptions *opts)
@@ -163,10 +201,12 @@ int get_editorconfig_options(const char *pathname, EditorConfigOptions *opts)
 
     // Iterate up directory tree, looking for ".editorconfig" at each level
     while (1) {
-        data.config_file_dir = string_view(buf, dir_len);
-        int err_num = ini_parse(buf, ini_handler, &data);
-        if (err_num > 0) {
-            return err_num;
+        char *text;
+        ssize_t len = read_file_with_limit(buf, &text, 32u << 20);
+        if (len >= 0) {
+            data.config_file_dir = string_view(buf, dir_len);
+            editorconfig_parse(text, len, &data);
+            free(text);
         }
 
         const char *slash = strchr(ptr, '/');
@@ -181,28 +221,22 @@ int get_editorconfig_options(const char *pathname, EditorConfigOptions *opts)
     }
 
     // Set indent_size to "tab" if indent_size is not specified and
-    // indent_style is set to "tab".
-    if (
-        data.options.indent_size == 0
-        && data.options.indent_style == INDENT_STYLE_TAB
-    ) {
-        data.options.indent_size_is_tab = true;
+    // indent_style is set to "tab"
+    EditorConfigOptions *o = &data.options;
+    if (o->indent_size == 0 && o->indent_style == INDENT_STYLE_TAB) {
+        o->indent_size_is_tab = true;
     }
 
     // Set indent_size to tab_width if indent_size is "tab" and
-    // tab_width is specified.
-    if (data.options.indent_size_is_tab && data.options.tab_width > 0) {
-        data.options.indent_size = data.options.tab_width;
+    // tab_width is specified
+    if (o->indent_size_is_tab && o->tab_width > 0) {
+        o->indent_size = o->tab_width;
     }
 
     // Set tab_width to indent_size if indent_size is specified as
     // something other than "tab" and tab_width is unspecified
-    if (
-        data.options.indent_size != 0
-        && data.options.tab_width == 0
-        && !data.options.indent_size_is_tab
-    ) {
-        data.options.tab_width = data.options.indent_size;
+    if (o->indent_size != 0 && o->tab_width == 0 && !o->indent_size_is_tab) {
+        o->tab_width = o->indent_size;
     }
 
     *opts = data.options;

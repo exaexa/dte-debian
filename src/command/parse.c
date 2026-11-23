@@ -1,10 +1,8 @@
 #include <stdlib.h>
+#include <string.h>
 #include "parse.h"
-#include "env.h"
-#include "editor.h"
 #include "util/ascii.h"
 #include "util/debug.h"
-#include "util/macros.h"
 #include "util/string.h"
 #include "util/strtonum.h"
 #include "util/unicode.h"
@@ -12,41 +10,33 @@
 
 static size_t parse_sq(const char *cmd, size_t len, String *buf)
 {
-    size_t pos = 0;
-    char ch = '\0';
-    while (pos < len) {
-        ch = cmd[pos];
-        if (ch == '\'') {
-            break;
-        }
-        pos++;
-    }
+    const char *end = memchr(cmd, '\'', len);
+    size_t pos = end ? (size_t)(end - cmd) : len;
     string_append_buf(buf, cmd, pos);
-    if (ch == '\'') {
-        pos++;
-    }
-    return pos;
+    return pos + (end ? 1 : 0);
 }
 
 static size_t unicode_escape(const char *str, size_t count, String *buf)
 {
-    if (unlikely(count == 0)) {
-        return 0;
-    }
-
-    CodePoint u = 0;
-    size_t i;
-    for (i = 0; i < count; i++) {
-        unsigned int x = hex_decode(str[i]);
-        if (unlikely(x > 0xF)) {
-            break;
-        }
-        u = u << 4 | x;
-    }
-    if (likely(u_is_unicode(u))) {
+    // Note: `u` doesn't need to be initialized here, but `gcc -Og`
+    // gives a spurious -Wmaybe-uninitialized warning if it's not
+    unsigned int u = 0;
+    static_assert(sizeof(u) >= 4);
+    size_t n = buf_parse_hex_uint(str, count, &u);
+    if (likely(n > 0 && u_is_unicode(u))) {
         string_append_codepoint(buf, u);
     }
-    return i;
+    return n;
+}
+
+static size_t hex_escape(const char *str, size_t count, String *buf)
+{
+    unsigned int x = 0;
+    size_t n = buf_parse_hex_uint(str, count, &x);
+    if (likely(n == 2)) {
+        string_append_byte(buf, x);
+    }
+    return n;
 }
 
 static size_t parse_dq(const char *cmd, size_t len, String *buf)
@@ -54,11 +44,9 @@ static size_t parse_dq(const char *cmd, size_t len, String *buf)
     size_t pos = 0;
     while (pos < len) {
         unsigned char ch = cmd[pos++];
-
         if (ch == '"') {
             break;
         }
-
         if (ch == '\\' && pos < len) {
             ch = cmd[pos++];
             switch (ch) {
@@ -74,17 +62,7 @@ static size_t parse_dq(const char *cmd, size_t len, String *buf)
             case '"':
                 break;
             case 'x':
-                if (pos < len) {
-                    unsigned int x1 = hex_decode(cmd[pos]);
-                    if (x1 <= 0xF && ++pos < len) {
-                        unsigned int x2 = hex_decode(cmd[pos]);
-                        if (x2 <= 0xF) {
-                            pos++;
-                            ch = x1 << 4 | x2;
-                            break;
-                        }
-                    }
-                }
+                pos += hex_escape(cmd + pos, MIN(2, len - pos), buf);
                 continue;
             case 'u':
                 pos += unicode_escape(cmd + pos, MIN(4, len - pos), buf);
@@ -97,14 +75,13 @@ static size_t parse_dq(const char *cmd, size_t len, String *buf)
                 break;
             }
         }
-
         string_append_byte(buf, ch);
     }
 
     return pos;
 }
 
-static size_t parse_var(const char *cmd, size_t len, String *buf)
+static size_t parse_var(const CommandRunner *runner, const char *cmd, size_t len, String *buf)
 {
     if (len == 0 || !is_alpha_or_underscore(cmd[0])) {
         return 0;
@@ -115,14 +92,16 @@ static size_t parse_var(const char *cmd, size_t len, String *buf)
         n++;
     }
 
+    const CommandSet *cmds = runner->cmds;
+    void *ud = runner->userdata;
     char *name = xstrcut(cmd, n);
     char *value;
-    if (expand_builtin_env(name, &value)) {
+    if (cmds->expand_variable && cmds->expand_variable(name, &value, ud)) {
         if (value) {
             string_append_cstring(buf, value);
             free(value);
         }
-    } else {
+    } else if (cmds->expand_env_vars) {
         const char *val = getenv(name);
         if (val) {
             string_append_cstring(buf, val);
@@ -133,14 +112,14 @@ static size_t parse_var(const char *cmd, size_t len, String *buf)
     return n;
 }
 
-char *parse_command_arg(const char *cmd, size_t len, bool tilde)
+char *parse_command_arg(const CommandRunner *runner, const char *cmd, size_t len, bool tilde)
 {
     String buf;
     size_t pos = 0;
 
     if (tilde && len >= 2 && cmd[0] == '~' && cmd[1] == '/') {
-        buf = string_new(len + editor.home_dir.length);
-        string_append_strview(&buf, &editor.home_dir);
+        buf = string_new(len + runner->home_dir->length);
+        string_append_strview(&buf, runner->home_dir);
         string_append_byte(&buf, '/');
         pos += 2;
     } else {
@@ -163,10 +142,10 @@ char *parse_command_arg(const char *cmd, size_t len, bool tilde)
             pos += parse_dq(cmd + pos, len - pos, &buf);
             break;
         case '$':
-            pos += parse_var(cmd + pos, len - pos, &buf);
+            pos += parse_var(runner, cmd + pos, len - pos, &buf);
             break;
         case '\\':
-            if (pos == len) {
+            if (unlikely(pos == len)) {
                 goto end;
             }
             ch = cmd[pos++];
@@ -181,9 +160,8 @@ end:
     return string_steal_cstring(&buf);
 }
 
-size_t find_end(const char *cmd, const size_t startpos, CommandParseError *err)
+size_t find_end(const char *cmd, size_t pos, CommandParseError *err)
 {
-    size_t pos = startpos;
     while (1) {
         switch (cmd[pos++]) {
         case '\'':
@@ -192,7 +170,7 @@ size_t find_end(const char *cmd, const size_t startpos, CommandParseError *err)
                     pos++;
                     break;
                 }
-                if (cmd[pos] == '\0') {
+                if (unlikely(cmd[pos] == '\0')) {
                     *err = CMDERR_UNCLOSED_SQUOTE;
                     return 0;
                 }
@@ -205,21 +183,23 @@ size_t find_end(const char *cmd, const size_t startpos, CommandParseError *err)
                     pos++;
                     break;
                 }
-                if (cmd[pos] == '\0') {
+                if (unlikely(cmd[pos] == '\0')) {
                     *err = CMDERR_UNCLOSED_DQUOTE;
                     return 0;
                 }
                 if (cmd[pos++] == '\\') {
-                    if (cmd[pos] == '\0') {
-                        goto unexpected_eof;
+                    if (unlikely(cmd[pos] == '\0')) {
+                        *err = CMDERR_UNEXPECTED_EOF;
+                        return 0;
                     }
                     pos++;
                 }
             }
             break;
         case '\\':
-            if (cmd[pos] == '\0') {
-                goto unexpected_eof;
+            if (unlikely(cmd[pos] == '\0')) {
+                *err = CMDERR_UNEXPECTED_EOF;
+                return 0;
             }
             pos++;
             break;
@@ -233,16 +213,14 @@ size_t find_end(const char *cmd, const size_t startpos, CommandParseError *err)
             return pos - 1;
         }
     }
+
     BUG("Unexpected break of outer loop");
-unexpected_eof:
-    *err = CMDERR_UNEXPECTED_EOF;
-    return 0;
 }
 
-CommandParseError parse_commands(PointerArray *array, const char *cmd)
+// Note: `array` must be freed, regardless of the return value
+CommandParseError parse_commands(const CommandRunner *runner, PointerArray *array, const char *cmd)
 {
-    size_t pos = 0;
-    while (1) {
+    for (size_t pos = 0; true; ) {
         while (ascii_isspace(cmd[pos])) {
             pos++;
         }
@@ -263,9 +241,10 @@ CommandParseError parse_commands(PointerArray *array, const char *cmd)
             return err;
         }
 
-        ptr_array_append(array, parse_command_arg(cmd + pos, end - pos, true));
+        ptr_array_append(array, parse_command_arg(runner, cmd + pos, end - pos, true));
         pos = end;
     }
+
     ptr_array_append(array, NULL);
     return CMDERR_NONE;
 }
@@ -277,7 +256,8 @@ const char *command_parse_error_to_string(CommandParseError err)
         [CMDERR_UNCLOSED_DQUOTE] = "unclosed \"",
         [CMDERR_UNEXPECTED_EOF] = "unexpected EOF",
     };
+
     BUG_ON(err <= CMDERR_NONE);
-    BUG_ON(err >= ARRAY_COUNT(error_strings));
+    BUG_ON(err >= ARRAYLEN(error_strings));
     return error_strings[err];
 }

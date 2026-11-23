@@ -2,6 +2,7 @@
 #define TERMINAL_COLOR_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 #include "util/macros.h"
 
@@ -37,27 +38,9 @@ enum {
     COLOR_WHITE = 15,
 
     // This bit flag is used to allow 24-bit RGB colors to be differentiated
-    // from basic colors (e.g. #000004 vs. COLOR_BLUE).
+    // from basic colors (e.g. #000004 vs. COLOR_BLUE)
     COLOR_FLAG_RGB = INT32_C(1) << 24
 };
-
-enum {
-    ATTR_KEEP = 0x01,
-    ATTR_UNDERLINE = 0x02,
-    ATTR_REVERSE = 0x04,
-    ATTR_BLINK = 0x08,
-    ATTR_DIM = 0x10,
-    ATTR_BOLD = 0x20,
-    ATTR_INVIS = 0x40,
-    ATTR_ITALIC = 0x80,
-    ATTR_STRIKETHROUGH = 0x100,
-};
-
-typedef struct {
-    int32_t fg;
-    int32_t bg;
-    unsigned int attr;
-} TermColor;
 
 static inline void color_split_rgb(int32_t c, uint8_t *r, uint8_t *g, uint8_t *b)
 {
@@ -66,18 +49,7 @@ static inline void color_split_rgb(int32_t c, uint8_t *r, uint8_t *g, uint8_t *b
     *b = c & 0xff;
 }
 
-static inline bool same_color(const TermColor *c1, const TermColor *c2)
-{
-    return
-        c1->attr == c2->attr
-        && c1->fg == c2->fg
-        && c1->bg == c2->bg
-    ;
-}
-
-bool parse_term_color(TermColor *color, char **strs) NONNULL_ARGS;
-int32_t color_to_nearest(int32_t color, TermColorCapabilityType type);
-const char *term_color_to_string(const TermColor *color) NONNULL_ARGS_AND_RETURN;
-void collect_colors_and_attributes(const char *prefix) NONNULL_ARGS;
+int32_t parse_rgb(const char *str, size_t len);
+int32_t color_to_nearest(int32_t color, TermColorCapabilityType type, bool optimize);
 
 #endif

@@ -1,4 +1,5 @@
 #include <stdlib.h>
+#include <string.h>
 #include "args.h"
 #include "error.h"
 #include "util/str-util.h"
@@ -49,12 +50,13 @@ ArgParseError do_parse_args(const Command *cmd, CommandArgs *a)
             unsigned char flag = arg[j];
             const char *flagp = strchr(flag_desc, flag);
             if (unlikely(!flagp || flag == '=')) {
-                return ARGERR_INVALID_OPTION | (flag << 8);
+                a->flags[0] = flag;
+                return ARGERR_INVALID_OPTION;
             }
 
-            a->flag_set |= UINT64_C(1) << cmdargs_flagset_idx(flag);
+            a->flag_set |= cmdargs_flagset_value(flag);
             a->flags[nr_flags++] = flag;
-            if (unlikely(nr_flags == ARRAY_COUNT(a->flags))) {
+            if (unlikely(nr_flags == ARRAYLEN(a->flags))) {
                 return ARGERR_TOO_MANY_OPTIONS;
             }
 
@@ -63,12 +65,14 @@ ArgParseError do_parse_args(const Command *cmd, CommandArgs *a)
             }
 
             if (unlikely(j > 1 || arg[j + 1])) {
-                return ARGERR_OPTION_ARGUMENT_NOT_SEPARATE | (flag << 8);
+                a->flags[0] = flag;
+                return ARGERR_OPTION_ARGUMENT_NOT_SEPARATE;
             }
 
             char *flag_arg = args[i + 1];
             if (unlikely(!flag_arg)) {
-                return ARGERR_OPTION_ARGUMENT_MISSING | (flag << 8);
+                a->flags[0] = flag;
+                return ARGERR_OPTION_ARGUMENT_MISSING;
             }
 
             // Move flag argument before any other arguments
@@ -105,48 +109,43 @@ ArgParseError do_parse_args(const Command *cmd, CommandArgs *a)
     return 0;
 }
 
-bool parse_args(const Command *cmd, CommandArgs *a)
+static bool arg_parse_error_msg(const Command *cmd, const CommandArgs *a, ArgParseError err)
 {
-    ArgParseError err = do_parse_args(cmd, a);
-    if (likely(err == 0)) {
-        return true;
-    }
-
-    ArgParseErrorType err_type = err & 0xFF;
-    unsigned char flag = (err >> 8) & 0xFF;
-    switch (err_type) {
+    switch (err) {
     case ARGERR_INVALID_OPTION:
-        error_msg("Invalid option -%c", flag);
-        break;
+        return error_msg("Invalid option -%c", a->flags[0]);
     case ARGERR_TOO_MANY_OPTIONS:
-        error_msg("Too many options given");
-        break;
+        return error_msg("Too many options given");
     case ARGERR_OPTION_ARGUMENT_NOT_SEPARATE:
-        error_msg (
+        return error_msg (
             "Flag -%c must be given separately because it"
             " requires an argument",
-            flag
+            a->flags[0]
         );
-        break;
     case ARGERR_OPTION_ARGUMENT_MISSING:
-        error_msg("Option -%c requires an argument", flag);
-        break;
+        return error_msg("Option -%c requires an argument", a->flags[0]);
     case ARGERR_TOO_FEW_ARGUMENTS:
-        error_msg (
+        return error_msg (
             "Too few arguments (got: %zu, minimum: %u)",
             a->nr_args,
             (unsigned int)cmd->min_args
         );
-        break;
     case ARGERR_TOO_MANY_ARGUMENTS:
-        error_msg (
+        return error_msg (
             "Too many arguments (got: %zu, maximum: %u)",
             a->nr_args,
             (unsigned int)cmd->max_args
         );
+    case ARGERR_NONE:
         break;
-    default:
-        BUG("unhandled error type");
     }
+
+    BUG("unhandled error type");
     return false;
+}
+
+bool parse_args(const Command *cmd, CommandArgs *a)
+{
+    ArgParseError err = do_parse_args(cmd, a);
+    return likely(err == ARGERR_NONE) || arg_parse_error_msg(cmd, a, err);
 }

@@ -80,7 +80,11 @@ state instance-variable
     noeat start
 
 state maybe-symbol symbol
+    char -b !~*/%+<>&|^=- maybe-symbol-op
+    char -b @ maybe-symbol-at
     char -b a-zA-Z_ symbol
+    char '"' symbol-dq
+    char "'" symbol-sq
     char -b : double-colon
     recolor code
     noeat start
@@ -89,8 +93,38 @@ state double-colon
     recolor double-colon
     noeat start
 
+state maybe-symbol-op symbol
+    char -b <>=~ this
+    inlist symbol-operators start symbol
+    recolor code
+    noeat start
+
+state maybe-symbol-at symbol
+    char a-zA-Z_ symbol
+    recolor code
+    noeat start
+
 state symbol
     char a-zA-Z0-9_ this
+    noeat symbol-end
+
+state symbol-dq symbol
+    char "\"" start symbol
+    char -b "\\" .ruby-esc:this
+    eat this
+
+state symbol-sq symbol
+    char "'" start symbol
+    char -b "\\" symbol-sq-esc symbol
+    eat this
+
+state symbol-sq-esc special
+    char -b "'\\" symbol-sq special
+    recolor symbol
+    noeat symbol-sq
+
+state symbol-end
+    char !? start symbol
     noeat start
 
 state comment
@@ -134,15 +168,18 @@ state ident
 
 state dq string
     char "\"" start string
-    char "\n" line-start
     char -b "\\" .ruby-esc:this
     eat this
 
 state sq string
     char "'" start string
-    char "\n" line-start
-    char -b "\\" .ruby-esc:this
+    char -b "\\" sq-esc
     eat this
+
+state sq-esc special
+    char "'\\" sq special
+    recolor string
+    noeat sq
 
 list keyword \
     __ENCODING__ __LINE__ __FILE__ BEGIN END \
@@ -154,6 +191,9 @@ list keyword \
 # separate here to allow the option of highlighting with a different color
 list true-false-nil \
     true false nil
+
+list symbol-operators \
+    :! :~ :* :/ :% :+ :- :<< :>> :& :| :^ :< :<=  :>= :> :== :=== :!= :=~ :!~ :<=>
 
 default keyword true-false-nil
 default numeric symbol

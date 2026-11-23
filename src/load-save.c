@@ -1,31 +1,35 @@
-#include "../build/feature.h"
+#include "compat.h"
 #include <errno.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #include "load-save.h"
 #include "block.h"
 #include "convert.h"
-#include "editor.h"
 #include "encoding.h"
 #include "error.h"
 #include "util/debug.h"
-#include "util/macros.h"
+#include "util/fd.h"
+#include "util/list.h"
+#include "util/log.h"
 #include "util/path.h"
 #include "util/str-util.h"
+#include "util/time-util.h"
 #include "util/xmalloc.h"
 #include "util/xreadwrite.h"
 
-static void add_block(Buffer *b, Block *blk)
+static void add_block(Buffer *buffer, Block *blk)
 {
-    b->nl += blk->nl;
-    list_add_before(&blk->node, &b->blocks);
+    buffer->nl += blk->nl;
+    list_add_before(&blk->node, &buffer->blocks);
 }
 
 static Block *add_utf8_line (
-    Buffer *b,
+    Buffer *buffer,
     Block *blk,
     const unsigned char *line,
     size_t len
@@ -36,11 +40,9 @@ static Block *add_utf8_line (
         if (size <= avail) {
             goto copy;
         }
-        add_block(b, blk);
+        add_block(buffer, blk);
     }
-    if (size < 8192) {
-        size = 8192;
-    }
+    size = MAX(size, 8192);
     blk = block_new(size);
 copy:
     memcpy(blk->data + blk->size, line, len);
@@ -50,34 +52,34 @@ copy:
     return blk;
 }
 
-static bool decode_and_add_blocks(Buffer *b, const unsigned char *buf, size_t size)
+static bool decode_and_add_blocks(Buffer *buffer, const unsigned char *buf, size_t size, bool utf8_bom)
 {
     EncodingType bom_type = detect_encoding_from_bom(buf, size);
-    EncodingType enc_type = b->encoding.type;
+    EncodingType enc_type = buffer->encoding.type;
     if (enc_type == ENCODING_AUTODETECT) {
         if (bom_type != UNKNOWN_ENCODING) {
-            BUG_ON(b->encoding.name);
+            BUG_ON(buffer->encoding.name);
             Encoding e = encoding_from_type(bom_type);
             if (conversion_supported_by_iconv(e.name, "UTF-8")) {
-                buffer_set_encoding(b, e);
+                buffer_set_encoding(buffer, e, utf8_bom);
             } else {
-                buffer_set_encoding(b, encoding_from_type(UTF8));
+                buffer_set_encoding(buffer, encoding_from_type(UTF8), utf8_bom);
             }
         }
     }
 
-    // Skip BOM only if it matches the specified file encoding.
-    if (bom_type != UNKNOWN_ENCODING && bom_type == b->encoding.type) {
+    // Skip BOM only if it matches the specified file encoding
+    if (bom_type != UNKNOWN_ENCODING && bom_type == buffer->encoding.type) {
         const ByteOrderMark *bom = get_bom_for_encoding(bom_type);
         if (bom) {
             const size_t bom_len = bom->len;
             buf += bom_len;
             size -= bom_len;
-            b->bom = true;
+            buffer->bom = true;
         }
     }
 
-    FileDecoder *dec = new_file_decoder(b->encoding.name, buf, size);
+    FileDecoder *dec = new_file_decoder(buffer->encoding.name, buf, size);
     if (!dec) {
         return false;
     }
@@ -86,39 +88,39 @@ static bool decode_and_add_blocks(Buffer *b, const unsigned char *buf, size_t si
     size_t len;
     if (file_decoder_read_line(dec, &line, &len)) {
         if (len && line[len - 1] == '\r') {
-            b->crlf_newlines = true;
+            buffer->crlf_newlines = true;
             len--;
         }
-        Block *blk = add_utf8_line(b, NULL, line, len);
+        Block *blk = add_utf8_line(buffer, NULL, line, len);
         while (file_decoder_read_line(dec, &line, &len)) {
-            if (b->crlf_newlines && len && line[len - 1] == '\r') {
+            if (buffer->crlf_newlines && len && line[len - 1] == '\r') {
                 len--;
             }
-            blk = add_utf8_line(b, blk, line, len);
+            blk = add_utf8_line(buffer, blk, line, len);
         }
         if (blk) {
-            add_block(b, blk);
+            add_block(buffer, blk);
         }
     }
 
-    if (b->encoding.type == ENCODING_AUTODETECT) {
+    if (buffer->encoding.type == ENCODING_AUTODETECT) {
         const char *enc = file_decoder_get_encoding(dec);
-        buffer_set_encoding(b, enc ? encoding_from_name(enc) : editor.charset);
+        buffer_set_encoding(buffer, encoding_from_name(enc ? enc : "UTF-8"), utf8_bom);
     }
 
     free_file_decoder(dec);
     return true;
 }
 
-static void fixup_blocks(Buffer *b)
+static void fixup_blocks(Buffer *buffer)
 {
-    if (list_empty(&b->blocks)) {
+    if (list_empty(&buffer->blocks)) {
         Block *blk = block_new(1);
-        list_add_before(&blk->node, &b->blocks);
+        list_add_before(&blk->node, &buffer->blocks);
     } else {
-        // Incomplete lines are not allowed because they are
-        // special cases and cause lots of trouble.
-        Block *blk = BLOCK(b->blocks.prev);
+        // Incomplete lines are not allowed because they are special cases
+        // and cause lots of trouble
+        Block *blk = BLOCK(buffer->blocks.prev);
         if (blk->size && blk->data[blk->size - 1] != '\n') {
             if (blk->size == blk->alloc) {
                 blk->alloc = round_size_to_next_multiple(blk->size + 1, 64);
@@ -126,14 +128,14 @@ static void fixup_blocks(Buffer *b)
             }
             blk->data[blk->size++] = '\n';
             blk->nl++;
-            b->nl++;
+            buffer->nl++;
         }
     }
 }
 
 static int xmadvise_sequential(void *addr, size_t len)
 {
-#ifdef HAVE_POSIX_MADVISE
+#if HAVE_POSIX_MADVISE
     return posix_madvise(addr, len, POSIX_MADV_SEQUENTIAL);
 #else
     // "The posix_madvise() function shall have no effect on the semantics
@@ -145,43 +147,36 @@ static int xmadvise_sequential(void *addr, size_t len)
 #endif
 }
 
-static void update_file_info(Buffer *b, const struct stat *st)
+static bool update_file_info(FileInfo *info, const struct stat *st)
 {
-    b->file = (FileInfo) {
+    *info = (FileInfo) {
         .size = st->st_size,
         .mode = st->st_mode,
         .gid = st->st_gid,
         .uid = st->st_uid,
         .dev = st->st_dev,
         .ino = st->st_ino,
-        .mtime = st->st_mtime,
+        .mtime = *get_stat_mtime(st),
     };
-}
-
-static bool buffer_stat(Buffer *b, const char *filename)
-{
-    struct stat st;
-    if (stat(filename, &st) != 0) {
-        return false;
-    }
-    update_file_info(b, &st);
     return true;
 }
 
-static bool buffer_fstat(Buffer *b, int fd)
+static bool buffer_stat(FileInfo *info, const char *filename)
 {
     struct stat st;
-    if (fstat(fd, &st) != 0) {
-        return false;
-    }
-    update_file_info(b, &st);
-    return true;
+    return !stat(filename, &st) && update_file_info(info, &st);
 }
 
-bool read_blocks(Buffer *b, int fd)
+static bool buffer_fstat(FileInfo *info, int fd)
+{
+    struct stat st;
+    return !fstat(fd, &st) && update_file_info(info, &st);
+}
+
+bool read_blocks(Buffer *buffer, int fd, bool utf8_bom)
 {
     const size_t map_size = 64 * 1024;
-    size_t size = b->file.size;
+    size_t size = buffer->file.size;
     unsigned char *buf = NULL;
     bool mapped = false;
     bool ret = false;
@@ -202,7 +197,7 @@ bool read_blocks(Buffer *b, int fd)
         if (unlikely(!buf)) {
             goto error;
         }
-        ssize_t rc = xread(fd, buf, size);
+        ssize_t rc = xread_all(fd, buf, size);
         if (unlikely(rc < 0)) {
             goto error;
         }
@@ -217,7 +212,7 @@ bool read_blocks(Buffer *b, int fd)
         }
         size_t pos = 0;
         while (1) {
-            ssize_t rc = xread(fd, buf + pos, alloc - pos);
+            ssize_t rc = xread_all(fd, buf + pos, alloc - pos);
             if (rc < 0) {
                 goto error;
             }
@@ -243,7 +238,7 @@ bool read_blocks(Buffer *b, int fd)
     }
 
 decode:
-    ret = decode_and_add_blocks(b, buf, size);
+    ret = decode_and_add_blocks(buffer, buf, size, utf8_bom);
 
 error:
     if (mapped) {
@@ -253,56 +248,54 @@ error:
     }
 
     if (ret) {
-        fixup_blocks(b);
+        fixup_blocks(buffer);
     }
 
     return ret;
 }
 
-bool load_buffer(Buffer *b, bool must_exist, const char *filename)
+bool load_buffer(Buffer *buffer, const char *filename, const GlobalOptions *gopts, bool must_exist)
 {
     int fd = xopen(filename, O_RDONLY | O_CLOEXEC, 0);
 
     if (fd < 0) {
         if (errno != ENOENT) {
-            error_msg("Error opening %s: %s", filename, strerror(errno));
-            return false;
+            return error_msg("Error opening %s: %s", filename, strerror(errno));
         }
         if (must_exist) {
-            error_msg("File %s does not exist.", filename);
-            return false;
+            return error_msg("File %s does not exist", filename);
         }
-        fixup_blocks(b);
+        fixup_blocks(buffer);
     } else {
-        if (!buffer_fstat(b, fd)) {
+        if (!buffer_fstat(&buffer->file, fd)) {
             error_msg("fstat failed on %s: %s", filename, strerror(errno));
             goto error;
         }
-        if (!S_ISREG(b->file.mode)) {
+        if (!S_ISREG(buffer->file.mode)) {
             error_msg("Not a regular file %s", filename);
             goto error;
         }
-        if (unlikely(b->file.size < 0)) {
-            error_msg("Invalid file size: %jd", (intmax_t)b->file.size);
+        if (unlikely(buffer->file.size < 0)) {
+            error_msg("Invalid file size: %jd", (intmax_t)buffer->file.size);
             goto error;
         }
-        if (b->file.size / 1024 / 1024 > editor.options.filesize_limit) {
+        if (buffer->file.size / 1024 / 1024 > gopts->filesize_limit) {
             error_msg (
                 "File size exceeds 'filesize-limit' option (%uMiB): %s",
-                editor.options.filesize_limit,
-                filename
+                gopts->filesize_limit, filename
             );
             goto error;
         }
-        if (!read_blocks(b, fd)) {
+        if (!read_blocks(buffer, fd, gopts->utf8_bom)) {
             error_msg("Error reading %s: %s", filename, strerror(errno));
             goto error;
         }
         xclose(fd);
     }
 
-    if (b->encoding.type == ENCODING_AUTODETECT) {
-        buffer_set_encoding(b, editor.charset);
+    if (buffer->encoding.type == ENCODING_AUTODETECT) {
+        Encoding enc = encoding_from_type(UTF8);
+        buffer_set_encoding(buffer, enc, gopts->utf8_bom);
     }
 
     return true;
@@ -320,25 +313,23 @@ static mode_t get_umask(void)
     return old;
 }
 
-static bool write_buffer(Buffer *b, FileEncoder *enc, int fd, EncodingType bom_type)
+static bool write_buffer(Buffer *buffer, FileEncoder *enc, int fd, EncodingType bom_type)
 {
     size_t size = 0;
     const ByteOrderMark *bom = get_bom_for_encoding(bom_type);
     if (bom) {
         size = bom->len;
         BUG_ON(size == 0);
-        if (xwrite(fd, bom->bytes, size) < 0) {
-            perror_msg("write");
-            return false;
+        if (xwrite_all(fd, bom->bytes, size) < 0) {
+            return error_msg_errno("write");
         }
     }
 
     Block *blk;
-    block_for_each(blk, &b->blocks) {
+    block_for_each(blk, &buffer->blocks) {
         ssize_t rc = file_encoder_write(enc, blk->data, blk->size);
         if (rc < 0) {
-            perror_msg("write");
-            return false;
+            return error_msg_errno("write");
         }
         size += rc;
     }
@@ -347,132 +338,168 @@ static bool write_buffer(Buffer *b, FileEncoder *enc, int fd, EncodingType bom_t
     if (nr_errors > 0) {
         // Any real error hides this message
         error_msg (
-            "Warning: %zu non-reversible character conversion%s. File saved.",
+            "Warning: %zu non-reversible character conversion%s; file saved",
             nr_errors,
             (nr_errors > 1) ? "s" : ""
         );
     }
 
     // Need to truncate if writing to existing file
-    if (ftruncate(fd, size)) {
-        perror_msg("ftruncate");
-        return false;
+    if (xftruncate(fd, size)) {
+        return error_msg_errno("ftruncate");
     }
 
     return true;
 }
 
+static int tmp_file(const char *filename, const FileInfo *info, char *buf, size_t buflen)
+{
+    if (str_has_prefix(filename, "/tmp/")) {
+        // Don't use temporary file when saving file in /tmp because crontab
+        // command doesn't like the file to be replaced
+        return -1;
+    }
+
+    const char *base = path_basename(filename);
+    const StringView dir = path_slice_dirname(filename);
+    const int dlen = (int)dir.length;
+    int n = snprintf(buf, buflen, "%.*s/.tmp.%s.XXXXXX", dlen, dir.data, base);
+    if (unlikely(n <= 0 || n >= buflen)) {
+        buf[0] = '\0';
+        return -1;
+    }
+
+    int fd = mkstemp(buf);
+    if (fd < 0) {
+        // No write permission to the directory?
+        buf[0] = '\0';
+        return -1;
+    }
+
+    if (!info->mode) {
+        // New file
+        if (xfchmod(fd, 0666 & ~get_umask()) != 0) {
+            LOG_WARNING("failed to set file mode: %s", strerror(errno));
+        }
+        return fd;
+    }
+
+    // Preserve ownership and mode of the original file if possible
+    if (xfchown(fd, info->uid, info->gid) != 0) {
+        LOG_WARNING("failed to preserve file ownership: %s", strerror(errno));
+    }
+    if (xfchmod(fd, info->mode) != 0) {
+        LOG_WARNING("failed to preserve file mode: %s", strerror(errno));
+    }
+
+    return fd;
+}
+
+static int xfsync(int fd)
+{
+#if HAVE_FSYNC
+    retry:
+    if (fsync(fd) == 0) {
+        return 0;
+    }
+
+    switch (errno) {
+    // EINVAL is ignored because it just means "operation not possible
+    // on this descriptor" rather than indicating an actual error
+    case EINVAL:
+    case ENOTSUP:
+    case ENOSYS:
+        return 0;
+    case EINTR:
+        goto retry;
+    }
+
+    return -1;
+#else
+    (void)fd;
+    return 0;
+#endif
+}
+
 bool save_buffer (
-    Buffer *b,
+    Buffer *buffer,
     const char *filename,
     const Encoding *encoding,
     bool crlf,
-    bool write_bom
+    bool write_bom,
+    bool hardlinks
 ) {
-    FileEncoder *enc;
-    int fd = -1;
     char tmp[8192];
     tmp[0] = '\0';
-
-    // Don't use temporary file when saving file in /tmp because
-    // crontab command doesn't like the file to be replaced.
-    if (!str_has_prefix(filename, "/tmp/")) {
-        // Try to use temporary file first (safer)
-        const char *base = path_basename(filename);
-        const StringView dir = path_slice_dirname(filename);
-        const int dlen = (int)dir.length;
-        int n = snprintf(tmp, sizeof tmp, "%.*s/.tmp.%s.XXXXXX", dlen, dir.data, base);
-        if (likely(n > 0 && n < sizeof(tmp))) {
-            fd = mkstemp(tmp);
-            if (fd < 0) {
-                // No write permission to the directory?
-                tmp[0] = '\0';
-            } else if (b->file.mode) {
-                // Preserve ownership and mode of the original file if possible.
-                UNUSED int u1 = fchown(fd, b->file.uid, b->file.gid);
-                UNUSED int u2 = fchmod(fd, b->file.mode);
-            } else {
-                // New file
-                fchmod(fd, 0666 & ~get_umask());
-            }
-        }
+    int fd = -1;
+    if (hardlinks) {
+        LOG_INFO("target file has hard links; writing in-place");
+    } else {
+        // Try to use temporary file (safer)
+        fd = tmp_file(filename, &buffer->file, tmp, sizeof(tmp));
     }
 
     if (fd < 0) {
-        // Overwrite the original file (if exists) directly.
+        // Overwrite the original file directly (if it exists).
         // Ownership is preserved automatically if the file exists.
-        mode_t mode = b->file.mode;
+        mode_t mode = buffer->file.mode;
         if (mode == 0) {
-            // New file.
+            // New file
             mode = 0666 & ~get_umask();
         }
         fd = xopen(filename, O_CREAT | O_TRUNC | O_WRONLY | O_CLOEXEC, mode);
         if (fd < 0) {
-            perror_msg("open");
-            return false;
+            return error_msg_errno("open");
         }
     }
 
-    enc = new_file_encoder(encoding, crlf, fd);
+    FileEncoder *enc = new_file_encoder(encoding, crlf, fd);
     if (unlikely(!enc)) {
         // This should never happen because encoding is validated early
-        perror_msg("new_file_encoder");
-        xclose(fd);
+        error_msg_errno("new_file_encoder");
         goto error;
     }
 
     EncodingType bom_type = write_bom ? encoding->type : UNKNOWN_ENCODING;
-    if (!write_buffer(b, enc, fd, bom_type)) {
-        xclose(fd);
+    if (!write_buffer(buffer, enc, fd, bom_type)) {
         goto error;
     }
 
-#ifdef HAVE_FSYNC
-    if (b->options.fsync) {
-        retry:
-        if (fsync(fd) != 0) {
-            switch (errno) {
-            // EINVAL is ignored because it just means "operation not
-            // possible on this descriptor" rather than indicating an
-            // actual error
-            case EINVAL:
-            case ENOTSUP:
-            case ENOSYS:
-                break;
-            case EINTR:
-                goto retry;
-            default:
-                perror_msg("fsync");
-                xclose(fd);
-                goto error;
-            }
-        }
+    if (buffer->options.fsync && xfsync(fd) != 0) {
+        error_msg_errno("fsync");
+        goto error;
     }
-#endif
 
-    if (xclose(fd)) {
-        perror_msg("close");
+    int r = xclose(fd);
+    fd = -1;
+    if (r != 0) {
+        error_msg_errno("close");
         goto error;
     }
-    if (*tmp && rename(tmp, filename)) {
-        perror_msg("rename");
+
+    if (tmp[0] && rename(tmp, filename)) {
+        error_msg_errno("rename");
         goto error;
     }
+
     free_file_encoder(enc);
-    buffer_stat(b, filename);
+    buffer_stat(&buffer->file, filename);
     return true;
 
 error:
+    if (fd >= 0) {
+        xclose(fd);
+    }
     if (enc) {
         free_file_encoder(enc);
     }
-    if (*tmp) {
+    if (tmp[0]) {
         unlink(tmp);
     } else {
-        // Not using temporary file therefore mtime may have changed.
+        // Not using temporary file, therefore mtime may have changed.
         // Update stat to avoid "File has been modified by someone else"
         // error later when saving the file again.
-        buffer_stat(b, filename);
+        buffer_stat(&buffer->file, filename);
     }
     return false;
 }

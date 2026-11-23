@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <string.h>
+#include <sys/types.h>
 #include "ascii.h"
 #include "debug.h"
 #include "macros.h"
@@ -42,7 +43,8 @@ static inline StringView strview_from_cstring(const char *str)
 NONNULL_ARGS
 static inline bool strview_equal(const StringView *a, const StringView *b)
 {
-    return a->length == b->length && memcmp(a->data, b->data, a->length) == 0;
+    size_t n = a->length;
+    return n == b->length && (n == 0 || memcmp(a->data, b->data, n) == 0);
 }
 
 NONNULL_ARGS
@@ -76,10 +78,15 @@ static inline bool strview_equal_cstring_icase(const StringView *sv, const char 
 }
 
 NONNULL_ARGS
+static inline bool strview_has_strn_prefix(const StringView *sv, const char *p, size_t n)
+{
+    return sv->length >= n && memcmp(sv->data, p, n) == 0;
+}
+
+NONNULL_ARGS
 static inline bool strview_has_prefix(const StringView *sv, const char *p)
 {
-    size_t length = strlen(p);
-    return sv->length >= length && memcmp(sv->data, p, length) == 0;
+    return strview_has_strn_prefix(sv, p, strlen(p));
 }
 
 NONNULL_ARGS
@@ -90,15 +97,18 @@ static inline bool strview_has_prefix_icase(const StringView *sv, const char *p)
 }
 
 NONNULL_ARGS
+static inline bool strview_has_suffix(const StringView *sv, const char *suf)
+{
+    size_t len = sv->length;
+    size_t suflen = strlen(suf);
+    return len >= suflen && memcmp(sv->data + len - suflen, suf, suflen) == 0;
+}
+
+NONNULL_ARGS
 static inline bool strview_isblank(const StringView *sv)
 {
-    const unsigned char *data = sv->data;
-    const size_t len = sv->length;
-    size_t i = 0;
-    while (i < len && ascii_isblank(data[i])) {
-        i++;
-    }
-    return (i == len);
+    size_t len = sv->length;
+    return len == ascii_blank_prefix_length(sv->data, len);
 }
 
 NONNULL_ARGS
@@ -116,7 +126,7 @@ static inline bool strview_contains_char_type(const StringView *sv, AsciiCharTyp
 NONNULL_ARGS
 static inline const unsigned char *strview_memchr(const StringView *sv, int c)
 {
-    return memchr(sv->data, c, sv->length);
+    return sv->length ? memchr(sv->data, c, sv->length) : NULL;
 }
 
 NONNULL_ARGS
@@ -133,23 +143,28 @@ static inline const unsigned char *strview_memrchr(const StringView *sv, int c)
     return NULL;
 }
 
+NONNULL_ARGS
+static inline ssize_t strview_memrchr_idx(const StringView *sv, int c)
+{
+    const unsigned char *ptr = strview_memrchr(sv, c);
+    return ptr ? (ssize_t)(ptr - sv->data) : -1;
+}
+
 static inline void strview_remove_prefix(StringView *sv, size_t len)
 {
     BUG_ON(len > sv->length);
-    sv->data += len;
-    sv->length -= len;
+    if (len > 0) {
+        sv->data += len;
+        sv->length -= len;
+    }
 }
 
 NONNULL_ARGS
-static inline void strview_trim_left(StringView *sv)
+static inline size_t strview_trim_left(StringView *sv)
 {
-    const unsigned char *data = sv->data;
-    const size_t len = sv->length;
-    size_t i = 0;
-    while (i < len && ascii_isblank(data[i])) {
-        i++;
-    }
-    strview_remove_prefix(sv, i);
+    size_t blank_len = ascii_blank_prefix_length(sv->data, sv->length);
+    strview_remove_prefix(sv, blank_len);
+    return blank_len;
 }
 
 NONNULL_ARGS
@@ -161,6 +176,13 @@ static inline void strview_trim_right(StringView *sv)
         n--;
     }
     sv->length = n;
+}
+
+NONNULL_ARGS
+static inline void strview_trim(StringView *sv)
+{
+    strview_trim_left(sv);
+    strview_trim_right(sv);
 }
 
 #endif

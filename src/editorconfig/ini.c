@@ -1,9 +1,6 @@
-#include <stdlib.h>
 #include "ini.h"
 #include "util/ascii.h"
 #include "util/debug.h"
-#include "util/macros.h"
-#include "util/readfile.h"
 #include "util/str-util.h"
 
 static void strip_trailing_comments_and_whitespace(StringView *line)
@@ -29,43 +26,25 @@ static void strip_trailing_comments_and_whitespace(StringView *line)
     line->length = len;
 }
 
-UNITTEST {
-    StringView tmp = STRING_VIEW(" \t  key = val   #   inline comment    ");
-    strview_trim_left(&tmp);
-    strip_trailing_comments_and_whitespace(&tmp);
-    BUG_ON(!strview_equal_cstring(&tmp, "key = val"));
-}
-
-int ini_parse(const char *filename, IniCallback callback, void *userdata)
+bool ini_parse(IniParser *ctx)
 {
-    char *buf;
-    const ssize_t ssize = read_file(filename, &buf);
-    if (ssize < 0) {
-        return -1;
-    }
+    const char *input = ctx->input;
+    const size_t len = ctx->input_len;
+    size_t pos = ctx->pos;
 
-    const size_t size = ssize;
-    size_t pos = 0;
-    if (size >= 3 && mem_equal(buf, "\xEF\xBB\xBF", 3)) {
-        // Skip past UTF-8 BOM
-        pos += 3;
-    }
-
-    StringView section = STRING_VIEW_INIT;
-    unsigned int nameidx = 0;
-
-    while (pos < size) {
-        StringView line = buf_slice_next_line(buf, &pos, size);
+    while (pos < len) {
+        StringView line = buf_slice_next_line(input, &pos, len);
         strview_trim_left(&line);
         if (line.length < 2 || line.data[0] == '#' || line.data[0] == ';') {
             continue;
         }
 
         strip_trailing_comments_and_whitespace(&line);
+        BUG_ON(line.length == 0);
         if (line.data[0] == '[') {
-            if (line.length > 1 && line.data[line.length - 1] == ']') {
-                section = string_view(line.data + 1, line.length - 2);
-                nameidx = 0;
+            if (strview_has_suffix(&line, "]")) {
+                ctx->section = string_view(line.data + 1, line.length - 2);
+                ctx->name_count = 0;
             }
             continue;
         }
@@ -85,16 +64,12 @@ int ini_parse(const char *filename, IniCallback callback, void *userdata)
         strview_remove_prefix(&value, val_offset);
         strview_trim_left(&value);
 
-        const IniData data = {
-            .section = section,
-            .name = name,
-            .value = value,
-            .name_idx = nameidx++,
-        };
-
-        callback(&data, userdata);
+        ctx->name = name,
+        ctx->value = value,
+        ctx->name_count++;
+        ctx->pos = pos;
+        return true;
     }
 
-    free(buf);
-    return 0;
+    return false;
 }

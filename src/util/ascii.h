@@ -23,7 +23,6 @@ typedef enum {
 } AsciiCharType;
 
 #define ascii_isspace(x) ascii_test(x, ASCII_SPACE)
-#define ascii_isdigit(x) ascii_test(x, ASCII_DIGIT)
 #define ascii_iscntrl(x) ascii_test(x, ASCII_CNTRL)
 #define ascii_islower(x) ascii_test(x, ASCII_LOWER)
 #define ascii_isupper(x) ascii_test(x, ASCII_UPPER)
@@ -44,6 +43,16 @@ static inline bool ascii_test(unsigned char c, AsciiCharType mask)
 static inline bool ascii_isblank(unsigned char c)
 {
     return c == ' ' || c == '\t';
+}
+
+static inline bool ascii_isdigit(unsigned char c)
+{
+    return (unsigned int)c - '0' <= 9;
+}
+
+static inline bool ascii_is_digit_or_dot(unsigned char c)
+{
+    return ascii_isdigit(c) || c == '.';
 }
 
 static inline bool ascii_is_nonspace_cntrl(unsigned char c)
@@ -97,6 +106,15 @@ static inline bool mem_equal_icase(const void *p1, const void *p2, size_t n)
         }
     }
     return true;
+}
+
+static inline size_t ascii_blank_prefix_length(const char *str, size_t len)
+{
+    size_t i = 0;
+    while (i < len && ascii_isblank(str[i])) {
+        i++;
+    }
+    return i;
 }
 
 #endif

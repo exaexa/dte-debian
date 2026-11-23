@@ -11,11 +11,13 @@ static const struct FileInterpreterMap {
     {"clisp", LISP},
     {"coffee", COFFEESCRIPT},
     {"crystal", RUBY},
+    {"csh", CSH},
     {"dart", DART},
     {"dash", SH},
     {"ecl", LISP},
     {"elixir", ELIXIR},
     {"escript", ERLANG},
+    {"fish", FISH},
     {"gawk", AWK},
     {"gjs", JAVASCRIPT},
     {"gmake", MAKE},
@@ -35,6 +37,7 @@ static const struct FileInterpreterMap {
     {"mksh", SH},
     {"moon", MOONSCRIPT},
     {"nawk", AWK},
+    {"nft", NFTABLES},
     {"node", JAVASCRIPT},
     {"ocaml", OCAML},
     {"pdksh", SH},
@@ -42,6 +45,7 @@ static const struct FileInterpreterMap {
     {"php", PHP},
     {"pwsh", POWERSHELL},
     {"python", PYTHON},
+    {"qjs", JAVASCRIPT},
     {"r6rs", SCHEME},
     {"racket", SCHEME},
     {"rake", RUBY},
@@ -54,6 +58,7 @@ static const struct FileInterpreterMap {
     {"sh", SH},
     {"tcc", C},
     {"tclsh", TCL},
+    {"tcsh", CSH},
     {"wish", TCL},
     {"zsh", SH},
 };
@@ -64,7 +69,7 @@ static FileTypeEnum filetype_from_interpreter(const StringView name)
         return NONE;
     }
 
-    if (name.length >= ARRAY_COUNT(interpreters[0].key)) {
+    if (name.length >= ARRAYLEN(interpreters[0].key)) {
         if (strview_equal_cstring(&name, "openrc-run")) {
             return SH;
         } else if (strview_equal_cstring(&name, "runhaskell")) {

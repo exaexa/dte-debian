@@ -2,7 +2,7 @@ CC ?= gcc
 CFLAGS ?= -O2
 LDFLAGS ?=
 AWK = awk
-VERSION = 1.10
+VERSION = 1.11.1
 
 # These options are used unconditionally, since they've been supported
 # by GCC since at least the minimum required version (GCC 4.6).
@@ -12,6 +12,7 @@ WARNINGS = \
     -Wmissing-prototypes -Wstrict-prototypes -Wwrite-strings \
     -Wundef -Wshadow -Wcast-align -Wredundant-decls -Wswitch-enum \
     -Wvla -Wold-style-definition -Wframe-larger-than=32768 \
+    -Wpointer-arith -Wnested-externs -Winit-self \
     -Werror=div-by-zero -Werror=implicit-function-declaration \
     -Wno-sign-compare -Wno-pointer-sign
 
@@ -23,43 +24,45 @@ WARNINGS_EXTRA = \
     -Wlogical-op
 
 BUILTIN_SYNTAX_FILES ?= \
-    awk c config css d diff docker dte gitcommit gitrebase go html \
-    ini java javascript lisp lua mail make markdown meson nginx ninja \
-    php python robotstxt roff ruby scheme sed sh sql tex texmfcnf tmux \
-    vala xml xresources zig inc/c-comment inc/c-uchar
+    awk c coccinelle config css d diff docker dte gcode gitcommit \
+    gitignore gitrebase go gomod html ini java javascript json lisp \
+    lua mail make markdown meson nginx ninja php python robotstxt \
+    roff ruby scheme sed sh sql tex texmfcnf tmux vala xml xresources \
+    zig inc/c-comment inc/c-uchar
 
 BUILTIN_CONFIGS = $(addprefix config/, \
     rc binding/default compiler/gcc compiler/go \
-    $(addprefix color/, reset reset-basic default darkgray) \
+    $(addprefix color/, reset default darkgray) \
     $(addprefix syntax/, $(BUILTIN_SYNTAX_FILES)) )
 
 TEST_CONFIGS := $(addprefix test/data/, $(addsuffix .dterc, \
-    env thai crlf pipe redo fuzz1 fuzz2 ))
+    env thai crlf pipe redo shift fuzz1 fuzz2 ))
 
 util_objects := $(call prefix-obj, build/util/, \
-    ascii base64 debug exec hashmap hashset numtostr path ptr-array \
-    readfile string strtonum unicode utf8 xmalloc xreadwrite xsnprintf )
+    array ascii base64 debug fd fork-exec hashmap hashset intern intmap \
+    log numtostr path ptr-array readfile string strtonum time-util unicode \
+    utf8 xmalloc xmemmem xreadwrite xsnprintf xstdio )
 
 command_objects := $(call prefix-obj, build/command/, \
-    args env macro parse run serialize )
+    alias args cache macro parse run serialize )
 
 editorconfig_objects := $(call prefix-obj, build/editorconfig/, \
     editorconfig ini match )
 
 syntax_objects := $(call prefix-obj, build/syntax/, \
-    color highlight state syntax )
+    color highlight merge state syntax )
 
 terminal_objects := $(call prefix-obj, build/terminal/, \
-    color ecma48 input key kitty mode output rxvt terminal \
-    winsize xterm )
+    color cursor input ioctl key linux mode osc52 output parse rxvt \
+    style terminal )
 
 editor_objects := $(call prefix-obj, build/, \
-    alias bind block block-iter buffer change cmdline commands \
-    convert compiler completion config ctags edit editor \
-    encoding error file-history file-option filetype frame history \
-    indent load-save lock main mode move msg options regexp \
-    screen screen-cmdline screen-status screen-tabbar screen-view \
-    search selection show spawn tag view window ) \
+    bind block block-iter bookmark buffer change cmdline commands \
+    compat compiler completion config convert copy ctags edit editor \
+    encoding error exec file-history file-option filetype frame history \
+    indent load-save lock main misc mode move msg options regexp replace \
+    search selection shift show signals spawn status tag vars view window \
+    $(addprefix screen-, cmdline prompt status tabbar view window) screen ) \
     $(command_objects) \
     $(editorconfig_objects) \
     $(syntax_objects) \
@@ -67,17 +70,23 @@ editor_objects := $(call prefix-obj, build/, \
     $(util_objects)
 
 test_objects := $(call prefix-obj, build/test/, \
-    bind cmdline command config dump editorconfig encoding filetype \
-    history main options syntax terminal test util )
+    bind bookmark buffer cmdline command config ctags dump editorconfig \
+    encoding error filetype frame history indent main options spawn status \
+    syntax terminal test util )
+
+bench_objects := $(call prefix-obj, build/test/, benchmark)
 
 feature_tests := $(addprefix build/feature/, $(addsuffix .h, \
-    dup3 pipe2 fsync TIOCGWINSZ tcgetwinsize posix_madvise ))
+    dup3 pipe2 fsync memmem sig2str sigabbrev_np TIOCGWINSZ TIOCNOTTY \
+    tcgetwinsize posix_madvise ))
 
-all_objects := $(editor_objects) $(test_objects)
+all_objects := $(editor_objects) $(test_objects) $(bench_objects)
 build_subdirs := $(filter-out build/, $(sort $(dir $(all_objects)))) build/feature/
 
 editor_sources := $(patsubst build/%.o, src/%.c, $(editor_objects))
 test_sources := $(patsubst build/test/%.o, test/%.c, $(test_objects))
+bench_sources := $(patsubst build/test/%.o, test/%.c, $(bench_objects))
+all_sources := $(editor_sources) $(test_sources) $(bench_sources)
 
 ifeq "$(WERROR)" "1"
   WARNINGS += -Werror
@@ -117,6 +126,7 @@ endif
 
 dte = dte$(EXEC_SUFFIX)
 test = build/test/test$(EXEC_SUFFIX)
+bench = build/test/bench$(EXEC_SUFFIX)
 
 ifeq "$(USE_SANITIZER)" "1"
   SANITIZER_FLAGS := \
@@ -126,13 +136,13 @@ ifeq "$(USE_SANITIZER)" "1"
     $(call cc-option,$(SANITIZER_FLAGS)), \
     $(warning USE_SANITIZER set but compiler doesn't support ASan/UBSan) )
   $(all_objects): BASIC_CFLAGS += $(CC_SANITIZER_FLAGS)
-  $(dte) $(test): BASIC_LDFLAGS += $(CC_SANITIZER_FLAGS)
+  $(dte) $(test) $(bench): BASIC_LDFLAGS += $(CC_SANITIZER_FLAGS)
   DEBUG = 3
 else
   # 0: Disable debugging
   # 1: Enable BUG_ON() and light-weight sanity checks
-  # 2: Enable logging to $DTE_LOG
-  # 3: Enable expensive sanity checks
+  # 2: Enable LOG_DEBUG()
+  # 3: Enable LOG_TRACE() and expensive sanity checks
   DEBUG ?= 0
 endif
 
@@ -148,11 +158,12 @@ BASIC_CFLAGS += \
 
 $(all_objects): BASIC_CFLAGS += -Isrc
 
+OPTCHECK = mk/optcheck.sh $(if $(MAKE_S),-s)
+
 # If "make install*" with no other named targets
 ifeq "" "$(filter-out install%,$(or $(MAKECMDGOALS),all))"
-  OPTCHECK = :
-else
-  OPTCHECK = SILENT_BUILD='$(MAKE_S)' mk/optcheck.sh
+  # Only generate files with $(OPTCHECK) if they don't already exist
+  OPTCHECK += -R
 endif
 
 ifndef NO_DEPS
@@ -165,7 +176,8 @@ ifndef NO_DEPS
 endif
 
 $(dte): $(editor_objects)
-$(test): $(filter-out build/main.o, $(all_objects))
+$(test): $(filter-out build/main.o, $(editor_objects)) $(test_objects)
+$(bench): $(filter-out build/main.o, $(editor_objects)) $(bench_objects)
 $(util_objects): | build/util/
 $(command_objects): | build/command/
 $(editorconfig_objects): | build/editorconfig/
@@ -173,20 +185,25 @@ $(syntax_objects): | build/syntax/
 $(terminal_objects): | build/terminal/
 $(build_subdirs): | build/
 $(feature_tests): mk/feature-test/defs.h build/all.cflags | build/feature/
+build/convert.o: build/convert.cflags
 build/builtin-config.h: build/builtin-config.mk
 build/test/data.h: build/test/data.mk
 build/config.o: build/builtin-config.h
 build/test/config.o: build/test/data.h
-build/editor.o: build/version.h
+build/main.o: build/version.h
+build/editor.o: build/version.h build/feature.h
 build/load-save.o: build/feature.h
-build/util/exec.o: build/feature.h
-build/terminal/winsize.o: build/feature.h
-build/convert.o: build/convert.cflags
+build/signals.o: build/feature.h
+build/util/fd.o: build/feature.h
+build/util/xmemmem.o: build/feature.h
+build/terminal/ioctl.o: build/feature.h
+build/compat.o: build/feature.h
 
 CFLAGS_ALL = $(CPPFLAGS) $(CFLAGS) $(BASIC_CFLAGS)
 LDFLAGS_ALL = $(CFLAGS) $(LDFLAGS) $(BASIC_LDFLAGS)
+featuredef = $(HASH)define HAVE_$(call toupper,$(notdir $(basename $(1))))
 
-$(dte) $(test): build/all.ldflags
+$(dte) $(test) $(bench): build/all.ldflags
 	$(E) LINK $@
 	$(Q) $(CC) $(LDFLAGS_ALL) -o $@ $(filter %.o, $^) $(LDLIBS)
 
@@ -194,7 +211,7 @@ $(editor_objects): build/%.o: src/%.c build/all.cflags | build/
 	$(E) CC $@
 	$(Q) $(CC) $(CFLAGS_ALL) $(DEPFLAGS) -c -o $@ $<
 
-$(test_objects): build/test/%.o: test/%.c build/all.cflags | build/test/
+$(test_objects) $(bench_objects): build/test/%.o: test/%.c build/all.cflags | build/test/
 	$(E) CC $@
 	$(Q) $(CC) $(CFLAGS_ALL) $(DEPFLAGS) -c -o $@ $<
 
@@ -205,7 +222,7 @@ build/%.cflags: FORCE | build/
 	@$(OPTCHECK) '$(CC) $(CFLAGS_ALL)' $@
 
 build/version.h: FORCE | build/
-	@$(OPTCHECK) 'static const char version[] = "$(VERSION)";' $@
+	@$(OPTCHECK) '$(HASH)define VERSION "$(VERSION)"' $@
 
 build/builtin-config.mk: FORCE | build/
 	@$(OPTCHECK) '$(@:.mk=.h): $(BUILTIN_CONFIGS)' $@
@@ -225,12 +242,12 @@ build/feature.h: mk/feature-test/defs.h $(feature_tests)
 	$(E) GEN $@
 	$(Q) cat $^ > $@
 
-$(feature_tests): build/feature/%.h: mk/feature-test/%.c mk/feature-test/%.h
-	$(E) DETECT $*
+$(feature_tests): build/feature/%.h: mk/feature-test/%.c
+	$(E) DETECT $@
 	$(Q) if $(CC) $(CFLAGS_ALL) -o $(@:.h=.o) $< 2>$(@:.h=.log); then \
-	  cp $(<:.c=.h) $@ ; \
+	  echo '$(call featuredef,$@) 1' > $@ ; \
 	else \
-	  echo '// $* not detected' > $@ ; \
+	  echo '$(call featuredef,$@) 0' > $@ ; \
 	fi
 
 build/ $(build_subdirs):
@@ -239,5 +256,4 @@ build/ $(build_subdirs):
 
 CLEANFILES += $(dte)
 CLEANDIRS += build/
-.PHONY: FORCE
 .SECONDARY: build/

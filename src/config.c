@@ -1,103 +1,81 @@
 #include <errno.h>
 #include <stdbool.h>
+#include <stdlib.h>
+#include <string.h>
 #include <sys/types.h>
 #include "config.h"
 #include "commands.h"
-#include "completion.h"
+#include "editor.h"
 #include "error.h"
 #include "syntax/color.h"
-#include "terminal/terminal.h"
-#include "util/ascii.h"
 #include "util/debug.h"
 #include "util/readfile.h"
 #include "util/str-util.h"
-#include "util/string.h"
-#include "util/xmalloc.h"
 #include "../build/builtin-config.h"
 
 ConfigState current_config;
 
-static bool is_command(const char *str, size_t len)
-{
-    for (size_t i = 0; i < len; i++) {
-        if (str[i] == '#') {
-            return false;
-        }
-        if (!ascii_isspace(str[i])) {
-            return true;
-        }
-    }
-    return false;
-}
-
 // Odd number of backslashes at end of line?
-static bool has_line_continuation(const char *str, size_t len)
+static bool has_line_continuation(StringView line)
 {
-    ssize_t pos = len - 1;
-    while (pos >= 0 && str[pos] == '\\') {
+    ssize_t pos = line.length - 1;
+    while (pos >= 0 && line.data[pos] == '\\') {
         pos--;
     }
-    return (len - 1 - pos) % 2;
+    return (line.length - 1 - pos) & 1;
 }
 
-void exec_config(const CommandSet *cmds, const char *buf, size_t size)
+UNITTEST {
+    BUG_ON(has_line_continuation(string_view(NULL, 0)));
+    BUG_ON(has_line_continuation(strview_from_cstring("0")));
+    BUG_ON(!has_line_continuation(strview_from_cstring("1 \\")));
+    BUG_ON(has_line_continuation(strview_from_cstring("2 \\\\")));
+    BUG_ON(!has_line_continuation(strview_from_cstring("3 \\\\\\")));
+    BUG_ON(has_line_continuation(strview_from_cstring("4 \\\\\\\\")));
+}
+
+void exec_config(CommandRunner *runner, StringView config)
 {
-    const char *ptr = buf;
-    String line = string_new(1024);
+    String buf = string_new(1024);
 
-    while (ptr < buf + size) {
-        size_t n = buf + size - ptr;
-        char *end = memchr(ptr, '\n', n);
-        if (end) {
-            n = end - ptr;
+    for (size_t i = 0, n = config.length; i < n; current_config.line++) {
+        StringView line = buf_slice_next_line(config.data, &i, n);
+        strview_trim_left(&line);
+        if (buf.len == 0 && strview_has_prefix(&line, "#")) {
+            // Comment line
+            continue;
         }
-
-        if (line.len || is_command(ptr, n)) {
-            if (has_line_continuation(ptr, n)) {
-                string_append_buf(&line, ptr, n - 1);
-            } else {
-                string_append_buf(&line, ptr, n);
-                handle_command(cmds, string_borrow_cstring(&line), false);
-                string_clear(&line);
-            }
+        if (has_line_continuation(line)) {
+            line.length--;
+            string_append_strview(&buf, &line);
+        } else {
+            string_append_strview(&buf, &line);
+            handle_command(runner, string_borrow_cstring(&buf));
+            string_clear(&buf);
         }
-
-        current_config.line++;
-        ptr += n + 1;
     }
 
-    if (line.len) {
-        handle_command(cmds, string_borrow_cstring(&line), false);
+    if (unlikely(buf.len)) {
+        // This can only happen if the last line had a line continuation
+        handle_command(runner, string_borrow_cstring(&buf));
     }
 
-    string_free(&line);
+    string_free(&buf);
 }
 
 String dump_builtin_configs(void)
 {
     String str = string_new(1024);
-    for (size_t i = 0; i < ARRAY_COUNT(builtin_configs); i++) {
+    for (size_t i = 0; i < ARRAYLEN(builtin_configs); i++) {
         string_append_cstring(&str, builtin_configs[i].name);
         string_append_byte(&str, '\n');
     }
     return str;
 }
 
-void collect_builtin_configs(const char *prefix)
-{
-    for (size_t i = 0; i < ARRAY_COUNT(builtin_configs); i++) {
-        const BuiltinConfig *cfg = &builtin_configs[i];
-        if (str_has_prefix(cfg->name, "syntax/")) {
-            return;
-        } else if (str_has_prefix(cfg->name, prefix)) {
-            add_completion(xstrdup(cfg->name));
-        }
-    }
-}
-
 const BuiltinConfig *get_builtin_config(const char *name)
 {
-    for (size_t i = 0; i < ARRAY_COUNT(builtin_configs); i++) {
+    for (size_t i = 0; i < ARRAYLEN(builtin_configs); i++) {
         if (streq(name, builtin_configs[i].name)) {
             return &builtin_configs[i];
         }
@@ -107,38 +85,36 @@ const BuiltinConfig *get_builtin_config(const char *name)
 
 const BuiltinConfig *get_builtin_configs_array(size_t *nconfigs)
 {
-    *nconfigs = ARRAY_COUNT(builtin_configs);
+    *nconfigs = ARRAYLEN(builtin_configs);
     return &builtin_configs[0];
 }
 
-int do_read_config(const CommandSet *cmds, const char *filename, ConfigFlags flags)
+int do_read_config(CommandRunner *runner, const char *filename, ConfigFlags flags)
 {
     const bool must_exist = flags & CFG_MUST_EXIST;
     const bool builtin = flags & CFG_BUILTIN;
 
     if (builtin) {
         const BuiltinConfig *cfg = get_builtin_config(filename);
+        int err = 0;
         if (cfg) {
             current_config.file = filename;
             current_config.line = 1;
-            exec_config(cmds, cfg->text.data, cfg->text.length);
-            return 0;
+            exec_config(runner, cfg->text);
         } else if (must_exist) {
             error_msg (
                 "Error reading '%s': no built-in config exists for that path",
                 filename
             );
-            return 1;
-        } else {
-            return 0;
+            err = 1;
         }
+        return err;
     }
 
     char *buf;
     ssize_t size = read_file(filename, &buf);
-    int err = errno;
-
     if (size < 0) {
+        int err = errno;
         if (err != ENOENT || must_exist) {
             error_msg("Error reading %s: %s", filename, strerror(err));
         }
@@ -147,38 +123,63 @@ int do_read_config(const CommandSet *cmds, const char *filename, ConfigFlags fla
 
     current_config.file = filename;
     current_config.line = 1;
-
-    exec_config(cmds, buf, size);
+    exec_config(runner, string_view(buf, size));
     free(buf);
     return 0;
 }
 
-int read_config(const CommandSet *cmds, const char *filename, ConfigFlags flags)
+int read_config(CommandRunner *runner, const char *filename, ConfigFlags flags)
 {
     // Recursive
     const ConfigState saved = current_config;
-    int ret = do_read_config(cmds, filename, flags);
+    int ret = do_read_config(runner, filename, flags);
     current_config = saved;
     return ret;
 }
 
-void exec_builtin_color_reset(void)
+void exec_builtin_color_reset(EditorState *e)
 {
-    clear_hl_colors();
-    bool colors = terminal.color_type >= TERM_8_COLOR;
-    const char *cfg = colors ? "color/reset" : "color/reset-basic";
-    read_config(&commands, cfg, CFG_MUST_EXIST | CFG_BUILTIN);
+    clear_hl_colors(&e->colors);
+    const StringView reset = string_view(builtin_color_reset, sizeof(builtin_color_reset) - 1);
+    const ConfigState saved = current_config;
+    current_config.file = "color/reset";
+    current_config.line = 1;
+    exec_normal_config(e, reset);
+    current_config = saved;
 }
 
-void exec_builtin_rc(void)
+void exec_builtin_rc(EditorState *e)
 {
-    exec_builtin_color_reset();
-    read_config(&commands, "rc", CFG_MUST_EXIST | CFG_BUILTIN);
+    exec_builtin_color_reset(e);
+    const StringView rc = string_view(builtin_rc, sizeof(builtin_rc) - 1);
+    const ConfigState saved = current_config;
+    current_config.file = "rc";
+    current_config.line = 1;
+    exec_normal_config(e, rc);
+    current_config = saved;
+}
+
+void collect_builtin_configs(PointerArray *a, const char *prefix)
+{
+    for (size_t i = 0; i < ARRAYLEN(builtin_configs); i++) {
+        const char *name = builtin_configs[i].name;
+        if (str_has_prefix(name, prefix)) {
+            ptr_array_append(a, xstrdup(name));
+        }
+    }
+}
+
+void collect_builtin_includes(PointerArray *a, const char *prefix)
+{
+    for (size_t i = 0; i < ARRAYLEN(builtin_configs); i++) {
+        const char *name = builtin_configs[i].name;
+        if (str_has_prefix(name, prefix) && !str_has_prefix(name, "syntax/")) {
+            ptr_array_append(a, xstrdup(name));
+        }
+    }
 }
 
 UNITTEST {
-    // Built-in configs can be customized, but these 3 are required:
     BUG_ON(!get_builtin_config("rc"));
     BUG_ON(!get_builtin_config("color/reset"));
-    BUG_ON(!get_builtin_config("color/reset-basic"));
 }

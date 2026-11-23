@@ -1,9 +1,7 @@
 #include "screen.h"
-#include "editor.h"
+#include "indent.h"
 #include "selection.h"
 #include "syntax/highlight.h"
-#include "terminal/output.h"
-#include "terminal/terminal.h"
 #include "util/ascii.h"
 #include "util/debug.h"
 #include "util/str-util.h"
@@ -21,72 +19,65 @@ typedef struct {
     size_t pos;
     size_t indent_size;
     size_t trailing_ws_offset;
-    TermColor **colors;
+    const TermColor **colors;
 } LineInfo;
 
-static bool is_default_bg_color(int32_t color)
-{
-    return color == builtin_colors[BC_DEFAULT].bg || color < 0;
-}
-
 // Like mask_color() but can change bg color only if it has not been changed yet
-static void mask_color2(TermColor *color, const TermColor *over)
+static void mask_color2(const ColorScheme *colors, TermColor *color, const TermColor *over)
 {
-    if (over->fg != -2) {
-        color->fg = over->fg;
-    }
-    if (over->bg != -2 && is_default_bg_color(color->bg)) {
+    int32_t default_bg = colors->builtin[BC_DEFAULT].bg;
+    if (over->bg != COLOR_KEEP && (color->bg == default_bg || color->bg < 0)) {
         color->bg = over->bg;
     }
+
+    if (over->fg != COLOR_KEEP) {
+        color->fg = over->fg;
+    }
+
     if (!(over->attr & ATTR_KEEP)) {
         color->attr = over->attr;
     }
 }
 
 static void mask_selection_and_current_line (
+    const ColorScheme *colors,
     const LineInfo *info,
     TermColor *color
 ) {
     if (info->offset >= info->sel_so && info->offset < info->sel_eo) {
-        mask_color(color, &builtin_colors[BC_SELECTION]);
+        mask_color(color, &colors->builtin[BC_SELECTION]);
     } else if (info->line_nr == info->view->cy) {
-        mask_color2(color, &builtin_colors[BC_CURRENTLINE]);
+        mask_color2(colors, color, &colors->builtin[BC_CURRENTLINE]);
     }
 }
 
-static bool is_non_text(CodePoint u)
+static bool is_non_text(CodePoint u, bool display_special)
 {
     if (u == '\t') {
-        return editor.options.display_special;
+        return display_special;
     }
     return u < 0x20 || u == 0x7F || u_is_unprintable(u);
 }
 
-static unsigned int get_ws_error_option(const Buffer *b)
+static WhitespaceErrorFlags get_ws_error(const LocalOptions *opts)
 {
-    unsigned int flags = b->options.ws_error;
-    if (flags & WSE_AUTO_INDENT) {
-        if (b->options.expand_tab) {
-            flags |= WSE_TAB_AFTER_INDENT | WSE_TAB_INDENT;
-        } else {
-            flags |= WSE_SPACE_INDENT;
-        }
-    }
-    return flags;
+    WhitespaceErrorFlags taberrs = WSE_TAB_INDENT | WSE_TAB_AFTER_INDENT;
+    WhitespaceErrorFlags extra = opts->expand_tab ? taberrs : WSE_SPACE_INDENT;
+    return opts->ws_error | ((opts->ws_error & WSE_AUTO_INDENT) ? extra : 0);
 }
 
 static bool whitespace_error(const LineInfo *info, CodePoint u, size_t i)
 {
-    const View *v = info->view;
-    const unsigned int flags = get_ws_error_option(v->buffer);
-    const unsigned int trailing = flags & (WSE_TRAILING | WSE_ALL_TRAILING);
+    const View *view = info->view;
+    WhitespaceErrorFlags flags = get_ws_error(&view->buffer->options);
+    WhitespaceErrorFlags trailing = flags & (WSE_TRAILING | WSE_ALL_TRAILING);
     if (i >= info->trailing_ws_offset && trailing) {
         // Trailing whitespace
         if (
             // Cursor is not on this line
-            info->line_nr != v->cy
+            info->line_nr != view->cy
             // or is positioned before any trailing whitespace
-            || v->cx < info->trailing_ws_offset
+            || view->cx < info->trailing_ws_offset
             // or user explicitly wants trailing space under cursor highlighted
             || flags & WSE_ALL_TRAILING
         ) {
@@ -96,7 +87,7 @@ static bool whitespace_error(const LineInfo *info, CodePoint u, size_t i)
 
     bool in_indent = (i < info->indent_size);
     if (u == '\t') {
-        unsigned int mask = in_indent ? WSE_TAB_INDENT : WSE_TAB_AFTER_INDENT;
+        WhitespaceErrorFlags mask = in_indent ? WSE_TAB_INDENT : WSE_TAB_AFTER_INDENT;
         return (flags & mask) != 0;
     }
     if (!in_indent) {
@@ -115,8 +106,8 @@ static bool whitespace_error(const LineInfo *info, CodePoint u, size_t i)
         count++;
     }
 
-    unsigned int mask;
-    if (count >= v->buffer->options.tab_width) {
+    WhitespaceErrorFlags mask;
+    if (count >= view->buffer->options.tab_width) {
         // Spaces used instead of tab
         mask = WSE_SPACE_INDENT;
     } else if (pos < info->size && line[pos] == '\t') {
@@ -129,7 +120,7 @@ static bool whitespace_error(const LineInfo *info, CodePoint u, size_t i)
     return (flags & mask) != 0;
 }
 
-static CodePoint screen_next_char(LineInfo *info)
+static CodePoint screen_next_char(EditorState *e, LineInfo *info)
 {
     size_t count, pos = info->pos;
     CodePoint u = info->line[pos];
@@ -157,39 +148,39 @@ static CodePoint screen_next_char(LineInfo *info)
     if (info->colors && info->colors[pos]) {
         color = *info->colors[pos];
     } else {
-        color = builtin_colors[BC_DEFAULT];
+        color = e->colors.builtin[BC_DEFAULT];
     }
-    if (is_non_text(u)) {
-        mask_color(&color, &builtin_colors[BC_NONTEXT]);
+    if (is_non_text(u, e->options.display_special)) {
+        mask_color(&color, &e->colors.builtin[BC_NONTEXT]);
     }
     if (ws_error) {
-        mask_color(&color, &builtin_colors[BC_WSERROR]);
+        mask_color(&color, &e->colors.builtin[BC_WSERROR]);
     }
-    mask_selection_and_current_line(info, &color);
-    set_color(&color);
+    mask_selection_and_current_line(&e->colors, info, &color);
+    set_color(&e->terminal, &e->colors, &color);
 
     info->offset += count;
     return u;
 }
 
-static void screen_skip_char(LineInfo *info)
+static void screen_skip_char(TermOutputBuffer *obuf, LineInfo *info)
 {
     CodePoint u = info->line[info->pos++];
     info->offset++;
     if (likely(u < 0x80)) {
         if (likely(!ascii_iscntrl(u))) {
-            obuf.x++;
-        } else if (u == '\t' && obuf.tab != TAB_CONTROL) {
-            obuf.x += (obuf.x + obuf.tab_width) / obuf.tab_width * obuf.tab_width - obuf.x;
+            obuf->x++;
+        } else if (u == '\t' && obuf->tab_mode != TAB_CONTROL) {
+            obuf->x = next_indent_width(obuf->x, obuf->tab_width);
         } else {
             // Control
-            obuf.x += 2;
+            obuf->x += 2;
         }
     } else {
         size_t pos = info->pos;
         info->pos--;
         u = u_get_nonascii(info->line, info->size, &info->pos);
-        obuf.x += u_char_width(u);
+        obuf->x += u_char_width(u);
         info->offset += info->pos - pos;
     }
 }
@@ -205,10 +196,10 @@ static bool is_notice(const char *word, size_t len)
 }
 
 // Highlight certain words inside comments
-static void hl_words(const LineInfo *info)
+static void hl_words(Terminal *term, const ColorScheme *colors, const LineInfo *info)
 {
-    TermColor *cc = find_color("comment");
-    TermColor *nc = find_color("notice");
+    const TermColor *cc = find_color(colors, "comment");
+    const TermColor *nc = find_color(colors, "notice");
 
     if (!info->colors || !cc || !nc) {
         return;
@@ -226,7 +217,7 @@ static void hl_words(const LineInfo *info)
 
     // This should be more than enough. I'm too lazy to iterate characters
     // instead of bytes and calculate text width.
-    const size_t max = info->pos + terminal.width * 4 + 8;
+    const size_t max = info->pos + term->width * 4 + 8;
 
     size_t si;
     while (i < info->size) {
@@ -255,26 +246,27 @@ static void hl_words(const LineInfo *info)
 
 static void line_info_init (
     LineInfo *info,
-    const View *v,
+    const View *view,
     const BlockIter *bi,
     size_t line_nr
 ) {
-    memset(info, 0, sizeof(*info));
-    info->view = v;
-    info->line_nr = line_nr;
-    info->offset = block_iter_get_offset(bi);
+    *info = (LineInfo) {
+        .view = view,
+        .line_nr = line_nr,
+        .offset = block_iter_get_offset(bi),
+    };
 
-    if (!v->selection) {
+    if (!view->selection) {
         info->sel_so = -1;
         info->sel_eo = -1;
-    } else if (v->sel_eo != UINT_MAX) {
+    } else if (view->sel_eo != SEL_EO_RECALC) {
         // Already calculated
-        info->sel_so = v->sel_so;
-        info->sel_eo = v->sel_eo;
+        info->sel_so = view->sel_so;
+        info->sel_eo = view->sel_eo;
         BUG_ON(info->sel_so > info->sel_eo);
     } else {
         SelectionInfo sel;
-        init_selection(v, &sel);
+        init_selection(view, &sel);
         info->sel_so = sel.so;
         info->sel_eo = sel.eo;
     }
@@ -283,7 +275,7 @@ static void line_info_init (
 static void line_info_set_line (
     LineInfo *info,
     const StringView *line,
-    TermColor **colors
+    const TermColor **colors
 ) {
     BUG_ON(line->length == 0);
     BUG_ON(line->data[line->length - 1] != '\n');
@@ -315,7 +307,7 @@ static void line_info_set_line (
     }
 }
 
-static void print_line(LineInfo *info)
+static void print_line(EditorState *e, LineInfo *info)
 {
     // Screen might be scrolled horizontally. Skip most invisible
     // characters using screen_skip_char(), which is much faster than
@@ -323,16 +315,19 @@ static void print_line(LineInfo *info)
     //
     // There can be a wide character (tab, control code etc.) that is
     // partially visible and can't be skipped using screen_skip_char().
-    while (obuf.x + 8 < obuf.scroll_x && info->pos < info->size) {
-        screen_skip_char(info);
+    Terminal *term = &e->terminal;
+    TermOutputBuffer *obuf = &term->obuf;
+    while (obuf->x + 8 < obuf->scroll_x && info->pos < info->size) {
+        screen_skip_char(obuf, info);
     }
 
-    hl_words(info);
+    const ColorScheme *colors = &e->colors;
+    hl_words(term, colors, info);
 
     while (info->pos < info->size) {
-        BUG_ON(obuf.x > obuf.scroll_x + obuf.width);
-        CodePoint u = screen_next_char(info);
-        if (!term_put_char(u)) {
+        BUG_ON(obuf->x > obuf->scroll_x + obuf->width);
+        CodePoint u = screen_next_char(e, info);
+        if (!term_put_char(obuf, u)) {
             // +1 for newline
             info->offset += info->size - info->pos + 1;
             return;
@@ -340,92 +335,93 @@ static void print_line(LineInfo *info)
     }
 
     TermColor color;
-    if (editor.options.display_special && obuf.x >= obuf.scroll_x) {
+    if (e->options.display_special && obuf->x >= obuf->scroll_x) {
         // Syntax highlighter highlights \n but use default color anyway
-        color = builtin_colors[BC_DEFAULT];
-        mask_color(&color, &builtin_colors[BC_NONTEXT]);
-        mask_selection_and_current_line(info, &color);
-        set_color(&color);
-        term_put_char('$');
+        color = colors->builtin[BC_DEFAULT];
+        mask_color(&color, &colors->builtin[BC_NONTEXT]);
+        mask_selection_and_current_line(colors, info, &color);
+        set_color(term, colors, &color);
+        term_put_char(obuf, '$');
     }
 
-    color = builtin_colors[BC_DEFAULT];
-    mask_selection_and_current_line(info, &color);
-    set_color(&color);
+    color = colors->builtin[BC_DEFAULT];
+    mask_selection_and_current_line(colors, info, &color);
+    set_color(term, colors, &color);
     info->offset++;
-    term_clear_eol();
+    term_clear_eol(term);
 }
 
-void update_range(const View *v, long y1, long y2)
+void update_range(EditorState *e, const View *view, long y1, long y2)
 {
-    const int edit_x = v->window->edit_x;
-    const int edit_y = v->window->edit_y;
-    const int edit_w = v->window->edit_w;
-    const int edit_h = v->window->edit_h;
+    const int edit_x = view->window->edit_x;
+    const int edit_y = view->window->edit_y;
+    const int edit_w = view->window->edit_w;
+    const int edit_h = view->window->edit_h;
 
-    term_output_reset(edit_x, edit_w, v->vx);
-    obuf.tab_width = v->buffer->options.tab_width;
-    obuf.tab = editor.options.display_special ? TAB_SPECIAL : TAB_NORMAL;
+    Terminal *term = &e->terminal;
+    TermOutputBuffer *obuf = &term->obuf;
+    term_output_reset(term, edit_x, edit_w, view->vx);
+    obuf->tab_width = view->buffer->options.tab_width;
+    obuf->tab_mode = e->options.display_special ? TAB_SPECIAL : TAB_NORMAL;
 
-    BlockIter bi = v->cursor;
-    for (long i = 0, n = v->cy - y1; i < n; i++) {
+    BlockIter bi = view->cursor;
+    for (long i = 0, n = view->cy - y1; i < n; i++) {
         block_iter_prev_line(&bi);
     }
-    for (long i = 0, n = y1 - v->cy; i < n; i++) {
+    for (long i = 0, n = y1 - view->cy; i < n; i++) {
         block_iter_eat_line(&bi);
     }
     block_iter_bol(&bi);
 
     LineInfo info;
-    line_info_init(&info, v, &bi, y1);
+    line_info_init(&info, view, &bi, y1);
 
-    y1 -= v->vy;
-    y2 -= v->vy;
+    y1 -= view->vy;
+    y2 -= view->vy;
 
     bool got_line = !block_iter_is_eof(&bi);
-    hl_fill_start_states(v->buffer, info.line_nr);
+    hl_fill_start_states(view->buffer, &e->colors, info.line_nr);
     long i;
     for (i = y1; got_line && i < y2; i++) {
-        obuf.x = 0;
-        term_move_cursor(edit_x, edit_y + i);
+        obuf->x = 0;
+        term_move_cursor(obuf, edit_x, edit_y + i);
 
         StringView line;
         fill_line_nl_ref(&bi, &line);
         bool next_changed;
-        TermColor **colors = hl_line(v->buffer, &line, info.line_nr, &next_changed);
+        const TermColor **colors = hl_line(view->buffer, &e->colors, &line, info.line_nr, &next_changed);
         line_info_set_line(&info, &line, colors);
-        print_line(&info);
+        print_line(e, &info);
 
         got_line = !!block_iter_next_line(&bi);
         info.line_nr++;
 
         if (next_changed && i + 1 == y2 && y2 < edit_h) {
-            // More lines need to be updated not because their
-            // contents have changed but because their highlight
-            // state has.
+            // More lines need to be updated not because their contents have
+            // changed but because their highlight state has
             y2++;
         }
     }
 
-    if (i < y2 && info.line_nr == v->cy) {
+    if (i < y2 && info.line_nr == view->cy) {
         // Dummy empty line is shown only if cursor is on it
-        TermColor color = builtin_colors[BC_DEFAULT];
+        TermColor color = e->colors.builtin[BC_DEFAULT];
 
-        obuf.x = 0;
-        mask_color2(&color, &builtin_colors[BC_CURRENTLINE]);
-        set_color(&color);
+        obuf->x = 0;
+        mask_color2(&e->colors, &color, &e->colors.builtin[BC_CURRENTLINE]);
+        set_color(term, &e->colors, &color);
 
-        term_move_cursor(edit_x, edit_y + i++);
-        term_clear_eol();
+        term_move_cursor(obuf, edit_x, edit_y + i++);
+        term_clear_eol(term);
     }
 
     if (i < y2) {
-        set_builtin_color(BC_NOLINE);
+        set_builtin_color(term, &e->colors, BC_NOLINE);
     }
     for (; i < y2; i++) {
-        obuf.x = 0;
-        term_move_cursor(edit_x, edit_y + i);
-        term_put_char('~');
-        term_clear_eol();
+        obuf->x = 0;
+        term_move_cursor(obuf, edit_x, edit_y + i);
+        term_put_char(obuf, '~');
+        term_clear_eol(term);
     }
 }

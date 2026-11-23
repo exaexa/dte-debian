@@ -1,522 +1,321 @@
+#include "compat.h"
 #include <errno.h>
 #include <langinfo.h>
 #include <locale.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include "editor.h"
-#include "alias.h"
-#include "buffer.h"
+#include "bind.h"
+#include "bookmark.h"
+#include "command/macro.h"
+#include "commands.h"
+#include "compiler.h"
+#include "encoding.h"
 #include "error.h"
+#include "file-option.h"
+#include "filetype.h"
+#include "lock.h"
 #include "mode.h"
 #include "regexp.h"
 #include "screen.h"
+#include "search.h"
+#include "signals.h"
+#include "syntax/syntax.h"
+#include "tag.h"
 #include "terminal/input.h"
 #include "terminal/mode.h"
 #include "terminal/output.h"
-#include "terminal/terminal.h"
+#include "terminal/style.h"
 #include "util/ascii.h"
 #include "util/debug.h"
 #include "util/exitcode.h"
-#include "util/hashset.h"
+#include "util/intern.h"
+#include "util/log.h"
 #include "util/utf8.h"
 #include "util/xmalloc.h"
-#include "util/xsnprintf.h"
-#include "view.h"
+#include "util/xstdio.h"
 #include "window.h"
 #include "../build/version.h"
 
-EditorState editor = {
-    .status = EDITOR_INITIALIZING,
-    .input_mode = INPUT_NORMAL,
-    .child_controls_terminal = false,
-    .everything_changed = false,
-    .resized = false,
-    .exit_code = EX_OK,
-    .buffers = PTR_ARRAY_INIT,
-    .version = version,
-    .cmdline_x = 0,
-    .cmdline = {
-        .buf = STRING_INIT,
-        .pos = 0,
-        .search_pos = NULL,
-        .search_text = NULL
-    },
-    .command_history = {
-        .filename = NULL,
-        .max_entries = 512,
-        .entries = HASHMAP_INIT
-    },
-    .search_history = {
-        .filename = NULL,
-        .max_entries = 128,
-        .entries = HASHMAP_INIT
-    },
-    .options = {
-        .auto_indent = true,
-        .detect_indent = 0,
-        .editorconfig = false,
-        .emulate_tab = false,
-        .expand_tab = false,
-        .file_history = true,
-        .indent_width = 8,
-        .syntax = true,
-        .tab_width = 8,
-        .text_width = 72,
-        .ws_error = WSE_SPECIAL,
-
-        // Global-only options
-        .case_sensitive_search = CSS_TRUE,
-        .crlf_newlines = false,
-        .display_invisible = false,
-        .display_special = false,
-        .esc_timeout = 100,
-        .filesize_limit = 250,
-        .lock_files = true,
-        .scroll_margin = 0,
-        .select_cursor_char = true,
-        .set_window_title = false,
-        .show_line_numbers = false,
-        .statusline_left = " %f%s%m%r%s%M",
-        .statusline_right = " %y,%X   %u   %E%s%b%s%n %t   %p ",
-        .tab_bar = true,
-        .utf8_bom = false,
-    }
-};
-
-void init_editor_state(void)
+static void set_and_check_locale(void)
 {
+    const char *default_locale = setlocale(LC_CTYPE, "");
+    if (likely(default_locale)) {
+        const char *codeset = nl_langinfo(CODESET);
+        LOG_INFO("locale: %s (codeset: %s)", default_locale, codeset);
+        if (likely(lookup_encoding(codeset) == UTF8)) {
+            return;
+        }
+    } else {
+        LOG_ERROR("failed to set default locale");
+    }
+
+    static const char fallbacks[][12] = {"C.UTF-8", "en_US.UTF-8"};
+    const char *fallback = NULL;
+    for (size_t i = 0; i < ARRAYLEN(fallbacks) && !fallback; i++) {
+        fallback = setlocale(LC_CTYPE, fallbacks[i]);
+    }
+    if (fallback) {
+        LOG_INFO("using fallback locale for LC_CTYPE: %s", fallback);
+        return;
+    }
+
+    LOG_ERROR("no UTF-8 fallback locales found");
+    fputs("setlocale() failed\n", stderr);
+    exit(EX_CONFIG);
+}
+
+EditorState *init_editor_state(void)
+{
+    EditorState *e = xnew(EditorState, 1);
+    *e = (EditorState) {
+        .status = EDITOR_INITIALIZING,
+        .input_mode = INPUT_NORMAL,
+        .version = VERSION,
+        .command_history = {
+            .max_entries = 512,
+        },
+        .search_history = {
+            .max_entries = 128,
+        },
+        .cursor_styles = {
+            [CURSOR_MODE_DEFAULT] = {.type = CURSOR_DEFAULT, .color = COLOR_DEFAULT},
+            [CURSOR_MODE_INSERT] = {.type = CURSOR_KEEP, .color = COLOR_KEEP},
+            [CURSOR_MODE_OVERWRITE] = {.type = CURSOR_KEEP, .color = COLOR_KEEP},
+            [CURSOR_MODE_CMDLINE] = {.type = CURSOR_KEEP, .color = COLOR_KEEP},
+        },
+        .modes = {
+            [INPUT_NORMAL] = {.cmds = &normal_commands},
+            [INPUT_COMMAND] = {.cmds = &cmd_mode_commands},
+            [INPUT_SEARCH] = {.cmds = &search_mode_commands},
+        },
+        .options = {
+            .auto_indent = true,
+            .detect_indent = 0,
+            .editorconfig = false,
+            .emulate_tab = false,
+            .expand_tab = false,
+            .file_history = true,
+            .indent_width = 8,
+            .overwrite = false,
+            .save_unmodified = SAVE_FULL,
+            .syntax = true,
+            .tab_width = 8,
+            .text_width = 72,
+            .ws_error = WSE_SPECIAL,
+
+            // Global-only options
+            .case_sensitive_search = CSS_TRUE,
+            .crlf_newlines = false,
+            .display_special = false,
+            .esc_timeout = 100,
+            .filesize_limit = 250,
+            .lock_files = true,
+            .optimize_true_color = true,
+            .scroll_margin = 0,
+            .select_cursor_char = true,
+            .set_window_title = false,
+            .show_line_numbers = false,
+            .statusline_left = str_intern(" %f%s%m%s%r%s%M"),
+            .statusline_right = str_intern(" %y,%X  %u  %o  %E%s%b%s%n %t   %p "),
+            .tab_bar = true,
+            .utf8_bom = false,
+        }
+    };
+
+    sanity_check_global_options(&e->options);
+
+    for (size_t i = 0; i < ARRAYLEN(e->modes); i++) {
+        const CommandSet *cmds = e->modes[i].cmds;
+        BUG_ON(!cmds);
+        BUG_ON(!cmds->lookup);
+    }
+
     const char *home = getenv("HOME");
     const char *dte_home = getenv("DTE_HOME");
-    editor.xdg_runtime_dir = getenv("XDG_RUNTIME_DIR");
-
-    editor.home_dir = strview_intern(home ? home : "");
-
+    e->home_dir = strview_intern(home ? home : "");
     if (dte_home) {
-        editor.user_config_dir = xstrdup(dte_home);
+        e->user_config_dir = xstrdup(dte_home);
     } else {
-        editor.user_config_dir = xasprintf("%s/.dte", editor.home_dir.data);
+        e->user_config_dir = xasprintf("%s/.dte", e->home_dir.data);
     }
 
-    log_init("DTE_LOG");
-    DEBUG_LOG("version: %s", version);
+    LOG_INFO("dte version: " VERSION);
+    LOG_INFO("features:%s", feature_string);
 
-    const char *locale = setlocale(LC_CTYPE, "");
-    if (unlikely(!locale)) {
-        fatal_error("setlocale", errno);
+    pid_t pid = getpid();
+    bool leader = pid == getsid(0);
+    e->session_leader = leader;
+    LOG_INFO("pid: %jd%s", (intmax_t)pid, leader ? " (session leader)" : "");
+
+    pid_t pgid = getpgrp();
+    if (pgid != pid) {
+        LOG_INFO("pgid: %jd", (intmax_t)pgid);
     }
 
-    DEBUG_LOG("locale: %s", locale);
-    editor.charset = encoding_from_name(nl_langinfo(CODESET));
-    editor.term_utf8 = (editor.charset.type == UTF8);
+    set_and_check_locale();
+    init_file_locks_context(e->user_config_dir, pid);
 
     // Allow child processes to detect that they're running under dte
-    if (unlikely(setenv("DTE_VERSION", version, true) != 0)) {
+    if (unlikely(setenv("DTE_VERSION", VERSION, true) != 0)) {
         fatal_error("setenv", errno);
     }
 
-    regexp_init_word_boundary_tokens();
-    init_aliases();
+    RegexpWordBoundaryTokens *wb = &e->regexp_word_tokens;
+    if (regexp_init_word_boundary_tokens(wb)) {
+        LOG_INFO("regex word boundary tokens detected: %s %s", wb->start, wb->end);
+    } else {
+        LOG_WARNING("no regex word boundary tokens detected");
+    }
+
+    term_input_init(&e->terminal.ibuf);
+    term_output_init(&e->terminal.obuf);
+    hashmap_init(&e->aliases, 32);
+    intmap_init(&e->modes[INPUT_NORMAL].key_bindings, 150);
+    intmap_init(&e->modes[INPUT_COMMAND].key_bindings, 40);
+    intmap_init(&e->modes[INPUT_SEARCH].key_bindings, 40);
+    return e;
 }
 
-static void sanity_check(void)
+void free_editor_state(EditorState *e)
+{
+    free(e->clipboard.buf);
+    free_file_options(&e->file_options);
+    free_filetypes(&e->filetypes);
+    free_syntaxes(&e->syntaxes);
+    file_history_free(&e->file_history);
+    history_free(&e->command_history);
+    history_free(&e->search_history);
+    search_free_regexp(&e->search);
+    term_output_free(&e->terminal.obuf);
+    term_input_free(&e->terminal.ibuf);
+    cmdline_free(&e->cmdline);
+    clear_messages(&e->messages);
+    free_macro(&e->macro);
+    tag_file_free(&e->tagfile);
+
+    ptr_array_free_cb(&e->bookmarks, FREE_FUNC(file_location_free));
+    ptr_array_free_cb(&e->buffers, FREE_FUNC(free_buffer));
+    hashmap_free(&e->compilers, FREE_FUNC(free_compiler));
+    hashmap_free(&e->colors.other, free);
+    hashmap_free(&e->aliases, free);
+
+    for (size_t i = 0; i < ARRAYLEN(e->modes); i++) {
+        free_bindings(&e->modes[i].key_bindings);
+    }
+
+    free_interned_strings();
+    free_interned_regexps();
+
+    // TODO: intern this (so that it's freed by free_intern_pool())
+    free((void*)e->user_config_dir);
+
+    free(e);
+}
+
+static void sanity_check(const View *view)
 {
 #if DEBUG >= 1
-    View *v = window->view;
-    Block *blk;
-    block_for_each(blk, &v->buffer->blocks) {
-        if (blk == v->cursor.blk) {
-            BUG_ON(v->cursor.offset > v->cursor.blk->size);
+    const Block *blk;
+    block_for_each(blk, &view->buffer->blocks) {
+        if (blk == view->cursor.blk) {
+            BUG_ON(view->cursor.offset > view->cursor.blk->size);
             return;
         }
     }
     BUG("cursor not seen");
+#else
+    (void)view;
 #endif
 }
 
-void any_key(void)
+void any_key(Terminal *term, unsigned int esc_timeout)
 {
-    fputs("Press any key to continue\r\n", stderr);
     KeyCode key;
-    while (!term_read_key(&key)) {
+    xfputs("Press any key to continue\r\n", stderr);
+    while ((key = term_read_key(term, esc_timeout)) == KEY_NONE) {
         ;
     }
-    if (key == KEY_PASTE) {
-        term_discard_paste();
+    bool bracketed_paste = key == KEY_BRACKETED_PASTE;
+    if (bracketed_paste || key == KEY_DETECTED_PASTE) {
+        term_discard_paste(&term->ibuf, bracketed_paste);
     }
 }
 
-static void update_window_full(Window *w)
+NOINLINE
+void ui_resize(EditorState *e)
 {
-    View *v = w->view;
-    view_update_cursor_x(v);
-    view_update_cursor_y(v);
-    view_update(v);
-    print_tabbar(w);
-    if (editor.options.show_line_numbers) {
-        update_line_numbers(w, true);
-    }
-    update_range(v, v->vy, v->vy + w->edit_h);
-    update_status_line(w);
-}
-
-static void restore_cursor(void)
-{
-    switch (editor.input_mode) {
-    case INPUT_NORMAL:
-        term_move_cursor (
-            window->edit_x + view->cx_display - view->vx,
-            window->edit_y + view->cy - view->vy
-        );
-        break;
-    case INPUT_COMMAND:
-    case INPUT_SEARCH:
-        term_move_cursor(editor.cmdline_x, terminal.height - 1);
-        break;
-    default:
-        BUG("unhandled input mode");
-    }
-}
-
-static void start_update(void)
-{
-    term_hide_cursor();
-}
-
-static void clear_update_tabbar(Window *w)
-{
-    w->update_tabbar = false;
-}
-
-static void end_update(void)
-{
-    restore_cursor();
-    term_show_cursor();
-    term_output_flush();
-
-    buffer->changed_line_min = LONG_MAX;
-    buffer->changed_line_max = -1;
-    for_each_window(clear_update_tabbar);
-}
-
-static void update_all_windows(void)
-{
-    update_window_sizes();
-    for_each_window(update_window_full);
-    update_separators();
-}
-
-static void update_window(Window *w)
-{
-    if (w->update_tabbar) {
-        print_tabbar(w);
-    }
-
-    View *v = w->view;
-    if (editor.options.show_line_numbers) {
-        // Force updating lines numbers if all lines changed
-        update_line_numbers(w, v->buffer->changed_line_max == LONG_MAX);
-    }
-
-    long y1 = v->buffer->changed_line_min;
-    long y2 = v->buffer->changed_line_max;
-    if (y1 < v->vy) {
-        y1 = v->vy;
-    }
-    if (y2 > v->vy + w->edit_h - 1) {
-        y2 = v->vy + w->edit_h - 1;
-    }
-
-    update_range(v, y1, y2 + 1);
-    update_status_line(w);
-}
-
-// Update all visible views containing this buffer
-static void update_buffer_windows(const Buffer *b)
-{
-    for (size_t i = 0, n = b->views.count; i < n; i++) {
-        View *v = b->views.ptrs[i];
-        if (v->window->view == v) {
-            // Visible view
-            if (v != window->view) {
-                // Restore cursor
-                v->cursor.blk = BLOCK(v->buffer->blocks.next);
-                block_iter_goto_offset(&v->cursor, v->saved_cursor_offset);
-
-                // These have already been updated for current view
-                view_update_cursor_x(v);
-                view_update_cursor_y(v);
-                view_update(v);
-            }
-            update_window(v->window);
-        }
-    }
-}
-
-void normal_update(void)
-{
-    start_update();
-    update_term_title(buffer);
-    update_all_windows();
-    update_command_line();
-    end_update();
-}
-
-static void ui_resize(void)
-{
-    if (editor.status == EDITOR_INITIALIZING) {
+    if (e->status == EDITOR_INITIALIZING) {
         return;
     }
-    editor.resized = false;
-    update_screen_size();
-    normal_update();
+    resized = 0;
+    update_screen_size(&e->terminal, e->root_frame);
+    normal_update(e);
 }
 
-void ui_start(void)
+void ui_start(EditorState *e)
 {
-    if (editor.status == EDITOR_INITIALIZING) {
+    if (e->status == EDITOR_INITIALIZING) {
         return;
     }
-    terminal.put_control_code(terminal.control_codes.init);
-    terminal.put_control_code(terminal.control_codes.keypad_on);
-    terminal.put_control_code(terminal.control_codes.cup_mode_on);
-    ui_resize();
+
+    // Note: the order of these calls is important - Kitty saves/restores
+    // some terminal state when switching buffers, so switching to the
+    // alternate screen buffer needs to happen before modes are enabled
+    term_use_alt_screen_buffer(&e->terminal);
+    term_enable_private_modes(&e->terminal);
+
+    ui_resize(e);
 }
 
-void ui_end(void)
+void ui_end(EditorState *e)
 {
-    if (editor.status == EDITOR_INITIALIZING) {
+    if (e->status == EDITOR_INITIALIZING) {
         return;
     }
-    terminal.clear_screen();
-    term_move_cursor(0, terminal.height - 1);
-    term_show_cursor();
-    terminal.put_control_code(terminal.control_codes.cup_mode_off);
-    terminal.put_control_code(terminal.control_codes.keypad_off);
-    terminal.put_control_code(terminal.control_codes.deinit);
-    term_output_flush();
+    Terminal *term = &e->terminal;
+    TermOutputBuffer *obuf = &term->obuf;
+    term_clear_screen(obuf);
+    term_move_cursor(obuf, 0, term->height - 1);
+    term_restore_cursor_style(term);
+    term_show_cursor(term);
+    term_restore_private_modes(term);
+    term_use_normal_screen_buffer(term);
+    term_end_sync_update(term);
+    term_output_flush(obuf);
     term_cooked();
 }
 
-void suspend(void)
+int main_loop(EditorState *e)
 {
-    if (getpid() == getsid(0)) {
-        error_msg("Session leader can't suspend");
-        return;
-    }
-    if (
-        !editor.child_controls_terminal
-        && editor.status != EDITOR_INITIALIZING
-    ) {
-        ui_end();
-    }
-    int r = kill(0, SIGSTOP);
-    if (unlikely(r != 0)) {
-        perror_msg("kill");
-        term_raw();
-        ui_start();
-    }
-}
-
-const char *editor_file(const char *name)
-{
-    char buf[4096];
-    size_t n = xsnprintf(buf, sizeof buf, "%s/%s", editor.user_config_dir, name);
-    return mem_intern(buf, n);
-}
-
-static char get_choice(const char *choices)
-{
-    KeyCode key;
-    if (!term_read_key(&key)) {
-        return 0;
-    }
-
-    switch (key) {
-    case KEY_PASTE:
-        term_discard_paste();
-        return 0;
-    case CTRL('C'):
-    case CTRL('G'):
-    case CTRL('['):
-        return 0x18; // Cancel
-    case KEY_ENTER:
-        return choices[0]; // Default
-    }
-
-    if (key < 128) {
-        char ch = ascii_tolower(key);
-        if (strchr(choices, ch)) {
-            return ch;
-        }
-    }
-    return 0;
-}
-
-static void show_dialog(const char *question)
-{
-    unsigned int question_width = u_str_width(question);
-    unsigned int min_width = question_width + 2;
-    if (terminal.height < 12 || terminal.width < min_width) {
-        return;
-    }
-
-    unsigned int height = terminal.height / 4;
-    unsigned int mid = terminal.height / 2;
-    unsigned int top = mid - (height / 2);
-    unsigned int bot = top + height;
-    unsigned int width = MAX(terminal.width / 2, min_width);
-    unsigned int x = (terminal.width - width) / 2;
-
-    // The "underline" and "strikethrough" attributes should only apply
-    // to the text, not the whole dialog background:
-    const TermColor *text_color = &builtin_colors[BC_DIALOG];
-    TermColor dialog_color = *text_color;
-    dialog_color.attr &= ~(ATTR_UNDERLINE | ATTR_STRIKETHROUGH);
-    set_color(&dialog_color);
-
-    for (unsigned int y = top; y < bot; y++) {
-        term_output_reset(x, width, 0);
-        term_move_cursor(x, y);
-        if (y == mid) {
-            term_set_bytes(' ', (width - question_width) / 2);
-            set_color(text_color);
-            term_add_str(question);
-            set_color(&dialog_color);
-        }
-        term_clear_eol();
-    }
-}
-
-char dialog_prompt(const char *question, const char *choices)
-{
-    normal_update();
-    term_hide_cursor();
-    show_dialog(question);
-    show_message(question, false);
-    term_output_flush();
-
-    char choice;
-    while ((choice = get_choice(choices)) == 0) {
-        if (!editor.resized) {
-            continue;
-        }
-        ui_resize();
-        term_hide_cursor();
-        show_dialog(question);
-        show_message(question, false);
-        term_output_flush();
-    }
-
-    mark_everything_changed();
-    return (choice >= 'a') ? choice : 0;
-}
-
-char status_prompt(const char *question, const char *choices)
-{
-    // update_windows() assumes these have been called for the current view
-    view_update_cursor_x(view);
-    view_update_cursor_y(view);
-    view_update(view);
-
-    // Set changed_line_min and changed_line_max before calling update_range()
-    mark_all_lines_changed(buffer);
-
-    start_update();
-    update_term_title(buffer);
-    update_buffer_windows(buffer);
-    show_message(question, false);
-    end_update();
-
-    char choice;
-    while ((choice = get_choice(choices)) == 0) {
-        if (!editor.resized) {
-            continue;
-        }
-        ui_resize();
-        term_hide_cursor();
-        show_message(question, false);
-        restore_cursor();
-        term_show_cursor();
-        term_output_flush();
-    }
-
-    return (choice >= 'a') ? choice : 0;
-}
-
-typedef struct {
-    bool is_modified;
-    unsigned long id;
-    long cy;
-    long vx;
-    long vy;
-} ScreenState;
-
-static void update_screen(const ScreenState *s)
-{
-    if (editor.everything_changed) {
-        normal_update();
-        editor.everything_changed = false;
-        return;
-    }
-
-    view_update_cursor_x(view);
-    view_update_cursor_y(view);
-    view_update(view);
-
-    if (s->id == buffer->id) {
-        if (s->vx != view->vx || s->vy != view->vy) {
-            mark_all_lines_changed(buffer);
-        } else {
-            // Because of trailing whitespace highlighting and
-            // highlighting current line in different color
-            // the lines cy (old cursor y) and v->cy need
-            // to be updated.
-            //
-            // Always update at least current line.
-            buffer_mark_lines_changed(buffer, s->cy, view->cy);
-        }
-        if (s->is_modified != buffer_modified(buffer)) {
-            mark_buffer_tabbars_changed(buffer);
-        }
-    } else {
-        window->update_tabbar = true;
-        mark_all_lines_changed(buffer);
-    }
-
-    start_update();
-    if (window->update_tabbar) {
-        update_term_title(buffer);
-    }
-    update_buffer_windows(buffer);
-    update_command_line();
-    end_update();
-}
-
-void main_loop(void)
-{
-    while (editor.status == EDITOR_RUNNING) {
-        if (editor.resized) {
-            ui_resize();
+    while (e->status == EDITOR_RUNNING) {
+        if (unlikely(resized)) {
+            LOG_INFO("SIGWINCH received");
+            ui_resize(e);
         }
 
-        KeyCode key;
-        if (!term_read_key(&key)) {
+        KeyCode key = term_read_key(&e->terminal, e->options.esc_timeout);
+        if (unlikely(key == KEY_NONE)) {
             continue;
         }
 
-        clear_error();
         const ScreenState s = {
-            .is_modified = buffer_modified(buffer),
-            .id = buffer->id,
-            .cy = view->cy,
-            .vx = view->vx,
-            .vy = view->vy
+            .is_modified = buffer_modified(e->buffer),
+            .id = e->buffer->id,
+            .cy = e->view->cy,
+            .vx = e->view->vx,
+            .vy = e->view->vy
         };
 
-        handle_input(key);
-        sanity_check();
-        update_screen(&s);
+        clear_error();
+        handle_input(e, key);
+        sanity_check(e->view);
+        update_screen(e, &s);
     }
+
+    BUG_ON(e->status < 0 || e->status > EDITOR_EXIT_MAX);
+    return e->status;
 }

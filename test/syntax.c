@@ -1,14 +1,14 @@
-#include <string.h>
 #include "test.h"
 #include "block-iter.h"
 #include "config.h"
+#include "editor.h"
 #include "syntax/bitset.h"
 #include "syntax/highlight.h"
-#include "util/debug.h"
+#include "util/log.h"
 #include "util/utf8.h"
 #include "window.h"
 
-static void test_bitset(void)
+static void test_bitset(TestContext *ctx)
 {
     BitSetWord set[BITSET_NR_WORDS(256)];
     ASSERT_TRUE(sizeof(set) >= 32);
@@ -72,67 +72,84 @@ static void test_bitset(void)
     }
 }
 
-static void test_hl_line(void)
+static void test_hl_line(TestContext *ctx)
 {
     if (!get_builtin_config("syntax/c")) {
-        DEBUG_LOG("syntax/c not available; skipping %s()", __func__);
+        LOG_INFO("syntax/c not available; skipping %s()", __func__);
         return;
     }
 
-    const Encoding enc = encoding_from_type(UTF8);
-    EXPECT_EQ(enc.type, UTF8);
-    EXPECT_STREQ(enc.name, "UTF-8");
-    View *v = window_open_file(window, "test/data/test.c", &enc);
-    ASSERT_NONNULL(v);
+    const Encoding utf8 = encoding_from_type(UTF8);
+    EXPECT_EQ(utf8.type, UTF8);
+    EXPECT_STREQ(utf8.name, "UTF-8");
 
+    EditorState *e = ctx->userdata;
+    Window *window = e->window;
+    ASSERT_NONNULL(window);
+    View *view = window_open_file(window, "test/data/test.c", &utf8);
+    ASSERT_NONNULL(view);
+    Buffer *buffer = view->buffer;
+    ASSERT_NONNULL(buffer);
+
+    const ColorScheme *colors = &e->colors;
     const size_t line_nr = 5;
-    ASSERT_TRUE(v->buffer->nl >= line_nr);
-    hl_fill_start_states(v->buffer, v->buffer->nl);
-    block_iter_goto_line(&v->cursor, line_nr - 1);
-    view_update_cursor_x(v);
-    view_update_cursor_y(v);
-    view_update(v);
-    ASSERT_EQ(v->cx, 0);
-    ASSERT_EQ(v->cy, line_nr - 1);
+    ASSERT_TRUE(buffer->nl >= line_nr);
+    hl_fill_start_states(buffer, colors, buffer->nl);
+    block_iter_goto_line(&view->cursor, line_nr - 1);
+    view_update_cursor_x(view);
+    view_update_cursor_y(view);
+    view_update(view, 0);
+    ASSERT_EQ(view->cx, 0);
+    ASSERT_EQ(view->cy, line_nr - 1);
 
     StringView line;
-    fetch_this_line(&v->cursor, &line);
-    ASSERT_EQ(line.length, 56);
+    fetch_this_line(&view->cursor, &line);
+    ASSERT_EQ(line.length, 65);
 
     bool next_changed;
-    TermColor **colors = hl_line(buffer, &line, line_nr, &next_changed);
+    const TermColor **hl = hl_line(buffer, colors, &line, line_nr, &next_changed);
+    ASSERT_NONNULL(hl);
     EXPECT_TRUE(next_changed);
 
-    const TermColor *t = find_color("text");
-    const TermColor *c = find_color("constant");
-    const TermColor *s = find_color("string");
-    const TermColor *x = find_color("special");
-    const TermColor *n = find_color("numeric");
+    const TermColor *t = find_color(colors, "text");
+    const TermColor *c = find_color(colors, "constant");
+    const TermColor *s = find_color(colors, "string");
+    const TermColor *x = find_color(colors, "special");
+    const TermColor *n = find_color(colors, "numeric");
+    const TermColor *y = find_color(colors, "type");
     ASSERT_NONNULL(t);
     ASSERT_NONNULL(c);
     ASSERT_NONNULL(s);
     ASSERT_NONNULL(x);
     ASSERT_NONNULL(n);
+    ASSERT_NONNULL(y);
+    EXPECT_EQ(t->fg, COLOR_DEFAULT);
+    EXPECT_EQ(c->fg, COLOR_CYAN);
+    EXPECT_EQ(s->fg, COLOR_YELLOW);
+    EXPECT_EQ(x->fg, COLOR_MAGENTA);
+    EXPECT_EQ(n->fg, COLOR_BLUE);
+    EXPECT_EQ(y->fg, COLOR_GREEN);
 
     const TermColor *const expected_colors[] = {
         t, t, t, t, t, t, t, t, t, t, t, t, c, c, c, c,
         c, c, t, t, s, s, s, s, s, s, s, s, s, s, s, s,
-        s, s, s, x, x, s, t, t, s, s, s, s, s, t, t, x,
-        x, x, t, t, n, n, t, t
+        s, s, s, s, x, x, s, t, t, s, s, s, s, s, t, t,
+        x, x, x, t, t, t, y, y, y, y, y, y, t, n, n, t,
+        t
     };
 
     size_t i = 0;
     for (size_t pos = 0; pos < line.length; i++) {
         CodePoint u = u_get_char(line.data, line.length, &pos);
         IEXPECT_EQ(u, line.data[i]);
-        if (i >= ARRAY_COUNT(expected_colors)) {
+        if (i >= ARRAYLEN(expected_colors)) {
             continue;
         }
-        IEXPECT_TRUE(same_color(colors[i], expected_colors[i]));
+        IEXPECT_TRUE(same_color(hl[i], expected_colors[i]));
     }
 
-    EXPECT_EQ(i, ARRAY_COUNT(expected_colors));
-    window_close_current();
+    EXPECT_EQ(i, ARRAYLEN(expected_colors));
+    window_close(window);
 }
 
 static const TestEntry tests[] = {

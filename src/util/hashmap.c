@@ -1,5 +1,4 @@
 #include <errno.h>
-#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include "hashmap.h"
@@ -7,10 +6,9 @@
 #include "hash.h"
 #include "str-util.h"
 
-char tombstone[16] = "TOMBSTONE";
-
 enum {
-    MIN_SIZE = 8
+    MIN_SIZE = 8,
+    TOMBSTONE = 0xdead,
 };
 
 WARN_UNUSED_RESULT
@@ -37,7 +35,7 @@ static int hashmap_resize(HashMap *map, size_t size)
 
     // Copy the entries to the new table
     for (const HashMapEntry *e = oldtab, *end = e + oldlen; e < end; e++) {
-        if (!e->key || e->key == tombstone) {
+        if (!e->key) {
             continue;
         }
         HashMapEntry *newe;
@@ -77,9 +75,9 @@ static int hashmap_do_init(HashMap *map, size_t size)
     return hashmap_resize(map, size);
 }
 
-void hashmap_init(HashMap *map, size_t size)
+void hashmap_init(HashMap *map, size_t capacity)
 {
-    int err = hashmap_do_init(map, size);
+    int err = hashmap_do_init(map, capacity);
     if (unlikely(err)) {
         fatal_error(__func__, err);
     }
@@ -96,16 +94,17 @@ HashMapEntry *hashmap_find(const HashMap *map, const char *key)
     for (size_t i = hash, j = 1; ; i += j++) {
         e = map->entries + (i & map->mask);
         if (!e->key) {
-            break;
-        }
-        if (e->key == tombstone) {
-            continue;
+            if (e->hash == TOMBSTONE) {
+                continue;
+            }
+            return NULL;
         }
         if (e->hash == hash && streq(e->key, key)) {
-            break;
+            return e;
         }
     }
-    return e->key ? e : NULL;
+
+    BUG("unexpected loop break");
 }
 
 void *hashmap_remove(HashMap *map, const char *key)
@@ -116,7 +115,8 @@ void *hashmap_remove(HashMap *map, const char *key)
     }
 
     free(e->key);
-    e->key = tombstone;
+    e->key = NULL;
+    e->hash = TOMBSTONE;
     map->count--;
     map->tombstones++;
     return e->value;
@@ -139,12 +139,11 @@ static int hashmap_do_insert(HashMap *map, char *key, void *value, void **old_va
     for (size_t i = hash, j = 1; ; i += j++) {
         e = map->entries + (i & map->mask);
         if (!e->key) {
-            break;
-        }
-        if (e->key == tombstone) {
-            replacing_tombstone_or_existing_value = true;
-            BUG_ON(map->tombstones == 0);
-            map->tombstones--;
+            if (e->hash == TOMBSTONE) {
+                replacing_tombstone_or_existing_value = true;
+                BUG_ON(map->tombstones == 0);
+                map->tombstones--;
+            }
             break;
         }
         if (unlikely(e->hash == hash && streq(e->key, key))) {
@@ -195,15 +194,17 @@ static int hashmap_do_insert(HashMap *map, char *key, void *value, void **old_va
 error:
     map->count--;
     e->key = NULL;
+    e->hash = 0;
     return err;
 }
 
-void hashmap_insert(HashMap *map, char *key, void *value)
+void *hashmap_insert(HashMap *map, char *key, void *value)
 {
     int err = hashmap_do_insert(map, key, value, NULL);
     if (unlikely(err)) {
         fatal_error(__func__, err);
     }
+    return value;
 }
 
 void *hashmap_insert_or_replace(HashMap *map, char *key, void *value)
@@ -233,8 +234,8 @@ void hashmap_clear(HashMap *map, FreeFunction free_value)
 
     BUG_ON(count != map->count);
     size_t len = map->mask + 1;
-    memset(map->entries, 0, len * sizeof(*map->entries));
     map->count = 0;
+    memset(map->entries, 0, len * sizeof(*map->entries));
 }
 
 void hashmap_free(HashMap *map, FreeFunction free_value)

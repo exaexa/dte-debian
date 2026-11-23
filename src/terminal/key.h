@@ -2,10 +2,18 @@
 #define TERMINAL_KEY_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
+#include "util/ascii.h"
 #include "util/macros.h"
 
 enum {
+    // Maximum length of string produced by keycode_to_string()
+    KEYCODE_STR_MAX = 32
+};
+
+enum {
+    KEY_NONE = 0,
     KEY_TAB = '\t',
     KEY_ENTER = '\n',
     KEY_SPACE = ' ',
@@ -45,19 +53,30 @@ enum {
     KEY_F10,
     KEY_F11,
     KEY_F12,
+    KEY_F13,
+    KEY_F14,
+    KEY_F15,
+    KEY_F16,
+    KEY_F17,
+    KEY_F18,
+    KEY_F19,
+    KEY_F20,
 
-    KEY_SPECIAL_MAX = KEY_F12,
+    KEY_SPECIAL_MAX = KEY_F20,
     NR_SPECIAL_KEYS = KEY_SPECIAL_MAX - KEY_SPECIAL_MIN + 1,
-    MOD_OFFSET = 24,
+    KEYCODE_MODIFIER_OFFSET = 24,
 
     // Modifier bit flags (as described above)
-    MOD_SHIFT = 1 << MOD_OFFSET,
-    MOD_META  = 2 << MOD_OFFSET,
-    MOD_CTRL  = 4 << MOD_OFFSET,
-    MOD_MASK  = MOD_SHIFT | MOD_META | MOD_CTRL,
+    MOD_SHIFT =  1 << KEYCODE_MODIFIER_OFFSET,
+    MOD_META  =  2 << KEYCODE_MODIFIER_OFFSET,
+    MOD_CTRL  =  4 << KEYCODE_MODIFIER_OFFSET,
+    MOD_SUPER =  8 << KEYCODE_MODIFIER_OFFSET,
+    MOD_HYPER = 16 << KEYCODE_MODIFIER_OFFSET,
+    MOD_MASK  = MOD_SHIFT | MOD_META | MOD_CTRL | MOD_SUPER | MOD_HYPER,
 
-    KEY_PASTE = 0x8000000,
-    KEY_IGNORE = 0x8000001,
+    KEY_DETECTED_PASTE = 0x20000000,
+    KEY_BRACKETED_PASTE = 0x20000001,
+    KEY_IGNORE = 0x20000002,
 };
 
 typedef uint32_t KeyCode;
@@ -80,14 +99,12 @@ static inline KeyCode keycode_normalize(KeyCode k)
     case 0x7F: return MOD_CTRL | '?';
     }
     if (k < 0x20) {
-        return MOD_CTRL | k | 0x40;
+        return MOD_CTRL | ascii_tolower(k | 0x40);
     }
     return k;
 }
 
-#define CTRL(x) (MOD_CTRL | (x))
-
-bool parse_key_string(KeyCode *key, const char *str);
-const char *keycode_to_string(KeyCode key) RETURNS_NONNULL;
+bool parse_key_string(KeyCode *key, const char *str) WARN_UNUSED_RESULT;
+size_t keycode_to_string(KeyCode key, char *buf) NONNULL_ARGS;
 
 #endif
