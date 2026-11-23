@@ -3,7 +3,6 @@ include -b color/default
 include -b compiler/gcc
 include -b compiler/go
 
-alias builtin 'include -b'
 alias help 'run man dterc'
 alias make 'compile gcc make'
 alias man 'run man'
@@ -12,11 +11,12 @@ alias reverse-lines 'filter tac'
 alias sort-lines 'filter sh -c "LC_COLLATE=C sort"'
 alias split-words 'replace -g "[ \t]+" "\n"'
 alias trim-lines 'replace "[ \t]+$" ""'
-alias xsel 'pipe-to xsel -b'
+alias color hi
 alias exit quit
 
-errorfmt basic '^([^:]+):([0-9]+):([0-9]+):' file line column
-errorfmt basic '^([^:]+):([0-9]+):' file line
+errorfmt basic
+errorfmt basic '^([^:]+):([0-9]+):([0-9]+): *(.*)$' file line column message
+errorfmt basic '^([^:]+):([0-9]+): *(.*)$' file line message
 alias git-grep 'compile -1s basic git grep -n'
 
 # Remove possible 'F' from $LESS so that less will always wait
@@ -24,8 +24,8 @@ alias git-grep 'compile -1s basic git grep -n'
 # ('R' = allow ANSI colors, 'S' = chop long lines)
 setenv LESS RS
 
-ft -f dte '/\.?dte/(config/)?(rc|((syntax|color|binding|compiler)/.*))$'
-ft -f mail '/tmpmsg-.*\.txt$|pico\.[0-9]+|mutt(ng)?-*-\w+|mutt[a-zA-Z0-9_-]{6}'
+ft -f dte '/(\.|dot_)?dte/(config/)?(rc|((syntax|color|binding|compiler)/.*))$'
+ft -f mail '/tmpmsg-.*\.txt$|pico\.[0-9]+|/tmp/mutt(ng)?-'
 
 # Don't remember cursor position for git temporary files
 option gitcommit,gitrebase file-history false
@@ -47,17 +47,24 @@ option yaml \
     ws-error tab-indent,tab-after-indent,trailing,special
 
 # Patterns used to detect indent size when "auto-indent" option is enabled
-option c indent-regex '^[ \t]*(case|default|do|else|for|if|while)\b'
-option java indent-regex '^[ \t]*(case|default|do|else|for|if|while)\b'
+option c,java indent-regex '^[ \t]*((case|do|else|for|if|while)[ (]|default:)'
 option lua indent-regex '(then|do|repeat|else) *$|function *[A-Za-z0-9_.:]* *\([A-Za-z0-9_, ]*\) *$'
-option php indent-regex '^[ \t]*(case|default|do|else|for|foreach|if|while)\b'
+option php indent-regex '^[ \t]*(case|default|do|else|for|foreach|if|while)[ (]'
 option python indent-regex ':[ \t]*(#.*)?$'
-option sh indent-regex '(^|;)[ \t]*(do|else|then)\b'
+option sh indent-regex '(^|;)[ \t]*(do|else|then) *$'
 
 # Don't highlight whitespace errors in diff and mail files
 option diff,mail ws-error 0
 
-# Aliases for renamed built-in commands (for backwards compatibility)
+# Aliases for renamed/removed commands (for backwards compatibility)
+alias filter 'exec -s -i buffer -o buffer -e errmsg'
+alias pipe-from 'exec -s -o buffer -e errmsg'
+alias pipe-to 'exec -s -i buffer -e errmsg'
+alias run 'exec'
+alias eval 'exec -o eval'
+alias exec-open 'exec -o open'
+alias exec-tag 'exec -o tag'
+alias exec-msg 'exec -o msg -i msg'
 alias format-paragraph wrap-paragraph
 alias pass-through pipe-from
 alias git-open 'exec-open sh -c "git ls-files $(git rev-parse --show-cdup) | fzf -m --reverse"'

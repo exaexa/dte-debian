@@ -4,6 +4,7 @@
 #include <stddef.h>
 #include "command/run.h"
 #include "util/macros.h"
+#include "util/ptr-array.h"
 #include "util/string-view.h"
 #include "util/string.h"
 
@@ -20,19 +21,22 @@ typedef struct {
 
 typedef struct {
     const char *file;
-    int line;
+    unsigned int line;
 } ConfigState;
 
 extern ConfigState current_config;
 
+struct EditorState;
+
 String dump_builtin_configs(void);
-void collect_builtin_configs(const char *prefix);
 const BuiltinConfig *get_builtin_config(const char *name) PURE;
 const BuiltinConfig *get_builtin_configs_array(size_t *nconfigs);
-void exec_config(const CommandSet *cmds, const char *buf, size_t size);
-int do_read_config(const CommandSet *cmds, const char *filename, ConfigFlags f);
-int read_config(const CommandSet *cmds, const char *filename, ConfigFlags f);
-void exec_builtin_color_reset(void);
-void exec_builtin_rc(void);
+void exec_config(CommandRunner *runner, StringView config);
+int do_read_config(CommandRunner *runner, const char *filename, ConfigFlags flags) WARN_UNUSED_RESULT;
+int read_config(CommandRunner *runner, const char *filename, ConfigFlags f);
+void exec_builtin_color_reset(struct EditorState *e);
+void exec_builtin_rc(struct EditorState *e);
+void collect_builtin_configs(PointerArray *a, const char *prefix) NONNULL_ARGS;
+void collect_builtin_includes(PointerArray *a, const char *prefix) NONNULL_ARGS;
 
 #endif

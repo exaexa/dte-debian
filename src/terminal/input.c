@@ -1,57 +1,70 @@
 #include <errno.h>
+#include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/select.h>
 #include <sys/time.h>
 #include <unistd.h>
 #include "input.h"
-#include "terminal.h"
-#include "editor.h"
 #include "util/ascii.h"
+#include "util/debug.h"
+#include "util/unicode.h"
 #include "util/xmalloc.h"
+#include "util/xmemmem.h"
+#include "util/xreadwrite.h"
+#include "util/string-view.h"
+#include "util/log.h"
+#include "util/macros.h"
 
-static struct {
-    char buf[256];
-    size_t len;
-    bool can_be_truncated;
-} input;
-
-static void consume_input(size_t len)
+void term_input_init(TermInputBuffer *ibuf)
 {
-    input.len -= len;
-    if (input.len) {
-        memmove(input.buf, input.buf + len, input.len);
+    *ibuf = (TermInputBuffer) {
+        .buf = xmalloc(TERM_INBUF_SIZE)
+    };
+}
+
+void term_input_free(TermInputBuffer *ibuf)
+{
+    free(ibuf->buf);
+}
+
+static void consume_input(TermInputBuffer *input, size_t len)
+{
+    BUG_ON(len > input->len);
+    input->len -= len;
+    if (input->len) {
+        memmove(input->buf, input->buf + len, input->len);
 
         // Keys are sent faster than we can read
-        input.can_be_truncated = true;
+        input->can_be_truncated = true;
     }
 }
 
-static bool fill_buffer(void)
+static bool fill_buffer(TermInputBuffer *input)
 {
-    if (input.len == sizeof(input.buf)) {
+    if (input->len == TERM_INBUF_SIZE) {
         return false;
     }
 
-    if (!input.len) {
-        input.can_be_truncated = false;
+    if (!input->len) {
+        input->can_be_truncated = false;
     }
 
-    size_t avail = sizeof(input.buf) - input.len;
-    ssize_t rc = read(STDIN_FILENO, input.buf + input.len, avail);
-    if (rc <= 0) {
+    size_t avail = TERM_INBUF_SIZE - input->len;
+    ssize_t rc = read(STDIN_FILENO, input->buf + input->len, avail);
+    if (unlikely(rc <= 0)) {
         return false;
     }
 
-    input.len += (size_t)rc;
+    input->len += (size_t)rc;
     return true;
 }
 
-static bool fill_buffer_timeout(void)
+static bool fill_buffer_timeout(TermInputBuffer *input, unsigned int esc_timeout)
 {
     struct timeval tv = {
-        .tv_sec = editor.options.esc_timeout / 1000,
-        .tv_usec = (editor.options.esc_timeout % 1000) * 1000
+        .tv_sec = esc_timeout / 1000,
+        .tv_usec = (esc_timeout % 1000) * 1000
     };
 
     fd_set set;
@@ -65,87 +78,82 @@ static bool fill_buffer_timeout(void)
     FD_SET(STDIN_FILENO, &set);
 
     int rc = select(1, &set, NULL, NULL, &tv);
-    if (rc > 0 && fill_buffer()) {
+    if (rc > 0 && fill_buffer(input)) {
         return true;
     }
     return false;
 }
 
-static bool input_get_byte(unsigned char *ch)
+static bool input_get_byte(TermInputBuffer *input, unsigned char *ch)
 {
-    if (!input.len && !fill_buffer()) {
+    if (!input->len && !fill_buffer(input)) {
         return false;
     }
-    *ch = input.buf[0];
-    consume_input(1);
+    *ch = input->buf[0];
+    consume_input(input, 1);
     return true;
 }
 
-static bool read_special(KeyCode *key)
+static KeyCode read_special(Terminal *term)
 {
-    ssize_t len = terminal.parse_key_sequence(input.buf, input.len, key);
-    switch (len) {
-    case -1:
-        // Possibly truncated
-        break;
-    case 0:
-        // No match
-        return false;
-    default:
+    TermInputBuffer *input = &term->ibuf;
+    KeyCode key;
+    ssize_t len = term->parse_input(input->buf, input->len, &key);
+    if (likely(len > 0)) {
         // Match
-        consume_input(len);
-        return true;
+        consume_input(input, len);
+        return key;
     }
 
-    if (input.can_be_truncated && fill_buffer()) {
-        return read_special(key);
+    if (len < 0 && input->can_be_truncated && fill_buffer(input)) {
+        // Possibly truncated
+        return read_special(term);
     }
 
-    return false;
+    // No match
+    return KEY_NONE;
 }
 
-static bool read_simple(KeyCode *key)
+static KeyCode read_simple(TermInputBuffer *input)
 {
     unsigned char ch = 0;
 
     // > 0 bytes in buf
-    input_get_byte(&ch);
+    input_get_byte(input, &ch);
 
     // Normal key
-    if (editor.term_utf8 && ch > 0x7f) {
-        /*
-         * 10xx xxxx invalid
-         * 110x xxxx valid
-         * 1110 xxxx valid
-         * 1111 0xxx valid
-         * 1111 1xxx invalid
-         */
-        CodePoint bit = 1 << 6;
-        int count = 0;
-
-        while (ch & bit) {
-            bit >>= 1;
-            count++;
-        }
-        if (count == 0 || count > 3) {
-            // Invalid first byte
-            return false;
-        }
-        CodePoint u = ch & (bit - 1);
-        do {
-            if (!input_get_byte(&ch)) {
-                return false;
-            }
-            if (ch >> 6 != 2) {
-                return false;
-            }
-            u = (u << 6) | (ch & 0x3f);
-        } while (--count);
-        *key = u;
-    } else {
-        *key = keycode_normalize(ch);
+    if (ch < 0x80) {
+        return keycode_normalize(ch);
     }
-    return true;
+
+    /*
+     * 10xx xxxx invalid
+     * 110x xxxx valid
+     * 1110 xxxx valid
+     * 1111 0xxx valid
+     * 1111 1xxx invalid
+     */
+    CodePoint bit = 1 << 6;
+    unsigned int count = 0;
+    while (ch & bit) {
+        bit >>= 1;
+        count++;
+    }
+
+    if (count == 0 || count > 3) {
+        // Invalid first byte
+        return KEY_NONE;
+    }
+
+    CodePoint u = ch & (bit - 1);
+    do {
+        if (!input_get_byte(input, &ch) || ch >> 6 != 2) {
+            return KEY_NONE;
+        }
+        u = (u << 6) | (ch & 0x3f);
+    } while (--count);
+
+    return u;
 }
 
 static bool is_text(const char *str, size_t len)
@@ -158,27 +166,28 @@ static bool is_text(const char *str, size_t len)
     return true;
 }
 
-bool term_read_key(KeyCode *key)
+KeyCode term_read_key(Terminal *term, unsigned int esc_timeout)
 {
-    if (!input.len && !fill_buffer()) {
-        return false;
+    TermInputBuffer *input = &term->ibuf;
+    if (!input->len && !fill_buffer(input)) {
+        return KEY_NONE;
     }
 
-    if (input.len > 4 && is_text(input.buf, input.len)) {
-        *key = KEY_PASTE;
-        return true;
+    if (input->len > 4 && is_text(input->buf, input->len)) {
+        return KEY_DETECTED_PASTE;
     }
 
-    if (input.buf[0] == '\033') {
-        if (input.len > 1 || input.can_be_truncated) {
-            if (read_special(key)) {
-                return true;
+    if (input->buf[0] == '\033') {
+        if (input->len > 1 || input->can_be_truncated) {
+            KeyCode key = read_special(term);
+            if (key != KEY_NONE) {
+                return key;
             }
         }
-        if (input.len == 1) {
+        if (input->len == 1) {
             // Sometimes alt-key gets split into two reads
-            fill_buffer_timeout();
-            if (input.len > 1 && input.buf[1] == '\033') {
+            fill_buffer_timeout(input, esc_timeout);
+            if (input->len > 1 && input->buf[1] == '\033') {
                 /*
                  * Double-esc (+ maybe some other characters)
                  *
@@ -192,45 +201,43 @@ bool term_read_key(KeyCode *key)
                  * This breaks the esc-key == alt-key rule for the
                  * esc-esc case but it shouldn't matter.
                  */
-                return read_simple(key);
+                return read_simple(input);
             }
         }
-        if (input.len > 1) {
+        if (input->len > 1) {
             // Unknown escape sequence or 'esc key' / 'alt-key'
 
             // Throw escape away
-            consume_input(1);
+            consume_input(input, 1);
 
-            const bool ok = read_simple(key);
-            if (!ok) {
-                return false;
+            KeyCode key = read_simple(input);
+            if (key == KEY_NONE) {
+                return KEY_NONE;
             }
 
-            if (input.len == 0 || input.buf[0] == '\033') {
+            if (input->len == 0 || input->buf[0] == '\033') {
                 // 'esc key' or 'alt-key'
-                *key |= MOD_META;
-                return true;
+                if (u_is_ascii_upper(key)) {
+                    return MOD_META | MOD_SHIFT | ascii_tolower(key);
+                }
+                return MOD_META | key;
             }
 
             // Unknown escape sequence; avoid inserting it
-            input.len = 0;
-            return false;
+            input->len = 0;
+            return KEY_NONE;
         }
     }
 
-    return read_simple(key);
+    return read_simple(input);
 }
 
-char *term_read_paste(size_t *size)
+static String term_read_detected_paste(TermInputBuffer *input)
 {
-    size_t alloc = round_size_to_next_multiple(input.len + 1, 1024);
-    size_t count = 0;
-    char *buf = xmalloc(alloc);
-
-    if (input.len) {
-        memcpy(buf, input.buf, input.len);
-        count = input.len;
-        input.len = 0;
+    String str = string_new(4096 + input->len);
+    if (input->len) {
+        string_append_buf(&str, input->buf, input->len);
+        input->len = 0;
     }
 
     while (1) {
@@ -252,34 +259,82 @@ char *term_read_paste(size_t *size)
             break;
         }
 
-        if (alloc - count < 256) {
-            alloc *= 2;
-            xrenew(buf, alloc);
-        }
-
-        ssize_t n;
-        do {
-            n = read(STDIN_FILENO, buf + count, alloc - count);
-        } while (n < 0 && errno == EINTR);
-
+        char *buf = string_reserve_space(&str, 4096);
+        ssize_t n = xread(STDIN_FILENO, buf, str.alloc - str.len);
         if (n <= 0) {
             break;
         }
-        count += n;
+        str.len += n;
     }
 
-    for (size_t i = 0; i < count; i++) {
-        if (buf[i] == '\r') {
-            buf[i] = '\n';
-        }
-    }
-
-    *size = count;
-    return buf;
+    string_replace_byte(&str, '\r', '\n');
+    return str;
 }
 
-void term_discard_paste(void)
+static String term_read_bracketed_paste(TermInputBuffer *input)
 {
-    size_t size;
-    free(term_read_paste(&size));
+    size_t read_max = TERM_INBUF_SIZE;
+    String str = string_new(read_max + input->len);
+    if (input->len) {
+        string_append_buf(&str, input->buf, input->len);
+        input->len = 0;
+    }
+
+    static const StringView delim = STRING_VIEW("\033[201~");
+    char *start, *end;
+    ssize_t read_len;
+
+    while (1) {
+        start = string_reserve_space(&str, read_max);
+        read_len = xread(STDIN_FILENO, start, read_max);
+        if (unlikely(read_len <= 0)) {
+            goto read_error;
+        }
+        end = xmemmem(start, read_len, delim.data, delim.length);
+        if (end) {
+            break;
+        }
+        str.len += read_len;
+    }
+
+    size_t final_chunk_len = (size_t)(end - start);
+    str.len += final_chunk_len;
+    final_chunk_len += delim.length;
+    BUG_ON(final_chunk_len > read_len);
+
+    size_t remainder = read_len - final_chunk_len;
+    if (unlikely(remainder)) {
+        // Copy anything still in the buffer beyond the end delimiter
+        // into the normal input buffer
+        LOG_INFO("remainder after bracketed paste: %zu", remainder);
+        BUG_ON(remainder > TERM_INBUF_SIZE);
+        memcpy(input->buf, start + final_chunk_len, remainder);
+        input->len = remainder;
+    }
+
+    const char *plural = (str.len == 1) ? "" : "s";
+    LOG_INFO("received bracketed paste of %zu byte%s", str.len, plural);
+    string_replace_byte(&str, '\r', '\n');
+    return str;
+
+read_error:
+    LOG_ERRNO("read");
+    string_free(&str);
+    BUG_ON(str.buffer);
+    return str;
+}
+
+String term_read_paste(TermInputBuffer *input, bool bracketed)
+{
+    if (bracketed) {
+        return term_read_bracketed_paste(input);
+    }
+    return term_read_detected_paste(input);
+}
+
+void term_discard_paste(TermInputBuffer *input, bool bracketed)
+{
+    String str = term_read_paste(input, bracketed);
+    string_free(&str);
+    LOG_INFO("%spaste discarded", bracketed ? "bracketed " : "");
 }

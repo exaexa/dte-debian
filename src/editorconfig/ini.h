@@ -1,17 +1,21 @@
 #ifndef EDITORCONFIG_INI_H
 #define EDITORCONFIG_INI_H
 
+#include <stdbool.h>
+#include <stddef.h>
+#include "util/macros.h"
 #include "util/string-view.h"
 
 typedef struct {
+    const char *input;
+    size_t input_len;
+    size_t pos;
     StringView section;
     StringView name;
     StringView value;
-    unsigned int name_idx;
-} IniData;
+    unsigned int name_count;
+} IniParser;
 
-typedef int (*IniCallback)(const IniData *data, void *userdata);
-
-int ini_parse(const char *filename, IniCallback handler, void *userdata);
+bool ini_parse(IniParser *ctx) NONNULL_ARGS WARN_UNUSED_RESULT;
 
 #endif

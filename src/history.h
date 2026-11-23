@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include "util/hashmap.h"
+#include "util/macros.h"
 
 typedef struct HistoryEntry {
     struct HistoryEntry *next;
@@ -17,7 +18,7 @@ typedef struct HistoryEntry {
 // of the list in O(1) time and the doubly-linked entries allow
 // ordered traversal.
 typedef struct {
-    const char *filename;
+    char *filename;
     HashMap entries;
     HistoryEntry *first;
     HistoryEntry *last;
@@ -25,9 +26,10 @@ typedef struct {
 } History;
 
 void history_add(History *history, const char *text);
-bool history_search_forward(const History *history, const HistoryEntry **pos, const char *text);
-bool history_search_backward(const History *history, const HistoryEntry **pos, const char *text);
-void history_load(History *history, const char *filename);
+bool history_search_forward(const History *history, const HistoryEntry **pos, const char *text) WARN_UNUSED_RESULT;
+bool history_search_backward(const History *history, const HistoryEntry **pos, const char *text) WARN_UNUSED_RESULT;
+void history_load(History *history, char *filename);
 void history_save(const History *history);
+void history_free(History *history);
 
 #endif

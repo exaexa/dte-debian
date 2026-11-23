@@ -26,7 +26,7 @@ void ptr_array_insert(PointerArray *array, void *ptr, size_t pos) NONNULL_ARG(1)
 void ptr_array_move(PointerArray *array, size_t from, size_t to) NONNULL_ARGS;
 void ptr_array_free_cb(PointerArray *array, FreeFunction free_ptr) NONNULL_ARGS;
 void ptr_array_remove(PointerArray *array, void *ptr) NONNULL_ARG(1);
-void *ptr_array_remove_idx(PointerArray *array, size_t pos) NONNULL_ARG(1);
+void *ptr_array_remove_idx(PointerArray *array, size_t pos) NONNULL_ARGS;
 size_t ptr_array_idx(const PointerArray *array, const void *ptr) NONNULL_ARG(1);
 void ptr_array_trim_nulls(PointerArray *array) NONNULL_ARGS;
 
@@ -39,15 +39,15 @@ static inline void ptr_array_init(PointerArray *array, size_t capacity)
     array->alloc = capacity;
 }
 
-// Free each pointer and then free the array.
+// Free each pointer and then free the array
 NONNULL_ARGS
 static inline void ptr_array_free(PointerArray *array)
 {
     ptr_array_free_cb(array, free);
 }
 
-// Free the array itself but not the pointers. Useful when the pointers
-// are "borrowed" references.
+// Free the array itself but not the pointers (useful when the
+// pointers are "borrowed" references)
 NONNULL_ARGS
 static inline void ptr_array_free_array(PointerArray *array)
 {

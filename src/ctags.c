@@ -1,94 +1,94 @@
 #include <stdlib.h>
 #include <string.h>
 #include "ctags.h"
+#include "util/ascii.h"
+#include "util/debug.h"
 #include "util/str-util.h"
 #include "util/strtonum.h"
 #include "util/xmalloc.h"
 
-static size_t parse_excmd(Tag *t, const char *buf, size_t size)
+static size_t parse_ex_pattern(const char *buf, size_t size, char **escaped)
 {
-    const char ch = *buf;
-    if (ch == '/' || ch == '?') {
-        // The search pattern is not a real regular expression.
-        // Need to escape special characters.
-        char *pattern = xmalloc(size * 2);
-        for (size_t i = 1, j = 0; i < size; i++) {
-            if (buf[i] == '\\' && i + 1 < size) {
-                i++;
-                if (buf[i] == '\\') {
-                    pattern[j++] = '\\';
-                }
-                pattern[j++] = buf[i];
-                continue;
-            }
-            if (buf[i] == ch) {
-                if (i + 2 < size && buf[i + 1] == ';' && buf[i + 2] == '"') {
-                    i += 2;
-                }
-                pattern[j] = '\0';
-                t->pattern = pattern;
-                return i + 1;
-            }
-            switch (buf[i]) {
-            case '*':
-            case '[':
-            case ']':
+    BUG_ON(size == 0);
+    BUG_ON(buf[0] != '/' && buf[0] != '?');
+
+    // The search pattern is not a real regular expression; special characters
+    // need to be escaped
+    char *pattern = xmalloc(size * 2);
+    char open_delim = buf[0];
+    for (size_t i = 1, j = 0; i < size; i++) {
+        if (unlikely(buf[i] == '\0')) {
+            break;
+        }
+        if (buf[i] == '\\' && i + 1 < size) {
+            i++;
+            if (buf[i] == '\\') {
                 pattern[j++] = '\\';
-                break;
             }
             pattern[j++] = buf[i];
+            continue;
         }
-        free(pattern);
-        return 0;
+        if (buf[i] == open_delim) {
+            pattern[j] = '\0';
+            *escaped = pattern;
+            return i + 1;
+        }
+        char c = buf[i];
+        if (c == '*' || c == '[' || c == ']') {
+            pattern[j++] = '\\';
+        }
+        pattern[j++] = buf[i];
     }
 
-    unsigned long line;
-    size_t i = buf_parse_ulong(buf, size, &line);
-    if (i == 0) {
-        return 0;
-    }
-
-    if (i + 1 < size && buf[i] == ';' && buf[i + 1] == '"') {
-        i += 2;
-    }
-
-    t->line = line;
-    return i;
+    free(pattern);
+    return 0;
 }
 
-static bool parse_line(Tag *t, const char *buf, size_t size)
+static size_t parse_ex_cmd(Tag *tag, const char *buf, size_t size)
 {
-    MEMZERO(t);
-    const char *end = memchr(buf, '\t', size);
-    if (!end) {
-        goto error;
+    if (unlikely(size == 0)) {
+        return 0;
     }
 
-    size_t len = end - buf;
-    t->name = xstrcut(buf, len);
-
-    size_t si = len + 1;
-    if (si >= size) {
-        goto error;
+    size_t n;
+    if (buf[0] == '/' || buf[0] == '?') {
+        n = parse_ex_pattern(buf, size, &tag->pattern);
+    } else {
+        n = buf_parse_ulong(buf, size, &tag->lineno);
     }
 
-    end = memchr(buf + si, '\t', size - si);
-    len = end - buf - si;
-    t->filename = xstrslice(buf, si, si + len);
-
-    si += len + 1;
-    if (si >= size) {
-        goto error;
+    if (n == 0) {
+        return 0;
     }
 
-    // excmd can contain tabs
-    len = parse_excmd(t, buf + si, size - si);
-    if (!len) {
-        goto error;
+    if (n + 1 < size && buf[n] == ';' && buf[n + 1] == '"') {
+        n += 2;
     }
 
-    si += len;
-    if (si == size) {
+    return n;
+}
+
+bool parse_ctags_line(Tag *tag, const char *line, size_t line_len)
+{
+    size_t pos = 0;
+    *tag = (Tag){.name = get_delim(line, &pos, line_len, '\t')};
+    if (tag->name.length == 0 || pos >= line_len) {
+        return false;
+    }
+
+    tag->filename = get_delim(line, &pos, line_len, '\t');
+    if (tag->filename.length == 0 || pos >= line_len) {
+        return false;
+    }
+
+    size_t len = parse_ex_cmd(tag, line + pos, line_len - pos);
+    if (len == 0) {
+        BUG_ON(tag->pattern);
+        return false;
+    }
+
+    pos += len;
+    if (pos >= line_len) {
         return true;
     }
 
@@ -100,53 +100,48 @@ static bool parse_line(Tag *t, const char *buf, size_t size)
      * union:NAME                         tag is member of union NAME
      * typeref:struct:NAME::MEMBER_TYPE   MEMBER_TYPE is type of the tag
      */
-    if (buf[si] != '\t') {
-        goto error;
+    if (line[pos++] != '\t') {
+        // free `pattern` allocated by parse_ex_cmd()
+        free_tag(tag);
+        tag->pattern = NULL;
+        return false;
     }
 
-    si++;
-    while (si < size) {
-        size_t ei = si;
-
-        while (ei < size && buf[ei] != '\t') {
-            ei++;
+    while (pos < line_len) {
+        StringView field = get_delim(line, &pos, line_len, '\t');
+        if (field.length == 1 && ascii_isalpha(field.data[0])) {
+            tag->kind = field.data[0];
+        } else if (strview_equal_cstring(&field, "file:")) {
+            tag->local = true;
         }
-
-        len = ei - si;
-        if (len == 1) {
-            t->kind = buf[si];
-        } else if (len == 5 && mem_equal(buf + si, "file:", 5)) {
-            t->local = true;
-        }
-        // FIXME: struct/union/typeref
-        si = ei + 1;
+        // TODO: struct/union/typeref
     }
+
     return true;
-error:
-    free_tag(t);
-    return false;
 }
 
 bool next_tag (
-    const TagFile *tf,
+    const char *buf,
+    size_t buf_len,
     size_t *posp,
-    const char *prefix,
+    const StringView *prefix,
     bool exact,
-    Tag *t
+    Tag *tag
 ) {
-    size_t pflen = strlen(prefix);
-    for (size_t pos = *posp, size = tf->size; pos < size; ) {
-        StringView line = buf_slice_next_line(tf->buf, &pos, size);
+    const char *p = prefix->data;
+    size_t plen = prefix->length;
+    for (size_t pos = *posp; pos < buf_len; ) {
+        StringView line = buf_slice_next_line(buf, &pos, buf_len);
         if (line.length == 0 || line.data[0] == '!') {
             continue;
         }
-        if (line.length <= pflen || !mem_equal(line.data, prefix, pflen)) {
+        if (!strview_has_strn_prefix(&line, p, plen)) {
             continue;
         }
-        if (exact && line.data[pflen] != '\t') {
+        if (exact && line.data[plen] != '\t') {
             continue;
         }
-        if (!parse_line(t, line.data, line.length)) {
+        if (!parse_ctags_line(tag, line.data, line.length)) {
             continue;
         }
         *posp = pos;
@@ -155,12 +150,8 @@ bool next_tag (
     return false;
 }
 
-// NOTE: t itself is not freed
-void free_tag(Tag *t)
+// NOTE: tag itself is not freed
+void free_tag(Tag *tag)
 {
-    free(t->name);
-    free(t->filename);
-    free(t->pattern);
-    free(t->member);
-    free(t->typeref);
+    free(tag->pattern);
 }

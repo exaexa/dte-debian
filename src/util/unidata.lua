@@ -1,3 +1,13 @@
+--[[
+ Code generator for Unicode category tables.
+ Copyright 2019-2022 Craig Barnes.
+ SPDX-License-Identifier: GPL-2.0-only
+
+ Note: to download the required database files and generate the
+ tables in a single step, run "make gen-unidata" in the project
+ root directory
+]]
+
 local progname = arg[0]
 local RangeTable = {}
 RangeTable.__index = RangeTable
@@ -53,8 +63,12 @@ local function read_ucd(path, pattern)
     assert(pattern)
     if not path then
         io.stderr:write (
-            "Usage: ", progname, " UnicodeData.txt EastAsianWidth.txt\n",
-            "(available from: https://unicode.org/Public/11.0.0/ucd/)\n"
+            "Usage: ",
+            progname,
+            " path/to/UnicodeData.txt",
+            " path/to/EastAsianWidth.txt",
+            " path/to/DerivedCoreProperties.txt",
+            "\n(available from: https://unicode.org/Public/15.0.0/ucd/)\n"
         )
         os.exit(1)
     end

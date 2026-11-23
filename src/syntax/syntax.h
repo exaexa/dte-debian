@@ -4,8 +4,8 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
-#include "bitset.h"
-#include "color.h"
+#include "syntax/bitset.h"
+#include "syntax/color.h"
 #include "util/hashmap.h"
 #include "util/hashset.h"
 #include "util/ptr-array.h"
@@ -26,15 +26,23 @@ typedef enum {
     COND_HEREDOCEND,
 } ConditionType;
 
+typedef enum {
+    STATE_INVALID = -1,
+    STATE_EAT,
+    STATE_NOEAT,
+    STATE_NOEAT_BUFFER,
+    STATE_HEREDOCBEGIN,
+} DefaultActionType;
+
 typedef struct {
     struct State *destination;
 
     // If condition has no emit name this is set to destination state's
-    // emit name or list name (COND_INLIST).
+    // emit name or list name (COND_INLIST)
     char *emit_name;
 
-    // Set after all colors have been added (config loaded).
-    TermColor *emit_color;
+    // Set after all colors have been added (config loaded)
+    const TermColor *emit_color;
 } Action;
 
 typedef struct {
@@ -46,7 +54,7 @@ typedef struct {
 typedef union {
     BitSetWord bitset[BITSET_NR_WORDS(256)];
     StringView heredocend;
-    StringList *str_list;
+    const StringList *str_list;
     unsigned char ch;
     size_t recolor_len;
     struct {
@@ -81,14 +89,8 @@ typedef struct State {
     bool visited;
     bool copied;
 
-    enum {
-        STATE_INVALID = -1,
-        STATE_EAT,
-        STATE_NOEAT,
-        STATE_NOEAT_BUFFER,
-        STATE_HEREDOCBEGIN,
-    } type;
-    Action a;
+    DefaultActionType type;
+    Action default_action;
 
     struct {
         Syntax *subsyntax;
@@ -102,28 +104,26 @@ typedef struct {
     size_t len;
 } HeredocState;
 
-typedef struct {
-    Syntax *subsyn;
-    State *return_state;
-    const char *delim;
-    size_t delim_len;
-} SyntaxMerge;
-
 static inline bool is_subsyntax(const Syntax *syn)
 {
     return syn->name[0] == '.';
 }
 
+static inline bool cond_type_has_destination(ConditionType type)
+{
+    return !(type == COND_RECOLOR || type == COND_RECOLOR_BUFFER);
+}
+
 StringList *find_string_list(const Syntax *syn, const char *name);
 State *find_state(const Syntax *syn, const char *name);
-State *merge_syntax(Syntax *syn, SyntaxMerge *m);
-void finalize_syntax(Syntax *syn, unsigned int saved_nr_errors);
+void finalize_syntax(HashMap *syntaxes, Syntax *syn, unsigned int saved_nr_errors);
 
-Syntax *find_any_syntax(const char *name);
-Syntax *find_syntax(const char *name);
-void update_syntax_colors(Syntax *syn);
-void update_all_syntax_colors(void);
-void find_unused_subsyntaxes(void);
-void free_syntaxes(void);
+Syntax *find_any_syntax(const HashMap *syntaxes, const char *name);
+Syntax *find_syntax(const HashMap *syntaxes, const char *name);
+void update_state_colors(const Syntax *syn, State *s, const ColorScheme *colors);
+void update_syntax_colors(Syntax *syn, const ColorScheme *colors);
+void update_all_syntax_colors(const HashMap *syntaxes, const ColorScheme *colors);
+void find_unused_subsyntaxes(const HashMap *syntaxes);
+void free_syntaxes(HashMap *syntaxes);
 
 #endif

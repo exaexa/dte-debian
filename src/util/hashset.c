@@ -19,9 +19,7 @@ static void alloc_table(HashSet *set, size_t size)
 
 void hashset_init(HashSet *set, size_t size, bool icase)
 {
-    if (size < 8) {
-        size = 8;
-    }
+    size = MAX(size, 8);
 
     // Accommodate the 75% load factor in the table size, to allow filling
     // the set to the requested size without needing to rehash()
@@ -120,15 +118,4 @@ HashSetEntry *hashset_add(HashSet *set, const char *str, size_t str_len)
     }
 
     return h;
-}
-
-const void *mem_intern(const void *data, size_t len)
-{
-    static HashSet pool;
-    if (unlikely(pool.table_size == 0)) {
-        hashset_init(&pool, 32, false);
-    }
-
-    HashSetEntry *e = hashset_add(&pool, data, len);
-    return e->str;
 }

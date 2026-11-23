@@ -10,40 +10,79 @@
 #include "string-view.h"
 #include "xmalloc.h"
 
-#define MEMZERO(ptr) memset((ptr), 0, sizeof(*(ptr)))
-
-NONNULL_ARGS
+PURE NONNULL_ARGS
 static inline bool streq(const char *a, const char *b)
 {
     return strcmp(a, b) == 0;
 }
 
+PURE
 static inline bool xstreq(const char *a, const char *b)
 {
     return (a == b) || (a && b && streq(a, b));
 }
 
-NONNULL_ARGS
+PURE NONNULL_ARGS
 static inline bool mem_equal(const void *s1, const void *s2, size_t n)
 {
     return memcmp(s1, s2, n) == 0;
 }
 
-NONNULL_ARGS
+static inline bool str_is_null_or_empty(const char *str)
+{
+    return !str || str[0] == '\0';
+}
+
+// Like getenv(3) but with `const char*` return type and also returning
+// NULL for empty strings
+static inline const char *xgetenv(const char *name)
+{
+    const char *val = getenv(name);
+    return str_is_null_or_empty(val) ? NULL : val;
+}
+
+PURE NONNULL_ARGS
 static inline bool str_has_prefix(const char *str, const char *prefix)
 {
     return strncmp(str, prefix, strlen(prefix)) == 0;
 }
 
-NONNULL_ARGS
+PURE NONNULL_ARGS
 static inline bool str_has_suffix(const char *str, const char *suffix)
 {
     size_t l1 = strlen(str);
     size_t l2 = strlen(suffix);
-    if (l2 > l1) {
-        return false;
+    return (l1 >= l2) && mem_equal(str + l1 - l2, suffix, l2);
+}
+
+NONNULL_ARGS
+static inline bool strn_has_strview_prefix(const char *s, size_t n, const StringView *p)
+{
+    return n >= p->length && mem_equal(s, p->data, p->length);
+}
+
+// Replaces all occurrences of a specific byte with a replacement byte
+// and returns the length of the string (like strlen(str))
+NONNULL_ARGS
+static inline size_t str_replace_byte(char *str, char byte, char replacement)
+{
+    size_t n = 0;
+    for (char c; (c = str[n]); n++) {
+        if (c == byte) {
+            str[n] = replacement;
+        }
     }
-    return mem_equal(str + l1 - l2, suffix, l2);
+    return n;
+}
+
+NONNULL_ARGS
+static inline void strn_replace_byte(char *str, size_t n, char byte, char rep)
+{
+    for (size_t i = 0; i < n; i++) {
+        if (str[i] == byte) {
+            str[i] = rep;
+        }
+    }
 }
 
 NONNULL_ARGS

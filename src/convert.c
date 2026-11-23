@@ -1,9 +1,13 @@
 #include <errno.h>
+#include <inttypes.h>
 #include <stdlib.h>
 #include <string.h>
 #include "convert.h"
 #include "util/debug.h"
+#include "util/intern.h"
+#include "util/log.h"
 #include "util/str-util.h"
+#include "util/utf8.h"
 #include "util/xmalloc.h"
 #include "util/xreadwrite.h"
 
@@ -30,7 +34,7 @@ const char *file_decoder_get_encoding(const FileDecoder *dec)
 
 static bool read_utf8_line(FileDecoder *dec, const char **linep, size_t *lenp)
 {
-    char *line = (char *)dec->ibuf + dec->ipos;
+    const char *line = dec->ibuf + dec->ipos;
     const char *nl = memchr(line, '\n', dec->isize - dec->ipos);
     size_t len;
 
@@ -104,7 +108,7 @@ ssize_t file_encoder_write(FileEncoder *enc, const unsigned char *buf, size_t n)
         n = unix_to_dos(enc, buf, n);
         buf = enc->nbuf;
     }
-    return xwrite(enc->fd, buf, n);
+    return xwrite_all(enc->fd, buf, n);
 }
 
 size_t file_encoder_get_nr_errors(const FileEncoder* UNUSED_ARG(enc))
@@ -137,21 +141,14 @@ bool file_decoder_read_line(FileDecoder *dec, const char **linep, size_t *lenp)
 #else // ICONV_DISABLE is undefined; use full iconv implementation:
 
 #include <iconv.h>
-#include <inttypes.h>
-#include "editor.h"
-#include "util/hashset.h"
-#include "util/str-util.h"
-#include "util/utf8.h"
 
-static unsigned char replacement[2] = "\xc2\xbf"; // U+00BF
+static const unsigned char replacement[2] = "\xc2\xbf"; // U+00BF
 
 struct cconv {
     iconv_t cd;
-
     char *obuf;
     size_t osize;
     size_t opos;
-
     size_t consumed;
     size_t errors;
 
@@ -163,7 +160,7 @@ struct cconv {
     char rbuf[4];
     size_t rcount;
 
-    // Input character size in bytes. zero for UTF-8.
+    // Input character size in bytes, or zero for UTF-8
     size_t char_size;
 };
 
@@ -189,31 +186,25 @@ static size_t encoding_char_size(const char *encoding)
 
 static size_t iconv_wrapper (
     iconv_t cd,
-    char **restrict inbuf,
+    const char **restrict inbuf,
     size_t *restrict inbytesleft,
     char **restrict outbuf,
     size_t *restrict outbytesleft
 ) {
     // POSIX defines the second parameter of iconv(3) as "char **restrict"
-    // but NetBSD declares it as "const char **restrict".
-    #ifdef __NetBSD__
-     #if HAS_WARNING("-Wincompatible-pointer-types-discards-qualifiers")
-      IGNORE_WARNING("-Wincompatible-pointer-types-discards-qualifiers")
-     #else
-      IGNORE_WARNING("-Wincompatible-pointer-types")
-     #endif
-    #endif
+    // but NetBSD declares it as "const char **restrict"
+#ifdef __NetBSD__
+    const char **restrict in = inbuf;
+#else
+    char **restrict in = (char **restrict)inbuf;
+#endif
 
-    return iconv(cd, inbuf, inbytesleft, outbuf, outbytesleft);
-
-    #ifdef __NetBSD__
-     UNIGNORE_WARNINGS
-    #endif
+    return iconv(cd, in, inbytesleft, outbuf, outbytesleft);
 }
 
 static void encode_replacement(struct cconv *c)
 {
-    char *ib = replacement;
+    const char *ib = replacement;
     char *ob = c->rbuf;
     size_t ic = sizeof(replacement);
     size_t oc = sizeof(c->rbuf);
@@ -245,13 +236,13 @@ static void add_replacement(struct cconv *c)
 
 static size_t handle_invalid(struct cconv *c, const char *buf, size_t count)
 {
-    DEBUG_LOG("%zu %zu", c->char_size, count);
+    LOG_DEBUG("%zu %zu", c->char_size, count);
     add_replacement(c);
     if (c->char_size == 0) {
         // Converting from UTF-8
         size_t idx = 0;
         CodePoint u = u_get_char(buf, count, &idx);
-        DEBUG_LOG("U+%04" PRIX32, u);
+        LOG_DEBUG("U+%04" PRIX32, u);
         return idx;
     }
     if (c->char_size > count) {
@@ -261,13 +252,12 @@ static size_t handle_invalid(struct cconv *c, const char *buf, size_t count)
     return c->char_size;
 }
 
-static int xiconv(struct cconv *c, char **ib, size_t *ic)
+static int xiconv(struct cconv *c, const char **ib, size_t *ic)
 {
     while (1) {
         char *ob = c->obuf + c->opos;
         size_t oc = c->osize - c->opos;
         size_t rc = iconv_wrapper(c->cd, ib, ic, &ob, &oc);
-
         c->opos = ob - c->obuf;
         if (rc == (size_t)-1) {
             switch (errno) {
@@ -293,34 +283,27 @@ static int xiconv(struct cconv *c, char **ib, size_t *ic)
 
 static size_t convert_incomplete(struct cconv *c, const char *input, size_t len)
 {
-    size_t ic, ipos = 0;
-    char *ib;
-
+    size_t ipos = 0;
     while (c->tcount < sizeof(c->tbuf) && ipos < len) {
-        size_t skip;
-
         c->tbuf[c->tcount++] = input[ipos++];
-
-        ib = c->tbuf;
-        ic = c->tcount;
+        const char *ib = c->tbuf;
+        size_t ic = c->tcount;
         int rc = xiconv(c, &ib, &ic);
-
         if (ic > 0) {
             memmove(c->tbuf, ib, ic);
         }
         c->tcount = ic;
-
-        switch (rc) {
-        case EINVAL:
-            // Incomplete character at end of input buffer.
-            // Try again with more input data.
+        if (rc == EINVAL) {
+            // Incomplete character at end of input buffer; try again
+            // with more input data
             continue;
-        case EILSEQ:
+        }
+        if (rc == EILSEQ) {
             // Invalid multibyte sequence
-            skip = handle_invalid(c, c->tbuf, c->tcount);
+            size_t skip = handle_invalid(c, c->tbuf, c->tcount);
             c->tcount -= skip;
             if (c->tcount > 0) {
-                DEBUG_LOG("tcount=%zu, skip=%zu", c->tcount, skip);
+                LOG_DEBUG("tcount=%zu, skip=%zu", c->tcount, skip);
                 memmove(c->tbuf, c->tbuf + skip, c->tcount);
                 continue;
             }
@@ -328,7 +311,8 @@ static size_t convert_incomplete(struct cconv *c, const char *input, size_t len)
         }
         break;
     }
-    DEBUG_LOG("%zu %zu", ipos, c->tcount);
+
+    LOG_DEBUG("%zu %zu", ipos, c->tcount);
     return ipos;
 }
 
@@ -347,14 +331,11 @@ static void cconv_process(struct cconv *c, const char *input, size_t len)
         len -= ipos;
     }
 
-    char *ib = (char *)input;
-    size_t ic = len;
-    while (ic > 0) {
-        size_t skip;
-
-        switch (xiconv(c, &ib, &ic)) {
-        case EINVAL:
-            // Incomplete character at end of input buffer.
+    const char *ib = input;
+    for (size_t ic = len; ic > 0; ) {
+        int r = xiconv(c, &ib, &ic);
+        if (r == EINVAL) {
+            // Incomplete character at end of input buffer
             if (ic < sizeof(c->tbuf)) {
                 memcpy(c->tbuf, ib, ic);
                 c->tcount = ic;
@@ -362,13 +343,14 @@ static void cconv_process(struct cconv *c, const char *input, size_t len)
                 // FIXME
             }
             ic = 0;
-            break;
-        case EILSEQ:
-            // Invalid multibyte sequence.
-            skip = handle_invalid(c, ib, ic);
+            continue;
+        }
+        if (r == EILSEQ) {
+            // Invalid multibyte sequence
+            size_t skip = handle_invalid(c, ib, ic);
             ic -= skip;
             ib += skip;
-            break;
+            continue;
         }
     }
 }
@@ -400,8 +382,8 @@ static struct cconv *cconv_from_utf8(const char *encoding)
 static void cconv_flush(struct cconv *c)
 {
     if (c->tcount > 0) {
-        // Replace incomplete character at end of input buffer.
-        DEBUG_LOG("incomplete character at EOF");
+        // Replace incomplete character at end of input buffer
+        LOG_DEBUG("incomplete character at EOF");
         add_replacement(c);
         c->tcount = 0;
     }
@@ -411,7 +393,6 @@ static char *cconv_consume_line(struct cconv *c, size_t *len)
 {
     char *line = c->obuf + c->consumed;
     char *nl = memchr(line, '\n', c->opos - c->consumed);
-
     if (!nl) {
         *len = 0;
         return NULL;
@@ -444,10 +425,12 @@ bool conversion_supported_by_iconv(const char *from, const char *to)
         errno = EINVAL;
         return false;
     }
+
     iconv_t cd = iconv_open(to, from);
     if (cd == (iconv_t)-1) {
         return false;
     }
+
     iconv_close(cd);
     return true;
 }
@@ -493,7 +476,7 @@ ssize_t file_encoder_write (
         cconv_flush(enc->cconv);
         buf = cconv_consume_all(enc->cconv, &size);
     }
-    return xwrite(enc->fd, buf, size);
+    return xwrite_all(enc->fd, buf, size);
 }
 
 size_t file_encoder_get_nr_errors(const FileEncoder *enc)
@@ -503,19 +486,14 @@ size_t file_encoder_get_nr_errors(const FileEncoder *enc)
 
 static bool fill(FileDecoder *dec)
 {
-    size_t icount = dec->isize - dec->ipos;
-
-    // Smaller than cconv.obuf to make realloc less likely
-    size_t max = 7 * 1024;
-
-    if (icount > max) {
-        icount = max;
-    }
-
     if (dec->ipos == dec->isize) {
         return false;
     }
 
+    // Smaller than cconv.obuf to make realloc less likely
+    size_t max = 7 * 1024;
+
+    size_t icount = MIN(dec->isize - dec->ipos, max);
     cconv_process(dec->cconv, dec->ibuf + dec->ipos, icount);
     dec->ipos += icount;
     if (dec->ipos == dec->isize) {
@@ -531,11 +509,7 @@ static bool decode_and_read_line(FileDecoder *dec, const char **linep, size_t *l
     size_t len;
     while (1) {
         line = cconv_consume_line(dec->cconv, &len);
-        if (line) {
-            break;
-        }
-
-        if (!fill(dec)) {
+        if (line || !fill(dec)) {
             break;
         }
     }
@@ -570,71 +544,6 @@ static bool set_encoding(FileDecoder *dec, const char *encoding)
     return true;
 }
 
-static bool detect(FileDecoder *dec, const unsigned char *line, size_t len)
-{
-    for (size_t i = 0; i < len; i++) {
-        if (line[i] >= 0x80) {
-            size_t idx = i;
-            CodePoint u = u_get_nonascii(line, len, &idx);
-            const char *encoding;
-            if (u_is_unicode(u)) {
-                encoding = "UTF-8";
-            } else if (editor.term_utf8) {
-                if (dec->isize <= (32 * 1024 * 1024)) {
-                    // If locale is UTF-8 but file doesn't contain valid
-                    // UTF-8 and is also fairly small, just assume latin1
-                    encoding = "ISO-8859-1";
-                } else {
-                    // Large files are likely binary; just decode as
-                    // UTF-8 to avoid costly charset conversion
-                    encoding = "UTF-8";
-                }
-            } else {
-                // Assume encoding is same as locale
-                encoding = editor.charset.name;
-            }
-            if (!set_encoding(dec, encoding)) {
-                // FIXME: error message?
-                set_encoding(dec, "UTF-8");
-            }
-            return true;
-        }
-    }
-
-    // ASCII
-    return false;
-}
-
-static bool detect_and_read_line(FileDecoder *dec, const char **linep, size_t *lenp)
-{
-    char *line = (char *)dec->ibuf + dec->ipos;
-    const char *nl = memchr(line, '\n', dec->isize - dec->ipos);
-    size_t len;
-
-    if (nl) {
-        len = nl - line;
-    } else {
-        len = dec->isize - dec->ipos;
-        if (len == 0) {
-            return false;
-        }
-    }
-
-    if (detect(dec, line, len)) {
-        // Encoding detected
-        return dec->read_line(dec, linep, lenp);
-    }
-
-    // Only ASCII so far
-    dec->ipos += len;
-    if (nl) {
-        dec->ipos++;
-    }
-    *linep = line;
-    *lenp = len;
-    return true;
-}
-
 FileDecoder *new_file_decoder (
     const char *encoding,
     const unsigned char *buf,
@@ -643,13 +552,14 @@ FileDecoder *new_file_decoder (
     FileDecoder *dec = xnew0(FileDecoder, 1);
     dec->ibuf = buf;
     dec->isize = size;
-    dec->read_line = detect_and_read_line;
 
-    if (encoding) {
-        if (!set_encoding(dec, encoding)) {
-            free_file_decoder(dec);
-            return NULL;
-        }
+    if (!encoding) {
+        encoding = "UTF-8";
+    }
+
+    if (!set_encoding(dec, encoding)) {
+        free_file_decoder(dec);
+        return NULL;
     }
 
     return dec;

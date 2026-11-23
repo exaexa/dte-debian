@@ -1,35 +1,61 @@
-#include <string.h>
 #include "test.h"
 #include "filetype.h"
 
-static void test_find_ft_filename(void)
+static void test_is_valid_filetype_name(TestContext *ctx)
+{
+    EXPECT_TRUE(is_valid_filetype_name("c"));
+    EXPECT_TRUE(is_valid_filetype_name("asm"));
+    EXPECT_TRUE(is_valid_filetype_name("abc-XYZ_128.90"));
+    EXPECT_FALSE(is_valid_filetype_name(""));
+    EXPECT_FALSE(is_valid_filetype_name("x/y"));
+    EXPECT_FALSE(is_valid_filetype_name(" "));
+    EXPECT_FALSE(is_valid_filetype_name("/"));
+    EXPECT_FALSE(is_valid_filetype_name("-c"));
+    EXPECT_FALSE(is_valid_filetype_name("abc xyz"));
+    EXPECT_FALSE(is_valid_filetype_name("abc\txyz"));
+    EXPECT_FALSE(is_valid_filetype_name("xyz "));
+
+    char str[65];
+    size_t n = sizeof(str) - 1;
+    memset(str, 'a', n);
+    str[n] = '\0';
+    ASSERT_EQ(strlen(str), 64);
+    EXPECT_FALSE(is_valid_filetype_name(str));
+
+    str[n - 1] = '\0';
+    ASSERT_EQ(strlen(str), 63);
+    EXPECT_TRUE(is_valid_filetype_name(str));
+}
+
+static void test_find_ft_filename(TestContext *ctx)
 {
     static const struct {
         const char *filename;
         const char *expected_filetype;
     } tests[] = {
         {"/usr/local/include/lib.h", "c"},
-        {"test.cc~", "c"},
-        {"test.c++", "c"},
-        {"test.lua", "lua"},
-        {"test.py", "python"},
-        {"test.rs", "rust"},
         {"test.C", "c"},
         {"test.H", "c"},
-        {"test.re", "c"},
         {"test.S", "asm"},
-        {"test.s", "asm"},
+        {"test.c++", "c"},
+        {"test.cc~", "c"},
+        {"test.csv", "csv"},
         {"test.d", "d"},
-        {"test.l", "lex"},
-        {"test.m", "objc"},
-        {"test.v", "verilog"},
-        {"test.y", "yacc"},
+        {"test.gcode", "gcode"},
+        {"test.json", "json"},
         {"test.kt", "kotlin"},
         {"test.kts", "kotlin"},
-        {"test.csv", "csv"},
-        {"test.tsv", "tsv"},
+        {"test.l", "lex"},
+        {"test.lua", "lua"},
+        {"test.m", "objc"},
         {"test.opml", "xml"},
-        {"test.gcode", "gcode"},
+        {"test.py", "python"},
+        {"test.re", "c"},
+        {"test.rs", "rust"},
+        {"test.s", "asm"},
+        {"test.tsv", "tsv"},
+        {"test.v", "verilog"},
+        {"test.y", "yacc"},
         {"makefile", "make"},
         {"GNUmakefile", "make"},
         {".file.yml", "yaml"},
@@ -44,12 +70,14 @@ static void test_find_ft_filename(void)
         {"/etc/default/grub", "sh"},
         {"/etc/systemd/user.conf", "ini"},
         {"/etc/nginx/mime.types", "nginx"},
+        {"/etc/pam.d/login", "config"},
         {"/etc/iptables/iptables.rules", "config"},
         {"/etc/iptables/ip6tables.rules", "config"},
         {"/root/.bash_profile", "sh"},
         {".bash_profile", "sh"},
         {".clang-format", "yaml"},
         {".drirc", "xml"},
+        {".dterc", "dte"},
         {".editorconfig", "ini"},
         {".gitattributes", "config"},
         {".gitconfig", "ini"},
@@ -59,7 +87,10 @@ static void test_find_ft_filename(void)
         {".XCompose", "config"},
         {".tmux.conf", "tmux"},
         {"zshrc", "sh"},
+        {"dot_zshrc", "sh"},
         {"gnus", "lisp"},
+        {".gnus", "lisp"},
+        {"dot_gnus", "lisp"},
         {"file.flatpakref", "ini"},
         {"file.automount", "ini"},
         {"file.nginxconf", "nginx"},
@@ -81,10 +112,14 @@ static void test_find_ft_filename(void)
         {".12345", NULL},
         {".123456", NULL},
         {".doa_", NULL},
+        {"dot_", NULL},
+        {"dot_z", NULL},
         {"", NULL},
         {"/", NULL},
         {"/etc../etc.c.old/c.old", NULL},
-        // TODO: {".c~", NULL},
+        {".c~", NULL},
+        {".ini~", NULL},
+        {".yml.bak", NULL},
         {"test.c.bak", "c"},
         {"test.c.new", "c"},
         {"test.c.old~", "c"},
@@ -100,16 +135,19 @@ static void test_find_ft_filename(void)
         {"test.c.rpmsave", "c"},
         {".c", NULL},
         {"test.@", NULL},
+        {"test.~", NULL},
+        {"1", NULL},
         {NULL, NULL},
     };
+    const PointerArray arr = PTR_ARRAY_INIT;
     const StringView empty_line = STRING_VIEW_INIT;
     FOR_EACH_I(i, tests) {
-        const char *ft = find_ft(tests[i].filename, empty_line);
+        const char *ft = find_ft(&arr, tests[i].filename, empty_line);
         IEXPECT_STREQ(ft, tests[i].expected_filetype);
     }
 }
 
-static void test_find_ft_firstline(void)
+static void test_find_ft_firstline(TestContext *ctx)
 {
     static const struct {
         const char *line;
@@ -145,7 +183,7 @@ static void test_find_ft_firstline(void)
         {"#!/usr/bin/ccl", "lisp"},
         {"#!/usr/bin/chicken", "scheme"},
         {"#!/usr/bin/clisp", "lisp"},
-        {"#!/usr/bin/coffee", "coffeescript"},
+        {"#!/usr/bin/coffee", "coffee"},
         {"#!/usr/bin/crystal", "ruby"},
         {"#!/usr/bin/dash", "sh"},
         {"#!/usr/bin/ecl", "lisp"},
@@ -184,45 +222,105 @@ static void test_find_ft_firstline(void)
         {"#!/usr/bin/tclsh", "tcl"},
         {"#!/usr/bin/wish", "tcl"},
         {"#!/usr/bin/zsh", "sh"},
+        {"#!/usr/bin/lua5.3", "lua"},
+        {"#!/usr/bin/env lua", "lua"},
+        {"#!/usr/bin/env lua5.3", "lua"},
+        {"#!  /usr/bin/env lua5.3", "lua"},
+        {"#!  /usr/bin/env  lua5.3", "lua"},
+        {"#!/usr/bin/env /usr/bin/lua", "lua"},
+        {"#!/lua", "lua"},
         {"#!/usr/bin/_unhaskell", NULL},
         {"#!/usr/bin/runhaskel_", NULL},
         {"#!/usr/bin/unknown", NULL},
+        {"#!lua", NULL},
+        {"#!/usr/bin/ lua", NULL},
+        {"#!/usr/bin/", NULL},
+        {"#!/usr/bin/env", NULL},
+        {"#!/usr/bin/env ", NULL},
+        {"#!/usr/bin/env  ", NULL},
+        {"#!/usr/bin/env/ lua", NULL},
+        {"#!/lua/", NULL},
     };
+    const PointerArray arr = PTR_ARRAY_INIT;
     FOR_EACH_I(i, tests) {
-        const char *ft = find_ft(NULL, strview_from_cstring(tests[i].line));
+        const char *ft = find_ft(&arr, NULL, strview_from_cstring(tests[i].line));
         IEXPECT_STREQ(ft, tests[i].expected_filetype);
     }
 }
 
-static void test_is_ft(void)
+static void test_find_ft_dynamic(TestContext *ctx)
 {
-    EXPECT_TRUE(is_ft("ada"));
-    EXPECT_TRUE(is_ft("asm"));
-    EXPECT_TRUE(is_ft("awk"));
-    EXPECT_TRUE(is_ft("c"));
-    EXPECT_TRUE(is_ft("d"));
-    EXPECT_TRUE(is_ft("dte"));
-    EXPECT_TRUE(is_ft("java"));
-    EXPECT_TRUE(is_ft("javascript"));
-    EXPECT_TRUE(is_ft("lua"));
-    EXPECT_TRUE(is_ft("mail"));
-    EXPECT_TRUE(is_ft("make"));
-    EXPECT_TRUE(is_ft("pkg-config"));
-    EXPECT_TRUE(is_ft("rst"));
-    EXPECT_TRUE(is_ft("sh"));
-    EXPECT_TRUE(is_ft("yaml"));
-    EXPECT_TRUE(is_ft("zig"));
+    PointerArray a = PTR_ARRAY_INIT;
+    const char *ft = "test1";
+    StringView line = STRING_VIEW_INIT;
+    EXPECT_FALSE(is_ft(&a, ft));
+    EXPECT_TRUE(add_filetype(&a, ft, "ext-test", FT_EXTENSION));
+    EXPECT_TRUE(is_ft(&a, ft));
+    EXPECT_STREQ(find_ft(&a, "/tmp/file.ext-test", line), ft);
 
-    EXPECT_FALSE(is_ft(""));
-    EXPECT_FALSE(is_ft("-"));
-    EXPECT_FALSE(is_ft("a"));
-    EXPECT_FALSE(is_ft("C"));
-    EXPECT_FALSE(is_ft("MAKE"));
+    ft = "test2";
+    EXPECT_TRUE(add_filetype(&a, ft, "/zdir/__[A-Z]+$", FT_FILENAME));
+    EXPECT_STREQ(find_ft(&a, "/tmp/zdir/__TESTFILE", line), ft);
+    EXPECT_STREQ(find_ft(&a, "/tmp/zdir/__testfile", line), NULL);
+
+    ft = "test3";
+    EXPECT_TRUE(add_filetype(&a, ft, "._fiLeName", FT_BASENAME));
+    EXPECT_STREQ(find_ft(&a, "/tmp/._fiLeName", line), ft);
+    EXPECT_STREQ(find_ft(&a, "/tmp/._filename", line), NULL);
+
+    ft = "test4";
+    line = strview_from_cstring("!!42");
+    EXPECT_TRUE(add_filetype(&a, ft, "^!+42$", FT_CONTENT));
+    EXPECT_STREQ(find_ft(&a, NULL, line), ft);
+
+    ft = "test5";
+    line = strview_from_cstring("#!/usr/bin/xyzlang4.2");
+    EXPECT_TRUE(add_filetype(&a, ft, "xyzlang", FT_INTERPRETER));
+    EXPECT_STREQ(find_ft(&a, NULL, line), ft);
+
+    EXPECT_TRUE(is_ft(&a, "test1"));
+    EXPECT_TRUE(is_ft(&a, "test2"));
+    EXPECT_TRUE(is_ft(&a, "test3"));
+    EXPECT_TRUE(is_ft(&a, "test4"));
+    EXPECT_TRUE(is_ft(&a, "test5"));
+    EXPECT_FALSE(is_ft(&a, "test0"));
+    EXPECT_FALSE(is_ft(&a, "test"));
+
+    free_filetypes(&a);
+}
+
+static void test_is_ft(TestContext *ctx)
+{
+    const PointerArray a = PTR_ARRAY_INIT;
+    EXPECT_TRUE(is_ft(&a, "ada"));
+    EXPECT_TRUE(is_ft(&a, "asm"));
+    EXPECT_TRUE(is_ft(&a, "awk"));
+    EXPECT_TRUE(is_ft(&a, "c"));
+    EXPECT_TRUE(is_ft(&a, "d"));
+    EXPECT_TRUE(is_ft(&a, "dte"));
+    EXPECT_TRUE(is_ft(&a, "java"));
+    EXPECT_TRUE(is_ft(&a, "javascript"));
+    EXPECT_TRUE(is_ft(&a, "lua"));
+    EXPECT_TRUE(is_ft(&a, "mail"));
+    EXPECT_TRUE(is_ft(&a, "make"));
+    EXPECT_TRUE(is_ft(&a, "pkg-config"));
+    EXPECT_TRUE(is_ft(&a, "rst"));
+    EXPECT_TRUE(is_ft(&a, "sh"));
+    EXPECT_TRUE(is_ft(&a, "yaml"));
+    EXPECT_TRUE(is_ft(&a, "zig"));
+
+    EXPECT_FALSE(is_ft(&a, ""));
+    EXPECT_FALSE(is_ft(&a, "-"));
+    EXPECT_FALSE(is_ft(&a, "a"));
+    EXPECT_FALSE(is_ft(&a, "C"));
+    EXPECT_FALSE(is_ft(&a, "MAKE"));
 }
 
 static const TestEntry tests[] = {
+    TEST(test_is_valid_filetype_name),
     TEST(test_find_ft_filename),
     TEST(test_find_ft_firstline),
+    TEST(test_find_ft_dynamic),
     TEST(test_is_ft),
 };
 

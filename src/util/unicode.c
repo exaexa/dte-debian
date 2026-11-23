@@ -2,9 +2,8 @@
 #include "unicode.h"
 #include "unidata.h"
 #include "ascii.h"
-#include "editor.h"
 
-#define BISEARCH(u, arr) bisearch((u), (arr), ARRAY_COUNT(arr) - 1)
+#define BISEARCH(u, arr) bisearch((u), (arr), ARRAYLEN(arr) - 1)
 
 static bool bisearch(CodePoint u, const CodepointRange *range, size_t max)
 {
@@ -70,13 +69,7 @@ static bool u_is_default_ignorable(CodePoint u)
 
 bool u_is_unprintable(CodePoint u)
 {
-    if (BISEARCH(u, unprintable)) {
-        return true;
-    }
-    if (editor.options.display_invisible && u_is_default_ignorable(u)) {
-        return true;
-    }
-    return !u_is_unicode(u);
+    return BISEARCH(u, unprintable) || !u_is_unicode(u);
 }
 
 bool u_is_special_whitespace(CodePoint u)
@@ -91,13 +84,7 @@ static bool u_is_nonspacing_mark(CodePoint u)
 
 bool u_is_zero_width(CodePoint u)
 {
-    if (u_is_nonspacing_mark(u)) {
-        return true;
-    }
-    if (!editor.options.display_invisible && u_is_default_ignorable(u)) {
-        return true;
-    }
-    return false;
+    return u_is_nonspacing_mark(u) || u_is_default_ignorable(u);
 }
 
 static bool u_is_double_width(CodePoint u)

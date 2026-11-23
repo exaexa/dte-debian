@@ -8,8 +8,11 @@ enum {
     EX_DATAERR = 65, // Input data error
     EX_OSERR = 71, // Operating system error
     EX_IOERR = 74, // Input/output error
+    EX_CONFIG = 78, // Configuration error
 };
 
+// This exists purely for "self-documentation" purposes. Functions
+// returning this type should only return one of the above values.
 typedef int ExitCode;
 
 #endif

@@ -2,6 +2,8 @@
 #include "buffer.h"
 #include "indent.h"
 #include "util/ascii.h"
+#include "util/debug.h"
+#include "util/macros.h"
 #include "util/utf8.h"
 
 typedef enum {
@@ -11,16 +13,17 @@ typedef enum {
     CT_OTHER,
 } CharTypeEnum;
 
-void move_to_preferred_x(long preferred_x)
+void move_to_preferred_x(View *view, long preferred_x)
 {
+    const LocalOptions *options = &view->buffer->options;
     StringView line;
     view->preferred_x = preferred_x;
     block_iter_bol(&view->cursor);
     fill_line_ref(&view->cursor, &line);
 
-    if (buffer->options.emulate_tab && view->preferred_x < line.length) {
-        const size_t iw = buffer->options.indent_width;
-        const size_t ilevel = view->preferred_x / iw;
+    if (options->emulate_tab && view->preferred_x < line.length) {
+        const size_t iw = options->indent_width;
+        const size_t ilevel = indent_level(view->preferred_x, iw);
         for (size_t i = 0; i < line.length && line.data[i] == ' '; i++) {
             if (i + 1 == (ilevel + 1) * iw) {
                 // Force cursor to beginning of the indentation level
@@ -30,7 +33,7 @@ void move_to_preferred_x(long preferred_x)
         }
     }
 
-    const unsigned int tw = buffer->options.tab_width;
+    const unsigned int tw = options->tab_width;
     unsigned long x = 0;
     size_t i = 0;
     while (x < view->preferred_x && i < line.length) {
@@ -39,7 +42,7 @@ void move_to_preferred_x(long preferred_x)
             if (likely(!ascii_iscntrl(u))) {
                 x++;
             } else if (u == '\t') {
-                x = (x + tw) / tw * tw;
+                x = next_indent_width(x, tw);
             } else if (u == '\n') {
                 break;
             } else {
@@ -61,17 +64,18 @@ void move_to_preferred_x(long preferred_x)
     }
     view->cursor.offset += i;
 
-    // If cursor stopped on a zero-width char, move to the next spacing char.
+    // If cursor stopped on a zero-width char, move to the next spacing char
     CodePoint u;
     if (block_iter_get_char(&view->cursor, &u) && u_is_zero_width(u)) {
         block_iter_next_column(&view->cursor);
     }
 }
 
-void move_cursor_left(void)
+void move_cursor_left(View *view)
 {
-    if (buffer->options.emulate_tab) {
-        size_t size = get_indent_level_bytes_left();
+    const LocalOptions *options = &view->buffer->options;
+    if (options->emulate_tab) {
+        size_t size = get_indent_level_bytes_left(options, &view->cursor);
         if (size) {
             block_iter_back_bytes(&view->cursor, size);
             view_reset_preferred_x(view);
@@ -82,10 +86,11 @@ void move_cursor_left(void)
     view_reset_preferred_x(view);
 }
 
-void move_cursor_right(void)
+void move_cursor_right(View *view)
 {
-    if (buffer->options.emulate_tab) {
-        size_t size = get_indent_level_bytes_right();
+    const LocalOptions *options = &view->buffer->options;
+    if (options->emulate_tab) {
+        size_t size = get_indent_level_bytes_right(options, &view->cursor);
         if (size) {
             block_iter_skip_bytes(&view->cursor, size);
             view_reset_preferred_x(view);
@@ -96,40 +101,52 @@ void move_cursor_right(void)
     view_reset_preferred_x(view);
 }
 
-void move_bol(void)
+void move_bol(View *view)
 {
     block_iter_bol(&view->cursor);
     view_reset_preferred_x(view);
 }
 
-void move_bol_smart(void)
+void move_bol_smart(View *view, SmartBolFlags flags)
 {
+    if (flags == 0) {
+        move_bol(view);
+        return;
+    }
+
+    BUG_ON(!(flags & BOL_SMART));
+    bool fwd = false;
     StringView line;
-    const size_t cursor_offset = fetch_this_line(&view->cursor, &line);
+    size_t cursor_offset = fetch_this_line(&view->cursor, &line);
 
-    size_t indent_bytes = 0;
-    while (ascii_isblank(*line.data++)) {
-        indent_bytes++;
+    if (cursor_offset == 0) {
+        // Already at bol
+        if (!(flags & BOL_SMART_TOGGLE)) {
+            goto out;
+        }
+        fwd = true;
     }
 
-    size_t move_bytes;
-    if (cursor_offset > indent_bytes) {
-        move_bytes = cursor_offset - indent_bytes;
+    size_t indent = ascii_blank_prefix_length(line.data, line.length);
+    if (fwd) {
+        block_iter_skip_bytes(&view->cursor, indent);
     } else {
-        move_bytes = cursor_offset;
+        size_t co = cursor_offset;
+        size_t move = (co > indent) ? co - indent : co;
+        block_iter_back_bytes(&view->cursor, move);
     }
 
-    block_iter_back_bytes(&view->cursor, move_bytes);
+out:
     view_reset_preferred_x(view);
 }
 
-void move_eol(void)
+void move_eol(View *view)
 {
     block_iter_eol(&view->cursor);
     view_reset_preferred_x(view);
 }
 
-void move_up(long count)
+void move_up(View *view, long count)
 {
     const long x = view_get_preferred_x(view);
     while (count > 0) {
@@ -138,10 +155,10 @@ void move_up(long count)
         }
         count--;
     }
-    move_to_preferred_x(x);
+    move_to_preferred_x(view, x);
 }
 
-void move_down(long count)
+void move_down(View *view, long count)
 {
     const long x = view_get_preferred_x(view);
     while (count > 0) {
@@ -150,41 +167,53 @@ void move_down(long count)
         }
         count--;
     }
-    move_to_preferred_x(x);
+    move_to_preferred_x(view, x);
 }
 
-void move_bof(void)
+void move_bof(View *view)
 {
     block_iter_bof(&view->cursor);
     view_reset_preferred_x(view);
 }
 
-void move_eof(void)
+void move_eof(View *view)
 {
     block_iter_eof(&view->cursor);
     view_reset_preferred_x(view);
 }
 
-void move_to_line(View *v, size_t line)
+void move_to_line(View *view, size_t line)
 {
-    block_iter_goto_line(&v->cursor, line - 1);
-    v->center_on_scroll = true;
+    BUG_ON(line == 0);
+    view->center_on_scroll = true;
+    block_iter_goto_line(&view->cursor, line - 1);
 }
 
-void move_to_column(View *v, size_t column)
+void move_to_column(View *view, size_t column)
 {
-    block_iter_bol(&v->cursor);
+    BUG_ON(column == 0);
+    block_iter_bol(&view->cursor);
     while (column-- > 1) {
         CodePoint u;
-        if (!block_iter_next_char(&v->cursor, &u)) {
+        if (!block_iter_next_char(&view->cursor, &u)) {
             break;
         }
         if (u == '\n') {
-            block_iter_prev_char(&v->cursor, &u);
+            block_iter_prev_char(&view->cursor, &u);
             break;
         }
     }
-    view_reset_preferred_x(v);
+    view_reset_preferred_x(view);
+}
+
+void move_to_filepos(View *view, size_t line, size_t column)
+{
+    move_to_line(view, line);
+    BUG_ON(!block_iter_is_bol(&view->cursor));
+    if (column != 1) {
+        move_to_column(view, column);
+    }
+    view_reset_preferred_x(view);
 }
 
 static CharTypeEnum get_char_type(CodePoint u)

@@ -3,6 +3,7 @@
 #include "utf8.h"
 #include "ascii.h"
 #include "debug.h"
+#include "numtostr.h"
 
 enum {
     I = -1, // Invalid byte
@@ -55,6 +56,8 @@ static bool u_seq_len_ok(CodePoint u, int len)
  */
 static unsigned int u_get_first_byte_mask(unsigned int len)
 {
+    BUG_ON(len < 2);
+    BUG_ON(len > 4);
     return (0x80 >> len) - 1;
 }
 
@@ -163,7 +166,7 @@ invalid:
     return -first;
 }
 
-void u_set_char_raw(char *str, size_t *idx, CodePoint u)
+size_t u_set_char_raw(char *str, size_t *idx, CodePoint u)
 {
     static const uint8_t prefixes[] = {0, 0, 0xC0, 0xE0, 0xF0};
     const size_t len = u_char_size(u);
@@ -186,10 +189,11 @@ void u_set_char_raw(char *str, size_t *idx, CodePoint u)
     case 1:
         str[i] = (u & 0xFF) | first_byte_prefix;
         *idx = i + len;
-        break;
-    default:
-        BUG("unexpected UTF-8 sequence length: %zu", len);
+        return len;
     }
+
+    BUG("unexpected UTF-8 sequence length: %zu", len);
+    return 0;
 }
 
 void u_set_char(char *str, size_t *idx, CodePoint u)
@@ -213,14 +217,12 @@ void u_set_char(char *str, size_t *idx, CodePoint u)
 
 void u_set_hex(char *str, size_t *idx, CodePoint u)
 {
-    static const char hex_tab[16] = "0123456789abcdef";
     char *p = str + *idx;
     p[0] = '<';
     if (!u_is_unicode(u)) {
         // Invalid byte (negated)
         u *= -1;
-        p[1] = hex_tab[(u >> 4) & 0x0f];
-        p[2] = hex_tab[u & 0x0f];
+        hex_encode_byte(p + 1, u & 0xFF);
     } else {
         p[1] = '?';
         p[2] = '?';

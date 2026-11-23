@@ -1,20 +1,29 @@
-PKGCONFIG = $(shell command -v pkg-config || command -v pkgconf || echo ':')
-$(call make-lazy,PKGCONFIG)
-
+HASH := \#
 CFILE := mk/feature-test/basic.c
 streq = $(and $(findstring $(1),$(2)),$(findstring $(2),$(1)))
+toupper = $(shell echo '$(1)' | tr a-z A-Z)
 try-run = $(if $(shell $(1) >/dev/null 2>&1 && echo 1),$(2),$(3))
 cc-option = $(call try-run,$(CC) $(1) -Werror -c -o /dev/null $(CFILE),$(1),$(2))
 prefix-obj = $(addprefix $(1), $(addsuffix .o, $(2)))
-pkg-var = $(shell $(PKGCONFIG) --variable='$(strip $(2))' $(1))
 echo-if-set = $(foreach var, $(1), $(if $($(var)), $(var)))
+
+# Note: this doesn't work reliably in make 3.81, due to a bug, but
+# we already check for GNU Make 4.0+ in mk/compat.mk.
+# See also: https://blog.jgc.org/2016/07/lazy-gnu-make-variables.html
+make-lazy = $(eval $1 = $$(eval $1 := $(value $(1)))$$($1))
+
+NPROC = $(or $(shell sh mk/nproc.sh), 1)
+$(call make-lazy,NPROC)
+XARGS = xargs
+XARGS_P_FLAG = $(call try-run, printf "1\n2" | $(XARGS) -P2 -I@ echo '@', -P$(NPROC))
+$(call make-lazy,XARGS_P_FLAG)
+XARGS_P = $(XARGS) $(XARGS_P_FLAG)
 
 MAKEFLAGS += -r
 KERNEL := $(shell sh -c 'uname -s 2>/dev/null || echo not')
 OS := $(shell sh -c 'uname -o 2>/dev/null || echo not')
 DISTRO = $(shell . /etc/os-release && echo "$$NAME $$VERSION_ID")
 ARCH = $(shell uname -m 2>/dev/null)
-NPROC = $(or $(shell sh mk/nproc.sh), 1)
 _POSIX_VERSION = $(shell getconf _POSIX_VERSION 2>/dev/null)
 _XOPEN_VERSION = $(shell getconf _XOPEN_VERSION 2>/dev/null)
 CC_VERSION = $(or \
@@ -31,7 +40,7 @@ AUTOVARS = \
     $(if $(call streq,$(KERNEL),Linux), DISTRO) \
     ARCH NPROC _POSIX_VERSION _XOPEN_VERSION \
     TERM SHELL LANG $(call echo-if-set, LC_CTYPE LC_ALL) \
-    PKGCONFIG MAKE_VERSION MAKEFLAGS CC_VERSION CC_TARGET
+    MAKE_VERSION MAKEFLAGS CC_VERSION CC_TARGET
 
 vars:
 	@echo
@@ -40,19 +49,20 @@ vars:
 	@echo
 
 
-.PHONY: vars
-
+.PHONY: vars FORCE
 
 ifneq "$(MAKE_S)" ""
   # Make "-s" flag was used (silent build)
+  LOG = :
   Q = @
-  E = @:
 else ifeq "$(V)" "1"
   # "V=1" variable was set (verbose build)
+  LOG = :
   Q =
-  E = @:
 else
   # Normal build
+  LOG = printf ' %7s  %s\n'
   Q = @
-  E = @printf ' %7s  %s\n'
 endif
+
+E = @$(LOG)

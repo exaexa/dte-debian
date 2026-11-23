@@ -20,16 +20,10 @@ typedef struct {
 
 static inline EditorConfigOptions editorconfig_options_init(void)
 {
-    return (EditorConfigOptions) {
-        .indent_size = 0,
-        .tab_width = 0,
-        .max_line_length = 0,
-        .indent_style = INDENT_STYLE_UNSPECIFIED,
-        .indent_size_is_tab = false
-    };
+    return (EditorConfigOptions){.indent_style = INDENT_STYLE_UNSPECIFIED};
 }
 
-NONNULL_ARG(1)
+NONNULL_ARG(1) WARN_UNUSED_RESULT
 int get_editorconfig_options(const char *pathname, EditorConfigOptions *opts);
 
 #endif
