@@ -3,7 +3,7 @@ Upstream-Name: dte
 Source: https://craigbarnes.gitlab.io/dte/
 
 Files: *
-Copyright: 2013-2021 Craig Barnesd <craigbarnes@protonmail.com>
+Copyright: 2013-2026 Craig Barnes <craigbarnes@protonmail.com>
            2008-2015 Timo Hirvonen <tihorvon@gmail.com>
 License: GPL-2
  This package is free software; you can redistribute it and/or modify it under
@@ -22,7 +22,7 @@ License: GPL-2
  Public License version 2 can be found in "/usr/share/common-licenses/GPL-2".
 
 Files: debian/*
-Copyright: 2019-2021 Mirek Kratochvil <exa.exa@gmail.com>
+Copyright: 2019-2026 Mirek Kratochvil <exa.exa@gmail.com>
 License: GPL-2+
  This package is free software; you can redistribute it and/or modify
  it under the terms of the GNU General Public License as published by
