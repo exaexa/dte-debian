@@ -1,9 +1,11 @@
-PANDOC = pandoc
+# TODO: Use "-f gfm+definition_lists" and remove $(QUIET_PANDOC) when
+# pandoc 2.13 becomes widely available
 PANDOC_FLAGS = -f markdown_github+definition_lists+auto_identifiers+yaml_metadata_block-hard_line_breaks
+QUIET_PANDOC = 2>&1 | sed '/^\[WARNING] Deprecated: markdown_github/d' >&2
+
+PANDOC = pandoc
 PDMAN = $(PANDOC) $(PANDOC_FLAGS) -t docs/pdman.lua
 PDHTML = $(PANDOC) $(PANDOC_FLAGS) -t html5 --toc --template=docs/template.html -Voutput_basename=$(@F)
-
-public/dte.html: PANDOC_FLAGS += --indented-code-classes=sh
 
 man = docs/dte.1 docs/dterc.5 docs/dte-syntax.5
 html-man = public/dte.html public/dterc.html public/dte-syntax.html
@@ -17,31 +19,32 @@ html: $(html) $(css) $(img)
 htmlgz: $(patsubst %, %.gz, $(html) $(css) public/favicon.ico)
 pdf: public/dte.pdf
 
-$(html): docs/template.html | public/style.css
+$(html-man): public/%.html: docs/%.md
+public/index.html: docs/index.yml build/docs/index.md docs/gitlab.md
+public/releases.html: docs/releases.yml CHANGELOG.md
+public/dterc.html public/dte-syntax.html: docs/fix-anchors.lua
+public/dterc.html public/dte-syntax.html: PDHTML += -L docs/fix-anchors.lua
+public/dte.html: PDHTML += --indented-code-classes=sh
 
-docs/%.1 docs/%.5: docs/%.md docs/pdman.lua
+docs/%.1: docs/%.md docs/pdman.lua
 	$(E) PANDOC $@
-	$(Q) $(PDMAN) -o $@ $<
+	$(Q) $(PDMAN) -o $@ $< $(QUIET_PANDOC)
+
+docs/%.5: docs/%.md docs/pdman.lua
+	$(E) PANDOC $@
+	$(Q) $(PDMAN) -o $@ $< $(QUIET_PANDOC)
 
 public/dte.pdf: $(man) | public/
 	$(E) GROFF $@
 	$(Q) groff -mandoc -Tpdf $^ > $@
 
-public/index.html: docs/index.yml build/docs/index.md docs/gitlab.md | public/
-	$(E) PANDOC $@
-	$(Q) $(PDHTML) -o $@ $(filter-out docs/template.html, $^)
-
 build/docs/index.md: docs/index.sed README.md | build/docs/
 	$(E) GEN $@
 	$(Q) sed -f $^ > $@
 
-public/releases.html: docs/releases.yml CHANGELOG.md | public/
+$(html): docs/template.html | public/style.css
 	$(E) PANDOC $@
-	$(Q) $(PDHTML) -o $@ $(filter-out docs/template.html, $^)
-
-$(html-man): public/%.html: docs/%.md docs/fix-anchors.lua
-	$(E) PANDOC $@
-	$(Q) $(PDHTML) --lua-filter=docs/fix-anchors.lua -o $@ $<
+	$(Q) $(PDHTML) -o $@ $(filter-out %.html %.lua, $^) $(QUIET_PANDOC)
 
 public/style.css: docs/layout.css docs/style.css | public/
 	$(E) CSSCAT $@

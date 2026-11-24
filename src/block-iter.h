@@ -15,12 +15,6 @@ typedef struct {
     size_t offset;
 } BlockIter;
 
-#define BLOCK_ITER_INIT(head_) { \
-    .blk = BLOCK((head_)->next), \
-    .head = (head_), \
-    .offset = 0 \
-}
-
 static inline void block_iter_bof(BlockIter *bi)
 {
     bi->blk = BLOCK(bi->head->next);
@@ -41,6 +35,22 @@ static inline bool block_iter_is_eof(const BlockIter *bi)
 static inline bool block_iter_is_bol(const BlockIter *bi)
 {
     return bi->offset == 0 || bi->blk->data[bi->offset - 1] == '\n';
+}
+
+static inline bool block_iter_is_eol(const BlockIter *bi)
+{
+    const Block *blk = bi->blk;
+    size_t offset = bi->offset;
+    if (offset == blk->size) {
+        if (blk->node.next == bi->head) {
+            // EOF
+            return true;
+        }
+        // Normalize
+        blk = BLOCK(blk->node.next);
+        offset = 0;
+    }
+    return blk->data[offset] == '\n';
 }
 
 void block_iter_normalize(BlockIter *bi);

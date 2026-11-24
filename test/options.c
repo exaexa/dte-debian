@@ -1,7 +1,7 @@
 #include "test.h"
 #include "options.h"
 
-static void test_common_options_offsets(void)
+static void test_common_options_offsets(TestContext *ctx)
 {
     #define GLOBAL_OFFSET(m) offsetof(GlobalOptions, m)
     #define LOCAL_OFFSET(m) offsetof(LocalOptions, m)
@@ -18,6 +18,7 @@ static void test_common_options_offsets(void)
     CHECK_OFFSETS(expand_tab);
     CHECK_OFFSETS(file_history);
     CHECK_OFFSETS(fsync);
+    CHECK_OFFSETS(overwrite);
     CHECK_OFFSETS(syntax);
 }
 

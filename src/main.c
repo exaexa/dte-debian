@@ -1,13 +1,15 @@
 #include <errno.h>
 #include <fcntl.h>
-#include <signal.h>
+#include <stdbool.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/utsname.h>
 #include <unistd.h>
 #include "block.h"
-#include "command/serialize.h"
 #include "commands.h"
+#include "compiler.h"
 #include "config.h"
 #include "editor.h"
 #include "error.h"
@@ -16,153 +18,61 @@
 #include "history.h"
 #include "load-save.h"
 #include "move.h"
+#include "screen.h"
 #include "search.h"
+#include "signals.h"
 #include "syntax/state.h"
 #include "syntax/syntax.h"
+#include "tag.h"
 #include "terminal/input.h"
+#include "terminal/key.h"
 #include "terminal/mode.h"
 #include "terminal/output.h"
 #include "terminal/terminal.h"
 #include "util/debug.h"
 #include "util/exitcode.h"
+#include "util/fd.h"
+#include "util/log.h"
 #include "util/macros.h"
-#include "util/str-util.h"
+#include "util/path.h"
+#include "util/ptr-array.h"
 #include "util/strtonum.h"
 #include "util/xmalloc.h"
 #include "util/xreadwrite.h"
+#include "util/xsnprintf.h"
 #include "view.h"
 #include "window.h"
+#include "../build/version.h"
 
-static void handle_sigtstp(int UNUSED_ARG(signum))
+static void term_cleanup(EditorState *e)
 {
-    suspend();
-}
-
-static void handle_sigcont(int UNUSED_ARG(signum))
-{
-    if (
-        !editor.child_controls_terminal
-        && editor.status != EDITOR_INITIALIZING
-    ) {
-        term_raw();
-        ui_start();
+    set_fatal_error_cleanup_handler(NULL, NULL);
+    if (!e->child_controls_terminal) {
+        ui_end(e);
     }
 }
 
-#ifdef SIGWINCH
-static void handle_sigwinch(int UNUSED_ARG(signum))
+static void cleanup_handler(void *userdata)
 {
-    editor.resized = true;
-}
-#endif
-
-static void term_cleanup(void)
-{
-    if (!editor.child_controls_terminal) {
-        ui_end();
-    }
+    term_cleanup(userdata);
 }
 
-static noreturn COLD void handle_fatal_signal(int signum)
+static ExitCode write_stdout(const char *str, size_t len)
 {
-    term_cleanup();
-
-    struct sigaction sa;
-    MEMZERO(&sa);
-    sigemptyset(&sa.sa_mask);
-    sa.sa_handler = SIG_DFL;
-    sigaction(signum, &sa, NULL);
-
-    sigset_t mask;
-    sigemptyset(&mask);
-    sigaddset(&mask, signum);
-    sigprocmask(SIG_UNBLOCK, &mask, NULL);
-
-    raise(signum);
-
-    // This is here just to make extra certain the handler never returns.
-    // If everything is working correctly, this code should be unreachable.
-    raise(SIGKILL);
-    _exit(EX_OSERR);
-}
-
-static void do_sigaction(int sig, const struct sigaction *action)
-{
-    if (sigaction(sig, action, NULL) != 0) {
-        BUG("Failed to add handler for signal %d: %s", sig, strerror(errno));
+    if (xwrite_all(STDOUT_FILENO, str, len) < 0) {
+        perror("write");
+        return EX_IOERR;
     }
-}
-
-// Signals not handled by this function:
-// * SIGKILL, SIGSTOP (can't be caught or ignored)
-// * SIGPOLL, SIGPROF (marked "obsolete" in POSIX 2008)
-// * SIGABRT (cleanup is done before calling abort())
-static void set_signal_handlers(void)
-{
-    static const int fatal_signals[] = {
-        SIGBUS, SIGFPE, SIGILL, SIGSEGV,
-        SIGSYS, SIGTRAP, SIGXCPU, SIGXFSZ,
-        SIGALRM, SIGVTALRM,
-        SIGHUP, SIGTERM,
-    };
-
-    static const int ignored_signals[] = {
-        SIGINT, SIGQUIT, SIGPIPE,
-        SIGUSR1, SIGUSR2,
-    };
-
-    static const int default_signals[] = {
-        SIGCHLD, SIGURG,
-        SIGTTIN, SIGTTOU,
-    };
-
-    static const struct {
-        int signum;
-        void (*handler)(int);
-    } handled_signals[] = {
-        {SIGTSTP, handle_sigtstp},
-        {SIGCONT, handle_sigcont},
-#ifdef SIGWINCH
-        {SIGWINCH, handle_sigwinch},
-#endif
-    };
-
-    struct sigaction action;
-    MEMZERO(&action);
-    sigfillset(&action.sa_mask);
-
-    action.sa_handler = handle_fatal_signal;
-    for (size_t i = 0; i < ARRAY_COUNT(fatal_signals); i++) {
-        do_sigaction(fatal_signals[i], &action);
-    }
-
-    action.sa_handler = SIG_IGN;
-    for (size_t i = 0; i < ARRAY_COUNT(ignored_signals); i++) {
-        do_sigaction(ignored_signals[i], &action);
-    }
-
-    action.sa_handler = SIG_DFL;
-    for (size_t i = 0; i < ARRAY_COUNT(default_signals); i++) {
-        do_sigaction(default_signals[i], &action);
-    }
-
-    sigemptyset(&action.sa_mask);
-    for (size_t i = 0; i < ARRAY_COUNT(handled_signals); i++) {
-        action.sa_handler = handled_signals[i].handler;
-        do_sigaction(handled_signals[i].signum, &action);
-    }
+    return EX_OK;
 }
 
 static ExitCode list_builtin_configs(void)
 {
     String str = dump_builtin_configs();
-    ssize_t n = xwrite(STDOUT_FILENO, str.buffer, str.len);
+    BUG_ON(!str.buffer);
+    ExitCode e = write_stdout(str.buffer, str.len);
     string_free(&str);
-    if (n < 0) {
-        perror("write");
-        return EX_IOERR;
-    }
-    return EX_OK;
+    return e;
 }
 
 static ExitCode dump_builtin_config(const char *name)
@@ -172,72 +82,239 @@ static ExitCode dump_builtin_config(const char *name)
         fprintf(stderr, "Error: no built-in config with name '%s'\n", name);
         return EX_USAGE;
     }
-    if (xwrite(STDOUT_FILENO, cfg->text.data, cfg->text.length) < 0) {
-        perror("write");
-        return EX_IOERR;
-    }
-    return EX_OK;
+    return write_stdout(cfg->text.data, cfg->text.length);
 }
 
 static ExitCode lint_syntax(const char *filename)
 {
+    EditorState *e = init_editor_state();
     int err;
-    const Syntax *s = load_syntax_file(filename, CFG_MUST_EXIST, &err);
+    BUG_ON(e->status != EDITOR_INITIALIZING);
+    const Syntax *s = load_syntax_file(e, filename, CFG_MUST_EXIST, &err);
     if (s) {
         const size_t n = s->states.count;
-        const char *p = (n > 1) ? "s" : "";
-        printf("OK: loaded syntax '%s' with %zu state%s\n", s->name, n, p);
+        const char *plural = (n == 1) ? "" : "s";
+        printf("OK: loaded syntax '%s' with %zu state%s\n", s->name, n, plural);
     } else if (err == EINVAL) {
         error_msg("%s: no default syntax found", filename);
     }
+    free_editor_state(e);
     return get_nr_errors() ? EX_DATAERR : EX_OK;
 }
 
-static ExitCode showkey_loop(void)
+static ExitCode showkey_loop(const char *term_name, const char *colorterm)
 {
-    term_raw();
-    terminal.put_control_code(terminal.control_codes.init);
-    terminal.put_control_code(terminal.control_codes.keypad_on);
-    term_add_literal("Press any key combination, or use Ctrl+D to exit\r\n");
-    term_output_flush();
-
-    bool loop = true;
-    while (loop) {
-        KeyCode key;
-        const char *str;
-        if (!term_read_key(&key)) {
-            str = "UNKNOWN";
-        } else if (key == KEY_PASTE) {
-            term_discard_paste();
-            continue;
-        } else if (key == KEY_IGNORE) {
-            continue;
-        } else {
-            if (key == CTRL('D')) {
-                loop = false;
-            }
-            str = keycode_to_string(key);
-        }
-        term_add_literal("  ");
-        term_add_bytes(str, strlen(str));
-        term_add_literal("\r\n");
-        term_output_flush();
+    if (unlikely(!term_raw())) {
+        perror("tcsetattr");
+        return EX_IOERR;
     }
 
-    terminal.put_control_code(terminal.control_codes.keypad_off);
-    terminal.put_control_code(terminal.control_codes.deinit);
-    term_output_flush();
+    Terminal term;
+    TermOutputBuffer *obuf = &term.obuf;
+    TermInputBuffer *ibuf = &term.ibuf;
+    term_init(&term, term_name, colorterm);
+    term_input_init(ibuf);
+    term_output_init(obuf);
+    term_enable_private_modes(&term);
+    term_add_literal(obuf, "Press any key combination, or use Ctrl+D to exit\r\n");
+    term_output_flush(obuf);
+
+    char keystr[KEYCODE_STR_MAX];
+    for (bool loop = true; loop; ) {
+        KeyCode key = term_read_key(&term, 100);
+        switch (key) {
+        case KEY_NONE:
+        case KEY_IGNORE:
+            continue;
+        case KEY_BRACKETED_PASTE:
+        case KEY_DETECTED_PASTE:
+            term_discard_paste(ibuf, key == KEY_BRACKETED_PASTE);
+            continue;
+        case MOD_CTRL | 'd':
+            loop = false;
+        }
+        size_t keylen = keycode_to_string(key, keystr);
+        term_add_literal(obuf, "  ");
+        term_add_bytes(obuf, keystr, keylen);
+        term_add_literal(obuf, "\r\n");
+        term_output_flush(obuf);
+    }
+
+    term_restore_private_modes(&term);
+    term_output_flush(obuf);
     term_cooked();
+    term_input_free(ibuf);
+    term_output_free(obuf);
     return EX_OK;
 }
 
+static ExitCode init_std_fds(int std_fds[2])
+{
+    FILE *streams[3] = {stdin, stdout, stderr};
+    for (int i = 0; i < ARRAYLEN(streams); i++) {
+        if (is_controlling_tty(i)) {
+            continue;
+        }
+
+        if (i < STDERR_FILENO) {
+            // Try to create a duplicate fd for redirected stdin/stdout; to
+            // allow reading/writing after freopen(3) closes the original
+            int fd = fcntl(i, F_DUPFD_CLOEXEC, 3);
+            if (fd == -1 && errno != EBADF) {
+                perror("fcntl");
+                return EX_OSERR;
+            }
+            std_fds[i] = fd;
+        }
+
+        // Ensure standard streams are connected to the terminal during
+        // editor operation, regardless of how they were redirected
+        if (unlikely(!freopen("/dev/tty", i ? "w" : "r", streams[i]))) {
+            const char *err = strerror(errno);
+            fprintf(stderr, "Failed to open tty for fd %d: %s\n", i, err);
+            return EX_IOERR;
+        }
+
+        int new_fd = fileno(streams[i]);
+        if (unlikely(new_fd != i)) {
+            // This should never happen in a single-threaded program.
+            // freopen() should call fclose() followed by open() and
+            // POSIX requires a successful call to open() to return the
+            // lowest available file descriptor.
+            fprintf(stderr, "freopen() changed fd from %d to %d\n", i, new_fd);
+            return EX_OSERR;
+        }
+
+        if (unlikely(!is_controlling_tty(new_fd))) {
+            perror("tcgetpgrp");
+            return EX_OSERR;
+        }
+    }
+
+    return EX_OK;
+}
+
+static Buffer *init_std_buffer(EditorState *e, int fds[2])
+{
+    const char *name = NULL;
+    Buffer *buffer = NULL;
+
+    if (fds[STDIN_FILENO] >= 3) {
+        Encoding enc = encoding_from_type(UTF8);
+        buffer = buffer_new(&e->buffers, &e->options, &enc);
+        if (read_blocks(buffer, fds[STDIN_FILENO], false)) {
+            name = "(stdin)";
+            buffer->temporary = true;
+        } else {
+            error_msg("Unable to read redirected stdin");
+            remove_and_free_buffer(&e->buffers, buffer);
+            buffer = NULL;
+        }
+    }
+
+    if (fds[STDOUT_FILENO] >= 3) {
+        if (!buffer) {
+            buffer = open_empty_buffer(&e->buffers, &e->options);
+            name = "(stdout)";
+        } else {
+            name = "(stdin|stdout)";
+        }
+        buffer->stdout_buffer = true;
+        buffer->temporary = true;
+    }
+
+    BUG_ON(!buffer != !name);
+    if (name) {
+        set_display_filename(buffer, xstrdup(name));
+    }
+
+    return buffer;
+}
+
+static ExitCode init_logging(const char *filename, const char *req_level_str)
+{
+    if (!filename || filename[0] == '\0') {
+        return EX_OK;
+    }
+
+    LogLevel req_level = log_level_from_str(req_level_str);
+    if (req_level == LOG_LEVEL_NONE) {
+        return EX_OK;
+    }
+    if (req_level == LOG_LEVEL_INVALID) {
+        fprintf(stderr, "Invalid $DTE_LOG_LEVEL value: '%s'\n", req_level_str);
+        return EX_USAGE;
+    }
+
+    // https://no-color.org/
+    const char *no_color = xgetenv("NO_COLOR");
+
+    LogLevel got_level = log_open(filename, req_level, !no_color);
+    if (got_level == LOG_LEVEL_NONE) {
+        const char *err = strerror(errno);
+        fprintf(stderr, "Failed to open $DTE_LOG (%s): %s\n", filename, err);
+        return EX_IOERR;
+    }
+
+    const char *got_level_str = log_level_to_str(got_level);
+    if (got_level != req_level) {
+        const char *r = req_level_str;
+        const char *g = got_level_str;
+        LOG_WARNING("log level '%s' unavailable; falling back to '%s'", r, g);
+    }
+
+    LOG_INFO("logging to '%s' (level: %s)", filename, got_level_str);
+
+    if (no_color) {
+        LOG_INFO("log colors disabled ($NO_COLOR)");
+    }
+
+    struct utsname u;
+    if (likely(uname(&u) >= 0)) {
+        LOG_INFO("system: %s/%s %s", u.sysname, u.machine, u.release);
+    } else {
+        LOG_ERRNO("uname");
+    }
+    return EX_OK;
+}
+
+static void log_config_counts(const EditorState *e)
+{
+    if (!log_level_enabled(LOG_LEVEL_INFO)) {
+        return;
+    }
+
+    size_t nbinds = 0;
+    for (size_t i = 0; i < ARRAYLEN(e->modes); i++) {
+        nbinds += e->modes[i].key_bindings.count;
+    }
+
+    size_t nerrorfmts = 0;
+    for (HashMapIter it = hashmap_iter(&e->compilers); hashmap_next(&it); ) {
+        const Compiler *compiler = it.entry->value;
+        nerrorfmts += compiler->error_formats.count;
+    }
+
+    LOG_INFO (
+        "binds=%zu aliases=%zu hi=%zu ft=%zu option=%zu errorfmt=%zu(%zu)",
+        nbinds,
+        e->aliases.count,
+        e->colors.other.count + NR_BC,
+        e->filetypes.count,
+        e->file_options.count,
+        e->compilers.count,
+        nerrorfmts
+    );
+}
+
 static const char copyright[] =
-    "(C) 2017-2021 Craig Barnes\n"
+    "dte " VERSION "\n"
+    "(C) 2013-2023 Craig Barnes\n"
     "(C) 2010-2015 Timo Hirvonen\n"
     "This program is free software; you can redistribute and/or modify\n"
     "it under the terms of the GNU General Public License version 2\n"
     "<https://www.gnu.org/licenses/old-licenses/gpl-2.0.html>.\n"
-    "There is NO WARRANTY, to the extent permitted by law.";
+    "There is NO WARRANTY, to the extent permitted by law.\n";
 
 static const char usage[] =
     "Usage: %s [OPTIONS] [[+LINE] FILE]...\n\n"
@@ -260,16 +337,21 @@ int main(int argc, char *argv[])
     static const char optstring[] = "hBHKRVb:c:t:r:s:";
     const char *tag = NULL;
     const char *rc = NULL;
-    const char *command = NULL;
+    const char *commands[8];
+    size_t nr_commands = 0;
     bool read_rc = true;
     bool use_showkey = false;
     bool load_and_save_history = true;
-    int ch;
+    set_print_errors_to_stderr(true);
 
-    while ((ch = getopt(argc, argv, optstring)) != -1) {
+    for (int ch; (ch = getopt(argc, argv, optstring)) != -1; ) {
         switch (ch) {
         case 'c':
-            command = optarg;
+            if (unlikely(nr_commands >= ARRAYLEN(commands))) {
+                fputs("Error: too many -c options used\n", stderr);
+                return EX_USAGE;
+            }
+            commands[nr_commands++] = optarg;
             break;
         case 't':
             tag = optarg;
@@ -293,227 +375,201 @@ int main(int argc, char *argv[])
             use_showkey = true;
             goto loop_break;
         case 'V':
-            printf("dte %s\n", editor.version);
-            puts(copyright);
-            return EX_OK;
+            return write_stdout(copyright, sizeof(copyright));
         case 'h':
-            printf(usage, argv[0]);
+            printf(usage, (argv[0] && argv[0][0]) ? argv[0] : "dte");
             return EX_OK;
-        case '?':
         default:
             return EX_USAGE;
         }
     }
 
-loop_break:
+loop_break:;
 
-    init_editor_state();
-
-    Buffer *stdin_buffer = NULL;
-    if (!isatty(STDIN_FILENO)) {
-        Buffer *b = buffer_new(&editor.charset);
-        if (read_blocks(b, STDIN_FILENO)) {
-            set_display_filename(b, xmemdup_literal("(stdin)"));
-            stdin_buffer = b;
-            stdin_buffer->temporary = true;
-        } else {
-            if (errno != EBADF) {
-                error_msg("Unable to read redirected stdin");
-            }
-            free_buffer(b);
-        }
-        if (!freopen("/dev/tty", "r", stdin)) {
-            perror("Unable to reopen input tty");
-            return EX_IOERR;
-        }
-        int fd = fileno(stdin);
-        if (fd != STDIN_FILENO) {
-            fprintf(stderr, "freopen() changed stdin fd from 0 to %d\n", fd);
-            return EX_OSERR;
-        }
+    const char *term_name = xgetenv("TERM");
+    if (!term_name) {
+        fputs("Error: $TERM not set\n", stderr);
+        // This is considered a "usage" error, because the program
+        // must be started from a properly configured terminal
+        return EX_USAGE;
     }
 
-    Buffer *stdout_buffer = NULL;
-    int old_stdout_fd = -1;
-    if (!isatty(STDOUT_FILENO)) {
-        old_stdout_fd = fcntl(STDOUT_FILENO, F_DUPFD_CLOEXEC, 3);
-        if (old_stdout_fd == -1 && errno != EBADF) {
-            perror("fcntl");
-            return EX_OSERR;
-        }
-        if (!freopen("/dev/tty", "w", stdout)) {
-            perror("Unable to open /dev/tty");
-            return EX_OSERR;
-        }
-        int fd = fileno(stdout);
-        if (fd != STDOUT_FILENO) {
-            // This should never happen in a single-threaded program.
-            // freopen() should call fclose() followed by open() and
-            // POSIX requires a successful call to open() to return the
-            // lowest available file descriptor.
-            fprintf(stderr, "freopen() changed stdout fd from 1 to %d\n", fd);
-            return EX_OSERR;
-        }
-        if (old_stdout_fd == -1) {
-            // The call to fcntl(3) above failed with EBADF, meaning stdout was
-            // most likely closed and there's no point opening a buffer for it
-        } else if (stdin_buffer) {
-            stdout_buffer = stdin_buffer;
-            stdout_buffer->stdout_buffer = true;
-            set_display_filename(stdout_buffer, xmemdup_literal("(stdin|stdout)"));
-        } else {
-            stdout_buffer = open_empty_buffer();
-            set_display_filename(stdout_buffer, xmemdup_literal("(stdout)"));
-            stdout_buffer->stdout_buffer = true;
-            stdout_buffer->temporary = true;
-        }
+    // This must be done before calling init_logging(), otherwise an
+    // invocation like e.g. `DTE_LOG=/dev/pts/2 dte 0<&-` could
+    // cause the logging fd to be opened as STDIN_FILENO
+    int std_fds[2] = {-1, -1};
+    ExitCode r = init_std_fds(std_fds);
+    if (unlikely(r != EX_OK)) {
+        return r;
     }
 
-    term_init();
+    r = init_logging(getenv("DTE_LOG"), getenv("DTE_LOG_LEVEL"));
+    if (unlikely(r != EX_OK)) {
+        return r;
+    }
 
+    if (!term_mode_init()) {
+        perror("tcgetattr");
+        return EX_IOERR;
+    }
+
+    const char *colorterm = getenv("COLORTERM");
     if (use_showkey) {
-        return showkey_loop();
+        return showkey_loop(term_name, colorterm);
     }
 
-    // Create this early. Needed if lock-files is true.
-    const char *editor_dir = editor.user_config_dir;
-    if (mkdir(editor_dir, 0755) != 0 && errno != EEXIST) {
-        error_msg("Error creating %s: %s", editor_dir, strerror(errno));
+    EditorState *e = init_editor_state();
+    Terminal *term = &e->terminal;
+    term_init(term, term_name, colorterm);
+
+    Buffer *std_buffer = init_std_buffer(e, std_fds);
+    bool have_stdout_buffer = std_buffer && std_buffer->stdout_buffer;
+
+    // Create this early (needed if "lock-files" is true)
+    const char *cfgdir = e->user_config_dir;
+    BUG_ON(!cfgdir);
+    if (mkdir(cfgdir, 0755) != 0 && errno != EEXIST) {
+        error_msg("Error creating %s: %s", cfgdir, strerror(errno));
         load_and_save_history = false;
-        editor.options.lock_files = false;
+        e->options.lock_files = false;
     }
 
-    term_save_title();
-    exec_builtin_rc();
+    term_save_title(term);
+    exec_builtin_rc(e);
 
     if (read_rc) {
         ConfigFlags flags = CFG_NOFLAGS;
+        char buf[4096];
         if (rc) {
             flags |= CFG_MUST_EXIST;
         } else {
-            rc = editor_file("rc");
+            xsnprintf(buf, sizeof buf, "%s/%s", cfgdir, "rc");
+            rc = buf;
         }
-        DEBUG_LOG("loading configuration from %s", rc);
-        read_config(&commands, rc, flags);
+        LOG_INFO("loading configuration from %s", rc);
+        read_normal_config(e, rc, flags);
     }
 
-    update_all_syntax_colors();
-    window = new_window();
-    root_frame = new_root_frame(window);
+    log_config_counts(e);
+    update_all_syntax_colors(&e->syntaxes, &e->colors);
+
+    Window *window = new_window(e);
+    e->window = window;
+    e->root_frame = new_root_frame(window);
 
     set_signal_handlers();
-    set_fatal_error_cleanup_handler(term_cleanup);
+    set_fatal_error_cleanup_handler(cleanup_handler, e);
 
-    const char *file_history_filename = NULL;
     if (load_and_save_history) {
-        file_history_filename = editor_file("file-history");
-        load_file_history(file_history_filename);
-        history_load(&editor.command_history, editor_file("command-history"));
-        history_load(&editor.search_history, editor_file("search-history"));
-        if (editor.search_history.last) {
-            search_set_regexp(editor.search_history.last->text);
+        file_history_load(&e->file_history, path_join(cfgdir, "file-history"));
+        history_load(&e->command_history, path_join(cfgdir, "command-history"));
+        history_load(&e->search_history, path_join(cfgdir, "search-history"));
+        if (e->search_history.last) {
+            search_set_regexp(&e->search, e->search_history.last->text);
         }
     }
+
+    set_print_errors_to_stderr(false);
 
     // Initialize terminal but don't update screen yet. Also display
     // "Press any key to continue" prompt if there were any errors
     // during reading configuration files.
-    term_raw();
+    if (!term_raw()) {
+        perror("tcsetattr");
+        return EX_IOERR;
+    }
     if (get_nr_errors()) {
-        any_key();
+        any_key(term, e->options.esc_timeout);
         clear_error();
     }
 
-    editor.status = EDITOR_RUNNING;
+    e->status = EDITOR_RUNNING;
 
-    for (int i = optind, lineno = 0; i < argc; i++) {
-        if (argv[i][0] == '+' && lineno <= 0) {
-            const char *const lineno_string = &argv[i][1];
-            if (!str_to_int(lineno_string, &lineno) || lineno <= 0) {
-                error_msg("Invalid line number: '%s'", lineno_string);
-            }
-        } else {
-            View *v = window_open_buffer(window, argv[i], false, NULL);
-            if (lineno > 0) {
-                set_view(v);
-                move_to_line(v, lineno);
-                lineno = 0;
-            }
+    for (size_t i = optind, line = 0, col = 0; i < argc; i++) {
+        const char *str = argv[i];
+        if (line == 0 && *str == '+' && str_to_filepos(str + 1, &line, &col)) {
+            continue;
         }
+        View *view = window_open_buffer(window, str, false, NULL);
+        if (line == 0) {
+            continue;
+        }
+        set_view(view);
+        move_to_filepos(view, line, col);
+        line = 0;
     }
 
-    if (stdin_buffer) {
-        window_add_buffer(window, stdin_buffer);
-    }
-    if (stdout_buffer && stdout_buffer != stdin_buffer) {
-        window_add_buffer(window, stdout_buffer);
+    if (std_buffer) {
+        window_add_buffer(window, std_buffer);
     }
 
-    const View *empty_buffer = NULL;
+    View *dview = NULL;
     if (window->views.count == 0) {
-        empty_buffer = window_open_empty_buffer(window);
+        // Open a default buffer, if none were opened for arguments
+        dview = window_open_empty_buffer(window);
+        BUG_ON(!dview);
+        BUG_ON(window->views.count != 1);
+        BUG_ON(dview != window->views.ptrs[0]);
     }
 
     set_view(window->views.ptrs[0]);
-    ui_start();
+    ui_start(e);
 
-    if (command) {
-        handle_command(&commands, command, false);
+    for (size_t i = 0; i < nr_commands; i++) {
+        handle_normal_command(e, commands[i], false);
     }
 
     if (tag) {
-        String s = string_new(8 + strlen(tag));
-        string_append_literal(&s, "tag ");
-        if (unlikely(tag[0] == '-')) {
-            string_append_literal(&s, "-- ");
-        }
-        string_append_escaped_arg(&s, tag, true);
-        handle_command(&commands, string_borrow_cstring(&s), false);
-        string_free(&s);
-    }
-
-    if (
-        // If window_open_empty_buffer() was called above
-        empty_buffer
-        // ...and no commands were executed via the "-c" flag
-        && !command
-        // ...and a file was opened via the "-t" flag
-        && tag && window->views.count > 1
-    ) {
-        // Close the empty buffer, leaving just the buffer opened via "-t"
-        remove_view(window->views.ptrs[0]);
-    }
-
-    if (command || tag) {
-        normal_update();
-    }
-
-    main_loop();
-
-    term_restore_title();
-    ui_end();
-    term_output_flush();
-
-    // Unlock files and add files to file history
-    remove_frame(root_frame);
-
-    if (load_and_save_history) {
-        history_save(&editor.command_history);
-        history_save(&editor.search_history);
-        save_file_history(file_history_filename);
-    }
-
-    if (stdout_buffer) {
-        Block *blk;
-        block_for_each(blk, &stdout_buffer->blocks) {
-            if (xwrite(old_stdout_fd, blk->data, blk->size) < 0) {
-                perror_msg("write");
-                return EX_IOERR;
+        StringView tag_sv = strview_from_cstring(tag);
+        if (tag_lookup(&e->tagfile, &tag_sv, NULL, &e->messages)) {
+            activate_current_message(e);
+            if (dview && nr_commands == 0 && window->views.count > 1) {
+                // Close default/empty buffer, if `-t` jumped to a tag
+                // and no commands were executed via `-c`
+                remove_view(dview);
+                dview = NULL;
             }
         }
-        free_blocks(stdout_buffer);
-        free(stdout_buffer);
     }
 
-    return editor.exit_code;
+    if (nr_commands > 0 || tag) {
+        normal_update(e);
+    }
+
+    int exit_code = main_loop(e);
+
+    term_restore_title(term);
+    ui_end(e);
+    term_output_flush(&term->obuf);
+    set_print_errors_to_stderr(true);
+
+    // Unlock files and add to file history
+    remove_frame(e, e->root_frame);
+
+    if (load_and_save_history) {
+        history_save(&e->command_history);
+        history_save(&e->search_history);
+        file_history_save(&e->file_history);
+    }
+
+    if (have_stdout_buffer) {
+        int fd = std_fds[STDOUT_FILENO];
+        Block *blk;
+        block_for_each(blk, &std_buffer->blocks) {
+            if (xwrite_all(fd, blk->data, blk->size) < 0) {
+                error_msg_errno("failed to write (stdout) buffer");
+                if (exit_code == EDITOR_EXIT_OK) {
+                    exit_code = EX_IOERR;
+                }
+                break;
+            }
+        }
+        free_blocks(std_buffer);
+        free(std_buffer);
+    }
+
+    free_editor_state(e);
+    LOG_INFO("exiting with status %d", exit_code);
+    log_close();
+    return exit_code;
 }

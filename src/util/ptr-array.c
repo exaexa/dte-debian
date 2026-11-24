@@ -1,3 +1,4 @@
+#include <errno.h>
 #include <string.h>
 #include "ptr-array.h"
 #include "debug.h"
@@ -6,11 +7,10 @@ void ptr_array_append(PointerArray *array, void *ptr)
 {
     size_t alloc = array->alloc;
     if (unlikely(alloc == array->count)) {
-        // NOTE: if alloc was 1 then new alloc would be 1*3/2 = 1!
-        alloc *= 3;
-        alloc /= 2;
-        if (alloc < 8) {
-            alloc = 8;
+        const size_t ALLOC_MIN = 8;
+        alloc = MAX((alloc * 3) / 2, ALLOC_MIN);
+        if (unlikely(alloc <= array->count)) {
+            fatal_error(__func__, EOVERFLOW);
         }
         xrenew(array->ptrs, alloc);
         array->alloc = alloc;
@@ -23,7 +23,7 @@ void ptr_array_insert(PointerArray *array, void *ptr, size_t pos)
     BUG_ON(pos > array->count);
     size_t count = array->count - pos;
     ptr_array_append(array, NULL);
-    memmove(array->ptrs + pos + 1, array->ptrs + pos, count * sizeof(void *));
+    memmove(array->ptrs + pos + 1, array->ptrs + pos, count * sizeof(void*));
     array->ptrs[pos] = ptr;
 }
 
@@ -37,23 +37,19 @@ void ptr_array_move(PointerArray *array, size_t from, size_t to)
     }
 
     void **p = array->ptrs;
-    void *tmp = p[from];
-    size_t difference = (from < to) ? (to - from) : (from - to);
-    if (difference == 1) {
-        // Adjacent pointers can be moved with a simple swap
-        p[from] = p[to];
-        p[to] = tmp;
-        return;
-    }
-
     void *dest, *src;
+    size_t difference;
     if (from < to) {
         dest = p + from;
         src = p + from + 1;
+        difference = to - from;
     } else {
         dest = p + to + 1;
         src = p + to;
+        difference = from - to;
     }
+
+    void *tmp = p[from];
     memmove(dest, src, difference * sizeof(void*));
     p[to] = tmp;
 }
@@ -90,6 +86,11 @@ size_t ptr_array_idx(const PointerArray *array, const void *ptr)
             return i;
         }
     }
+
+    // If `ptr` isn't found in the array, return -1 (SIZE_MAX). Callers
+    // should check that the returned index is less than `array->count`
+    // before indexing `array->ptrs` with it or use a BUG_ON() assertion
+    // for the same condition if `ptr` is always expected to be found.
     return -1;
 }
 

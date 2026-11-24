@@ -96,8 +96,7 @@ bool ec_pattern_match(const char *pattern, size_t pattern_len, const char *path)
     String buf = string_new(pattern_len * 2);
     size_t brace_level = 0;
     size_t last_paired_brace_index = get_last_paired_brace_index(pattern, pattern_len);
-    bool brace_group_has_empty_alternate[32];
-    MEMZERO(&brace_group_has_empty_alternate);
+    bool brace_group_has_empty_alternate[32] = {false};
 
     for (size_t i = 0; i < pattern_len; i++) {
         char ch = pattern[i];
@@ -127,7 +126,7 @@ bool ec_pattern_match(const char *pattern, size_t pattern_len, const char *path)
         case '[':
             // The entire bracket expression is handled in a separate
             // loop because the POSIX regex escaping rules are different
-            // in that context.
+            // in that context
             i += handle_bracket_expression(pattern + i, pattern_len - i, &buf);
             break;
         case '{': {

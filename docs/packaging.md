@@ -1,6 +1,20 @@
 Packaging
 =========
 
+Installation targets
+--------------------
+
+Running `make install` is equivalent to running the following `make`
+targets:
+
+* `install-bin`: Install `dte` binary
+* `install-man`: Install man pages
+* `install-bash-completion`: Install bash auto-completion script
+* `install-desktop-file`: Install [desktop entry] file (excluded on macOS)
+* `install-appstream`: Install [AppStream] metadata (excluded on macOS)
+
+For more information about available `make` targets, run `make help`.
+
 Installation variables
 ----------------------
 
@@ -11,6 +25,12 @@ The following Make variables may be useful when packaging `dte`:
   `$prefix/bin`).
 * `mandir`: Installation prefix for manual pages (defaults to
   `$prefix/share/man`).
+* `bashcompletiondir`: Installation prefix for bash auto-completion
+  scripts (defaults to `$prefix/share/bash-completion/completions`).
+* `appdir`: Installation prefix for [desktop entry] files (defaults
+  to `$prefix/share/applications`).
+* `metainfodir`: Installation prefix for [AppStream] metadata files
+  (defaults to `$prefix/share/metainfo`).
 * `DESTDIR`: Standard variable used for [staged installs].
 * `V=1`: Enable verbose build output.
 
@@ -60,26 +80,11 @@ Note: auto-generated tarballs from GitHub/GitLab can (and
 have long-term stable checksums. Use the tarballs from the [releases]
 page, unless you're prepared to deal with future checksum failures.
 
-Desktop menu entry
-------------------
 
-A desktop menu entry for `dte` can be added by running:
-
-    make install-desktop-file
-
-Any variable overrides specified for `make install` must also be specified
-for `make install-desktop-file`. The easiest way to do this is simply to
-run both at the same time, e.g.:
-
-    make install install-desktop-file V=1 prefix=/usr DESTDIR=PKG
-
-**Note**: the `install-desktop-file` target requires [desktop-file-utils]
-to be installed.
-
-
+[desktop entry]: https://specifications.freedesktop.org/desktop-entry-spec/desktop-entry-spec-latest.html
+[AppStream]: https://www.freedesktop.org/software/appstream/docs/
 [staged installs]: https://www.gnu.org/prep/standards/html_node/DESTDIR.html
 [iconv]: https://pubs.opengroup.org/onlinepubs/9699919799/basedefs/iconv.h.html
-[syntax highlighters]: https://gitlab.com/craigbarnes/dte/tree/master/config/syntax
+[syntax highlighters]: ../config/syntax
 [releases]: https://craigbarnes.gitlab.io/dte/releases.html
 [libgit issue #4343]: https://github.com/libgit2/libgit2/issues/4343
-[desktop-file-utils]: https://www.freedesktop.org/wiki/Software/desktop-file-utils/

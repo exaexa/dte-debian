@@ -1,30 +1,31 @@
-#include <limits.h>
 #include <string.h>
 #include "strtonum.h"
+#include "arith.h"
 #include "ascii.h"
-#include "checked-arith.h"
 
 enum {
+    A = 0xA, B = 0xB, C = 0xC,
+    D = 0xD, E = 0xE, F = 0xF,
     I = HEX_INVALID
 };
 
-const uint8_t hex_table[256] = {
-     I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,
-     I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,
-     I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,
-     0,  1,  2,  3,  4,  5,  6,  7,  8,  9,  I,  I,  I,  I,  I,  I,
-     I, 10, 11, 12, 13, 14, 15,  I,  I,  I,  I,  I,  I,  I,  I,  I,
-     I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,
-     I, 10, 11, 12, 13, 14, 15,  I,  I,  I,  I,  I,  I,  I,  I,  I,
-     I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,
-     I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,
-     I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,
-     I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,
-     I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,
-     I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,
-     I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,
-     I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,
-     I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I,  I
+const uint8_t hex_decode_table[256] = {
+    I, I, I, I, I, I, I, I, I, I, I, I, I, I, I, I,
+    I, I, I, I, I, I, I, I, I, I, I, I, I, I, I, I,
+    I, I, I, I, I, I, I, I, I, I, I, I, I, I, I, I,
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, I, I, I, I, I, I,
+    I, A, B, C, D, E, F, I, I, I, I, I, I, I, I, I,
+    I, I, I, I, I, I, I, I, I, I, I, I, I, I, I, I,
+    I, A, B, C, D, E, F, I, I, I, I, I, I, I, I, I,
+    I, I, I, I, I, I, I, I, I, I, I, I, I, I, I, I,
+    I, I, I, I, I, I, I, I, I, I, I, I, I, I, I, I,
+    I, I, I, I, I, I, I, I, I, I, I, I, I, I, I, I,
+    I, I, I, I, I, I, I, I, I, I, I, I, I, I, I, I,
+    I, I, I, I, I, I, I, I, I, I, I, I, I, I, I, I,
+    I, I, I, I, I, I, I, I, I, I, I, I, I, I, I, I,
+    I, I, I, I, I, I, I, I, I, I, I, I, I, I, I, I,
+    I, I, I, I, I, I, I, I, I, I, I, I, I, I, I, I,
+    I, I, I, I, I, I, I, I, I, I, I, I, I, I, I, I
 };
 
 size_t buf_parse_uintmax(const char *str, size_t size, uintmax_t *valp)
@@ -68,6 +69,17 @@ size_t buf_parse_uint(const char *str, size_t size, unsigned int *valp)
         return 0;
     }
     *valp = (unsigned int)val;
+    return n;
+}
+
+size_t buf_parse_size(const char *str, size_t len, size_t *valp)
+{
+    uintmax_t val;
+    size_t n = buf_parse_uintmax(str, len, &val);
+    if (n == 0 || val > SIZE_MAX) {
+        return 0;
+    }
+    *valp = (size_t)val;
     return n;
 }
 
@@ -120,7 +132,7 @@ bool str_to_int(const char *str, int *valp)
     return true;
 }
 
-bool str_to_uint(const char *str, unsigned int *valp)
+static bool str_to_uintmax(const char *str, uintmax_t *valp)
 {
     const size_t len = strlen(str);
     if (unlikely(len == 0)) {
@@ -128,41 +140,84 @@ bool str_to_uint(const char *str, unsigned int *valp)
     }
     uintmax_t val;
     const size_t n = buf_parse_uintmax(str, len, &val);
-    if (n != len || val > UINT_MAX) {
-        return false;
-    }
-    *valp = (unsigned int)val;
-    return true;
-}
-
-bool str_to_size(const char *str, size_t *valp)
-{
-    const size_t len = strlen(str);
-    if (unlikely(len == 0)) {
-        return false;
-    }
-    uintmax_t val;
-    const size_t n = buf_parse_uintmax(str, len, &val);
-    if (n != len || val > SIZE_MAX) {
-        return false;
-    }
-    *valp = (size_t)val;
-    return true;
-}
-
-bool str_to_ulong(const char *str, unsigned long *valp)
-{
-    const size_t len = strlen(str);
-    if (unlikely(len == 0)) {
-        return false;
-    }
-    unsigned long val;
-    const size_t n = buf_parse_ulong(str, len, &val);
     if (n != len) {
         return false;
     }
     *valp = val;
     return true;
+}
+
+bool str_to_uint(const char *str, unsigned int *valp)
+{
+    uintmax_t x;
+    if (!str_to_uintmax(str, &x) || x > UINT_MAX) {
+        return false;
+    }
+    *valp = (unsigned int)x;
+    return true;
+}
+
+bool str_to_ulong(const char *str, unsigned long *valp)
+{
+    uintmax_t x;
+    if (!str_to_uintmax(str, &x) || x > ULONG_MAX) {
+        return false;
+    }
+    *valp = (unsigned long)x;
+    return true;
+}
+
+bool str_to_size(const char *str, size_t *valp)
+{
+    uintmax_t x;
+    if (!str_to_uintmax(str, &x) || x > SIZE_MAX) {
+        return false;
+    }
+    *valp = (size_t)x;
+    return true;
+}
+
+// Parse line and column number from line[,col] or line[:col]
+bool str_to_xfilepos(const char *str, size_t *linep, size_t *colp)
+{
+    size_t len = strlen(str);
+    size_t line, col;
+    size_t i = buf_parse_size(str, len, &line);
+    if (i == 0 || line < 1) {
+        return false;
+    }
+
+    // If an explicit column wasn't specified in `str`, set *colp to 0
+    // (which is NOT a valid column number). Callers should be prepared
+    // to check this and substitute it for something more appropriate,
+    // or otherwise use str_to_filepos() instead.
+    if (i == len) {
+        col = 0;
+        goto out;
+    }
+
+    char c = str[i];
+    if ((c != ':' && c != ',') || !str_to_size(str + i + 1, &col) || col < 1) {
+        return false;
+    }
+
+out:
+    *linep = line;
+    *colp = col;
+    return true;
+}
+
+// This is much like str_to_xfilepos(), except *colp is set to 1 if no
+// explicit column number is specified in `str`. This is a convenience
+// to callers that want a valid column number (when omitted) and don't
+// need to do anything different for e.g. "32" vs. "32:1".
+bool str_to_filepos(const char *str, size_t *linep, size_t *colp)
+{
+    bool r = str_to_xfilepos(str, linep, colp);
+    if (r && *colp == 0) {
+        *colp = 1;
+    }
+    return r;
 }
 
 size_t size_str_width(size_t x)

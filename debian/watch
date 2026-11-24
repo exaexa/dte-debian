@@ -1,5 +1,6 @@
-version=4
+Version: 5
 
-https://craigbarnes.gitlab.io/dte/releases.html \
-  https://craigbarnes\.gitlab\.io/.*/dte-([\d\.]+)\.tar\.gz \
-  debian uupdate
+Source: https://craigbarnes.gitlab.io/dte/releases.html
+Matching-Pattern: https://craigbarnes\.gitlab\.io/.*/dte-([\d.]+)\.tar\.gz
+Pgp-Mode: auto
+Update-Script: uupdate

@@ -1,8 +1,10 @@
 #include <string.h>
 #include "key.h"
+#include "util/array.h"
 #include "util/ascii.h"
+#include "util/debug.h"
+#include "util/numtostr.h"
 #include "util/utf8.h"
-#include "util/xsnprintf.h"
 
 // Note: these strings must be kept in sync with the enum in key.h
 static const char special_names[][8] = {
@@ -29,13 +31,41 @@ static const char special_names[][8] = {
     "F10",
     "F11",
     "F12",
+    "F13",
+    "F14",
+    "F15",
+    "F16",
+    "F17",
+    "F18",
+    "F19",
+    "F20",
 };
+
+static const struct {
+    char name[8];
+    KeyCode key;
+} other_keys[] = {
+    {"tab", KEY_TAB},
+    {"enter", KEY_ENTER},
+    {"space", KEY_SPACE},
+};
+
+UNITTEST {
+    CHECK_STRING_ARRAY(special_names);
+    CHECK_STRUCT_ARRAY(other_keys, name);
+}
 
 static size_t parse_modifiers(const char *str, KeyCode *modifiersp)
 {
+    if (str[0] == '^' && str[1] != '\0') {
+        *modifiersp = MOD_CTRL;
+        return 1;
+    }
+
     KeyCode modifiers = 0;
     size_t i = 0;
 
+    // https://www.gnu.org/software/emacs/manual/html_node/efaq/Binding-combinations-of-modifiers-and-function-keys.html
     while (1) {
         KeyCode tmp;
         switch (str[i]) {
@@ -47,6 +77,12 @@ static size_t parse_modifiers(const char *str, KeyCode *modifiersp)
             break;
         case 'S':
             tmp = MOD_SHIFT;
+            break;
+        case 's':
+            tmp = MOD_SUPER;
+            break;
+        case 'H':
+            tmp = MOD_HYPER;
             break;
         default:
             goto end;
@@ -66,50 +102,38 @@ end:
 bool parse_key_string(KeyCode *key, const char *str)
 {
     KeyCode modifiers;
-    if (str[0] == '^' && str[1] != '\0') {
-        modifiers = MOD_CTRL;
-        str += 1;
-    } else {
-        str += parse_modifiers(str, &modifiers);
-    }
+    str += parse_modifiers(str, &modifiers);
+    size_t len = strlen(str);
+    size_t pos = 0;
+    KeyCode ch = u_get_char(str, len, &pos);
 
-    const size_t len = strlen(str);
-    size_t i = 0;
-    KeyCode ch = u_get_char(str, len, &i);
-    if (u_is_unicode(ch) && i == len) {
-        if (modifiers == MOD_CTRL) {
-            // Normalize
-            switch (ch) {
-            case 'i':
-            case 'I':
-                ch = KEY_TAB;
-                modifiers = 0;
-                break;
-            case 'm':
-            case 'M':
-                ch = KEY_ENTER;
-                modifiers = 0;
-                break;
+    if (u_is_unicode(ch) && pos == len) {
+        if (unlikely(u_is_cntrl(ch))) {
+            return false;
+        }
+        if (u_is_ascii_upper(ch)) {
+            if (modifiers & MOD_CTRL) {
+                // Convert C-A to C-a
+                ch = ascii_tolower(ch);
+            } else if (modifiers & MOD_META) {
+                // Convert M-A to M-S-a
+                modifiers |= MOD_SHIFT;
+                ch = ascii_tolower(ch);
             }
         }
         *key = modifiers | ch;
         return true;
     }
-    if (ascii_streq_icase(str, "space")) {
-        *key = modifiers | KEY_SPACE;
-        return true;
-    }
-    if (ascii_streq_icase(str, "tab")) {
-        *key = modifiers | KEY_TAB;
-        return true;
-    }
-    if (ascii_streq_icase(str, "enter")) {
-        *key = modifiers | KEY_ENTER;
-        return true;
+
+    for (size_t i = 0; i < ARRAYLEN(other_keys); i++) {
+        if (ascii_streq_icase(str, other_keys[i].name)) {
+            *key = modifiers | other_keys[i].key;
+            return true;
+        }
     }
 
-    static_assert(ARRAY_COUNT(special_names) == NR_SPECIAL_KEYS);
-    for (i = 0; i < NR_SPECIAL_KEYS; i++) {
+    static_assert(ARRAYLEN(special_names) == NR_SPECIAL_KEYS);
+    for (size_t i = 0; i < NR_SPECIAL_KEYS; i++) {
         if (ascii_streq_icase(str, special_names[i])) {
             *key = modifiers | (KEY_SPECIAL_MIN + i);
             return true;
@@ -119,52 +143,58 @@ bool parse_key_string(KeyCode *key, const char *str)
     return false;
 }
 
-#define COPY(dest, src) memcpy(dest, src, STRLEN(src) + 1)
-
-const char *keycode_to_string(KeyCode k)
+// Writes the string representation of `k` into `buf` (which must
+// have at least `KEYCODE_STR_MAX` bytes available) and returns the
+// length of the written string.
+size_t keycode_to_string(KeyCode k, char *buf)
 {
-    static char buf[32];
-    size_t i = 0;
+    static const struct {
+        char prefix;
+        KeyCode code;
+    } mods[] = {
+        {'C', MOD_CTRL},
+        {'M', MOD_META},
+        {'S', MOD_SHIFT},
+        {'s', MOD_SUPER},
+        {'H', MOD_HYPER},
+    };
 
-    if (k & MOD_CTRL) {
-        buf[i++] = 'C';
-        buf[i++] = '-';
-    }
-    if (k & MOD_META) {
-        buf[i++] = 'M';
-        buf[i++] = '-';
-    }
-    if (k & MOD_SHIFT) {
-        buf[i++] = 'S';
-        buf[i++] = '-';
+    size_t pos = 0;
+    for (size_t i = 0; i < ARRAYLEN(mods); i++) {
+        if (k & mods[i].code) {
+            buf[pos++] = mods[i].prefix;
+            buf[pos++] = '-';
+        }
     }
 
-    char *const ptr = buf + i;
+    const char *name;
     const KeyCode key = keycode_get_key(k);
     if (u_is_unicode(key)) {
-        switch (key) {
-        case KEY_TAB:
-            COPY(ptr, "tab");
-            break;
-        case KEY_ENTER:
-            COPY(ptr, "enter");
-            break;
-        case KEY_SPACE:
-            COPY(ptr, "space");
-            break;
-        default:
-            u_set_char(buf, &i, key);
-            buf[i] = '\0';
+        for (size_t i = 0; i < ARRAYLEN(other_keys); i++) {
+            if (key == other_keys[i].key) {
+                name = other_keys[i].name;
+                goto copy;
+            }
         }
-        return buf;
+        u_set_char(buf, &pos, key);
+        buf[pos] = '\0';
+        return pos;
     }
 
     if (key >= KEY_SPECIAL_MIN && key <= KEY_SPECIAL_MAX) {
-        const char *name = special_names[key - KEY_SPECIAL_MIN];
-        memcpy(ptr, name, sizeof(special_names[0]));
-        return buf;
+        name = special_names[key - KEY_SPECIAL_MIN];
+        goto copy;
     }
 
-    xsnprintf(buf, sizeof buf, "INVALID (0x%08X)", (unsigned int)k);
-    return buf;
+    static const char prefix[] = "INVALID; 0x";
+    const size_t plen = sizeof(prefix) - 1;
+    memcpy(buf, prefix, plen);
+    return plen + buf_umax_to_hex_str(k, buf + plen, 8);
+
+copy:
+    BUG_ON(name[0] == '\0');
+    char *end = memccpy(buf + pos, name, '\0', KEYCODE_STR_MAX - pos);
+    BUG_ON(!end);
+    BUG_ON(end <= buf);
+    return (size_t)(end - buf) - 1;
 }

@@ -1,78 +1,111 @@
 #include <errno.h>
+#include <fcntl.h>
 #include <glob.h>
+#include <signal.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #include "commands.h"
-#include "alias.h"
 #include "bind.h"
+#include "bookmark.h"
+#include "buffer.h"
 #include "change.h"
 #include "cmdline.h"
+#include "command/alias.h"
 #include "command/args.h"
 #include "command/macro.h"
-#include "command/serialize.h"
-#include "completion.h"
+#include "compiler.h"
 #include "config.h"
 #include "convert.h"
-#include "edit.h"
+#include "copy.h"
 #include "editor.h"
 #include "encoding.h"
 #include "error.h"
+#include "exec.h"
 #include "file-option.h"
 #include "filetype.h"
 #include "frame.h"
 #include "history.h"
 #include "load-save.h"
 #include "lock.h"
+#include "misc.h"
 #include "move.h"
 #include "msg.h"
 #include "regexp.h"
+#include "replace.h"
+#include "screen.h"
 #include "search.h"
 #include "selection.h"
+#include "shift.h"
 #include "show.h"
 #include "spawn.h"
+#include "syntax/color.h"
 #include "syntax/state.h"
 #include "syntax/syntax.h"
 #include "tag.h"
-#include "terminal/color.h"
+#include "terminal/cursor.h"
+#include "terminal/mode.h"
+#include "terminal/osc52.h"
+#include "terminal/style.h"
 #include "terminal/terminal.h"
+#include "util/arith.h"
+#include "util/array.h"
+#include "util/ascii.h"
+#include "util/bit.h"
 #include "util/bsearch.h"
-#include "util/checked-arith.h"
 #include "util/debug.h"
+#include "util/log.h"
 #include "util/path.h"
 #include "util/str-util.h"
 #include "util/strtonum.h"
+#include "util/time-util.h"
 #include "util/xmalloc.h"
 #include "util/xsnprintf.h"
+#include "vars.h"
 #include "view.h"
 #include "window.h"
 
-static void do_selection(SelectionType sel)
+NOINLINE
+static void do_selection_noinline(View *view, SelectionType sel)
 {
+    // Should only be called from do_selection()
+    BUG_ON(sel == view->selection);
+
     if (sel == SELECT_NONE) {
-        if (view->next_movement_cancels_selection) {
-            view->next_movement_cancels_selection = false;
-            unselect();
+        unselect(view);
+        return;
+    }
+
+    if (view->selection) {
+        if (view->selection != sel) {
+            view->selection = sel;
+            // TODO: be less brute force about this; only the first/last
+            // line of the selection can change in this case
+            mark_all_lines_changed(view->buffer);
         }
         return;
     }
 
-    view->next_movement_cancels_selection = true;
-
-    if (view->selection) {
-        view->selection = sel;
-        mark_all_lines_changed(buffer);
-        return;
-    }
-
     view->sel_so = block_iter_get_offset(&view->cursor);
-    view->sel_eo = UINT_MAX;
+    view->sel_eo = SEL_EO_RECALC;
     view->selection = sel;
 
     // Need to mark current line changed because cursor might
     // move up or down before screen is updated
     view_update_cursor_y(view);
-    buffer_mark_lines_changed(buffer, view->cy, view->cy);
+    buffer_mark_lines_changed(view->buffer, view->cy, view->cy);
+}
+
+static void do_selection(View *view, SelectionType sel)
+{
+    if (likely(sel == view->selection)) {
+        // If `sel` is SELECT_NONE here, it's always equal to select_mode
+        BUG_ON(!sel && view->select_mode);
+        return;
+    }
+
+    do_selection_noinline(view, sel);
 }
 
 static char last_flag_or_default(const CommandArgs *a, char def)
@@ -91,267 +124,409 @@ static bool has_flag(const CommandArgs *a, unsigned char flag)
     return cmdargs_has_flag(a, flag);
 }
 
-static void handle_select_chars_flag(const CommandArgs *a)
+static void handle_select_chars_or_lines_flags(View *view, const CommandArgs *a)
 {
-    do_selection(has_flag(a, 'c') ? SELECT_CHARS : SELECT_NONE);
-}
-
-static void handle_select_chars_or_lines_flags(const CommandArgs *a)
-{
-    SelectionType sel = SELECT_NONE;
+    SelectionType sel;
     if (has_flag(a, 'l')) {
         sel = SELECT_LINES;
     } else if (has_flag(a, 'c')) {
-        sel = SELECT_CHARS;
+        static_assert(SELECT_CHARS < SELECT_LINES);
+        sel = MAX(SELECT_CHARS, view->select_mode);
+    } else {
+        sel = view->select_mode;
     }
-    do_selection(sel);
+    do_selection(view, sel);
 }
 
-static void cmd_alias(const CommandArgs *a)
+static void handle_select_chars_flag(View *view, const CommandArgs *a)
+{
+    BUG_ON(has_flag(a, 'l'));
+    handle_select_chars_or_lines_flags(view, a);
+}
+
+static bool cmd_alias(EditorState *e, const CommandArgs *a)
 {
     const char *const name = a->args[0];
+    const char *const cmd = a->args[1];
+
     if (unlikely(name[0] == '\0')) {
-        error_msg("Empty alias name not allowed");
-        return;
+        return error_msg("Empty alias name not allowed");
+    }
+    if (unlikely(name[0] == '-')) {
+        // Disallowing this simplifies auto-completion for "alias "
+        return error_msg("Alias name cannot begin with '-'");
     }
 
     for (size_t i = 0; name[i]; i++) {
         unsigned char c = name[i];
         if (unlikely(!(is_word_byte(c) || c == '-' || c == '?' || c == '!'))) {
-            error_msg("Invalid byte in alias name: %c (0x%02hhX)", c, c);
-            return;
+            return error_msg("Invalid byte in alias name: %c (0x%02hhX)", c, c);
         }
     }
 
     if (unlikely(find_normal_command(name))) {
-        error_msg("Can't replace existing command %s with an alias", name);
-        return;
+        return error_msg("Can't replace existing command %s with an alias", name);
     }
 
-    add_alias(name, a->args[1]);
+    if (likely(cmd)) {
+        add_alias(&e->aliases, name, cmd);
+    } else {
+        remove_alias(&e->aliases, name);
+    }
+
+    return true;
 }
 
-static void cmd_bind(const CommandArgs *a)
+static bool cmd_bind(EditorState *e, const CommandArgs *a)
 {
-    const char *key = a->args[0];
+    const char *keystr = a->args[0];
     const char *cmd = a->args[1];
-    if (cmd) {
-        add_binding(key, cmd);
-    } else {
-        remove_binding(key);
+    KeyCode key;
+    if (unlikely(!parse_key_string(&key, keystr))) {
+        return error_msg("invalid key string: %s", keystr);
     }
-}
 
-static void cmd_bof(const CommandArgs* UNUSED_ARG(a))
-{
-    do_selection(SELECT_NONE);
-    move_bof();
-}
+    const bool modes[] = {
+        [INPUT_NORMAL] = a->nr_flags == 0 || has_flag(a, 'n'),
+        [INPUT_COMMAND] = has_flag(a, 'c'),
+        [INPUT_SEARCH] = has_flag(a, 's'),
+    };
 
-static void cmd_bol(const CommandArgs *a)
-{
-    handle_select_chars_flag(a);
-    if (has_flag(a, 's')) {
-        move_bol_smart();
-    } else {
-        move_bol();
+    static_assert(ARRAYLEN(modes) == ARRAYLEN(e->modes));
+
+    for (InputMode i = 0; i < ARRAYLEN(modes); i++) {
+        if (!modes[i]) {
+            continue;
+        }
+        IntMap *bindings = &e->modes[i].key_bindings;
+        if (likely(cmd)) {
+            CommandRunner runner = cmdrunner_for_mode(e, i, false);
+            add_binding(bindings, key, cached_command_new(&runner, cmd));
+        } else {
+            remove_binding(bindings, key);
+        }
     }
+
+    return true;
 }
 
-static void cmd_bolsf(const CommandArgs* UNUSED_ARG(a))
+static bool cmd_bof(EditorState *e, const CommandArgs *a)
 {
-    do_selection(SELECT_NONE);
+    handle_select_chars_or_lines_flags(e->view, a);
+    move_bof(e->view);
+    return true;
+}
+
+static bool cmd_bol(EditorState *e, const CommandArgs *a)
+{
+    static const FlagMapping map[] = {
+        {'s', BOL_SMART},
+        {'t', BOL_SMART | BOL_SMART_TOGGLE},
+    };
+
+    SmartBolFlags flags = cmdargs_convert_flags(a, map, ARRAYLEN(map));
+    handle_select_chars_flag(e->view, a);
+    move_bol_smart(e->view, flags);
+    return true;
+}
+
+static bool cmd_bolsf(EditorState *e, const CommandArgs *a)
+{
+    BUG_ON(a->nr_args);
+    View *view = e->view;
+    handle_select_chars_or_lines_flags(view, a);
+
     if (!block_iter_bol(&view->cursor)) {
-        long top = view->vy + window_get_scroll_margin(window);
+        unsigned int margin = e->options.scroll_margin;
+        long top = view->vy + window_get_scroll_margin(e->window, margin);
         if (view->cy > top) {
-            move_up(view->cy - top);
+            move_up(view, view->cy - top);
         } else {
             block_iter_bof(&view->cursor);
         }
     }
+
     view_reset_preferred_x(view);
+    return true;
 }
 
-static void cmd_bookmark(const CommandArgs *a)
+static bool cmd_bookmark(EditorState *e, const CommandArgs *a)
 {
     if (has_flag(a, 'r')) {
-        pop_file_location();
-        return;
+        bookmark_pop(e->window, &e->bookmarks);
+        return true;
     }
 
-    push_file_location(get_current_file_location());
+    bookmark_push(&e->bookmarks, get_current_file_location(e->view));
+    return true;
 }
 
-static void cmd_case(const CommandArgs *a)
+static bool cmd_case(EditorState *e, const CommandArgs *a)
 {
-    change_case(last_flag_or_default(a, 't'));
+    change_case(e->view, last_flag_or_default(a, 't'));
+    return true;
 }
 
-static void cmd_cd(const CommandArgs *a)
+static void mark_tabbar_changed(Window *window, void* UNUSED_ARG(data))
+{
+    window->update_tabbar = true;
+}
+
+static bool cmd_cd(EditorState *e, const CommandArgs *a)
 {
     const char *dir = a->args[0];
-    char cwd[8192];
-    const char *cwdp = NULL;
-    bool got_cwd = !!getcwd(cwd, sizeof(cwd));
+    if (unlikely(dir[0] == '\0')) {
+        return error_msg("directory argument cannot be empty");
+    }
 
     if (streq(dir, "-")) {
-        dir = getenv("OLDPWD");
-        if (!dir || dir[0] == '\0') {
-            error_msg("cd: OLDPWD not set");
-            return;
+        dir = xgetenv("OLDPWD");
+        if (!dir) {
+            return error_msg("OLDPWD not set");
         }
     }
-    if (chdir(dir)) {
-        perror_msg("cd");
-        return;
+
+    char buf[8192];
+    const char *cwd = getcwd(buf, sizeof(buf));
+    if (chdir(dir) != 0) {
+        return error_msg_errno("changing directory failed");
     }
 
-    if (got_cwd) {
-        setenv("OLDPWD", cwd, 1);
-    }
-    got_cwd = !!getcwd(cwd, sizeof(cwd));
-    if (got_cwd) {
-        setenv("PWD", cwd, 1);
-        cwdp = cwd;
+    if (likely(cwd)) {
+        int r = setenv("OLDPWD", cwd, 1);
+        if (unlikely(r != 0)) {
+            LOG_WARNING("failed to set OLDPWD: %s", strerror(errno));
+        }
     }
 
-    for (size_t i = 0, n = editor.buffers.count; i < n; i++) {
-        Buffer *b = editor.buffers.ptrs[i];
-        update_short_filename_cwd(b, cwdp);
+    cwd = getcwd(buf, sizeof(buf));
+    if (likely(cwd)) {
+        int r = setenv("PWD", cwd, 1);
+        if (unlikely(r != 0)) {
+            LOG_WARNING("failed to set PWD: %s", strerror(errno));
+        }
     }
 
-    // Need to update all tabbars
-    mark_everything_changed();
+    for (size_t i = 0, n = e->buffers.count; i < n; i++) {
+        Buffer *buffer = e->buffers.ptrs[i];
+        update_short_filename_cwd(buffer, &e->home_dir, cwd);
+    }
+
+    frame_for_each_window(e->root_frame, mark_tabbar_changed, NULL);
+    return true;
 }
 
-static void cmd_center_view(const CommandArgs* UNUSED_ARG(a))
+static bool cmd_center_view(EditorState *e, const CommandArgs *a)
 {
-    view->force_center = true;
+    BUG_ON(a->nr_args);
+    e->view->force_center = true;
+    return true;
 }
 
-static void cmd_clear(const CommandArgs* UNUSED_ARG(a))
+static bool cmd_clear(EditorState *e, const CommandArgs *a)
 {
-    clear_lines();
+    bool auto_indent = e->buffer->options.auto_indent && !has_flag(a, 'i');
+    clear_lines(e->view, auto_indent);
+    return true;
 }
 
-static void cmd_close(const CommandArgs *a)
+static bool cmd_close(EditorState *e, const CommandArgs *a)
 {
     bool force = has_flag(a, 'f');
-    bool prompt = has_flag(a, 'p');
-    bool allow_quit = has_flag(a, 'q');
-    bool allow_wclose = has_flag(a, 'w');
-
-    if (!view_can_close(view) && !force) {
-        if (prompt) {
-            if (dialog_prompt("Close without saving changes? [y/N]", "ny") != 'y') {
-                return;
-            }
-        } else {
-            error_msg (
-                "The buffer is modified. "
-                "Save or run 'close -f' to close without saving."
+    if (!force && !view_can_close(e->view)) {
+        bool prompt = has_flag(a, 'p');
+        if (!prompt) {
+            return error_msg (
+                "The buffer is modified; "
+                "save or run 'close -f' to close without saving"
             );
-            return;
+        }
+        static const char str[] = "Close without saving changes? [y/N]";
+        if (dialog_prompt(e, str, "ny") != 'y') {
+            return false;
         }
     }
 
-    if (allow_quit && editor.buffers.count == 1 && root_frame->frames.count <= 1) {
-        editor.status = EDITOR_EXITING;
-        return;
+    bool allow_quit = has_flag(a, 'q');
+    if (allow_quit && e->buffers.count == 1 && e->root_frame->frames.count <= 1) {
+        e->status = EDITOR_EXIT_OK;
+        return true;
     }
 
-    if (allow_wclose && window->views.count <= 1) {
-        window_close_current();
-        return;
+    bool allow_wclose = has_flag(a, 'w');
+    if (allow_wclose && e->window->views.count <= 1) {
+        window_close(e->window);
+        return true;
     }
 
-    window_close_current_view(window);
-    set_view(window->view);
+    window_close_current_view(e->window);
+    set_view(e->window->view);
+    return true;
 }
 
-static void cmd_command(const CommandArgs *a)
+static bool cmd_command(EditorState *e, const CommandArgs *a)
 {
     const char *text = a->args[0];
-    set_input_mode(INPUT_COMMAND);
+    set_input_mode(e, INPUT_COMMAND);
     if (text) {
-        cmdline_set_text(&editor.cmdline, text);
+        cmdline_set_text(&e->cmdline, text);
     }
+    return true;
 }
 
-static void cmd_compile(const CommandArgs *a)
+static bool cmd_compile(EditorState *e, const CommandArgs *a)
 {
-    SpawnFlags flags = SPAWN_DEFAULT;
-    for (const char *pf = a->flags; *pf; pf++) {
-        switch (*pf) {
-        case '1':
-            flags |= SPAWN_READ_STDOUT;
-            break;
-        case 'p':
-            flags |= SPAWN_PROMPT;
-            break;
-        case 's':
-            flags |= SPAWN_QUIET;
-            break;
-        }
+    static const FlagMapping map[] = {
+        {'1', SPAWN_READ_STDOUT},
+        {'p', SPAWN_PROMPT},
+        {'s', SPAWN_QUIET},
+    };
+
+    Compiler *c = find_compiler(&e->compilers, a->args[0]);
+    if (unlikely(!c)) {
+        return error_msg("No such error parser %s", a->args[0]);
     }
 
-    const char *name = a->args[0];
-    Compiler *c = find_compiler(name);
-    if (!c) {
-        error_msg("No such error parser %s", name);
-        return;
+    SpawnContext ctx = {
+        .editor = e,
+        .argv = (const char **)a->args + 1,
+        .flags = cmdargs_convert_flags(a, map, ARRAYLEN(map)),
+    };
+
+    clear_messages(&e->messages);
+    bool ok = spawn_compiler(&ctx, c, &e->messages);
+    if (e->messages.array.count) {
+        activate_current_message_save(e);
     }
-    clear_messages();
-    spawn_compiler(a->args + 1, flags, c);
-    if (message_count()) {
-        activate_current_message_save();
-    }
+    return ok;
 }
 
-static void cmd_copy(const CommandArgs *a)
+static bool cmd_copy(EditorState *e, const CommandArgs *a)
 {
-    BlockIter save = view->cursor;
+    View *view = e->view;
+    const BlockIter save = view->cursor;
+    size_t size;
+    bool line_copy;
     if (view->selection) {
-        copy(prepare_selection(view), view->selection == SELECT_LINES);
-        bool keep_selection = has_flag(a, 'k');
-        if (!keep_selection) {
-            unselect();
-        }
+        size = prepare_selection(view);
+        line_copy = (view->selection == SELECT_LINES);
     } else {
         block_iter_bol(&view->cursor);
         BlockIter tmp = view->cursor;
-        copy(block_iter_eat_line(&tmp), true);
+        size = block_iter_eat_line(&tmp);
+        line_copy = true;
     }
+
+    if (unlikely(size == 0)) {
+        return true;
+    }
+
+    bool internal = has_flag(a, 'i');
+    bool clipboard = has_flag(a, 'b');
+    bool primary = has_flag(a, 'p');
+    if (!(internal || clipboard || primary)) {
+        internal = true;
+    }
+
+    if (internal) {
+        copy(&e->clipboard, view, size, line_copy);
+    }
+
+    Terminal *term = &e->terminal;
+    if ((clipboard || primary) && term->features & TFLAG_OSC52_COPY) {
+        if (internal) {
+            view->cursor = save;
+            if (view->selection) {
+                size = prepare_selection(view);
+            }
+        }
+        char *buf = block_iter_get_bytes(&view->cursor, size);
+        if (!term_osc52_copy(&term->obuf, buf, size, clipboard, primary)) {
+            error_msg_errno("OSC 52 copy failed");
+        }
+        free(buf);
+    }
+
+    if (!has_flag(a, 'k')) {
+        unselect(view);
+    }
+
     view->cursor = save;
+    // TODO: return false if term_osc52_copy() failed?
+    return true;
 }
 
-static void cmd_cut(const CommandArgs* UNUSED_ARG(a))
+static bool cmd_cursor(EditorState *e, const CommandArgs *a)
 {
+    if (unlikely(a->nr_args == 0)) {
+        // Reset all cursor styles
+        for (CursorInputMode m = 0; m < ARRAYLEN(e->cursor_styles); m++) {
+            e->cursor_styles[m] = get_default_cursor_style(m);
+        }
+        e->cursor_style_changed = true;
+        return true;
+    }
+
+    CursorInputMode mode = cursor_mode_from_str(a->args[0]);
+    if (unlikely(mode >= NR_CURSOR_MODES)) {
+        return error_msg("invalid mode argument: %s", a->args[0]);
+    }
+
+    TermCursorStyle style = get_default_cursor_style(mode);
+    if (a->nr_args >= 2) {
+        style.type = cursor_type_from_str(a->args[1]);
+        if (unlikely(style.type == CURSOR_INVALID)) {
+            return error_msg("invalid cursor type: %s", a->args[1]);
+        }
+    }
+
+    if (a->nr_args >= 3) {
+        style.color = cursor_color_from_str(a->args[2]);
+        if (unlikely(style.color == COLOR_INVALID)) {
+            return error_msg("invalid cursor color: %s", a->args[2]);
+        }
+    }
+
+    e->cursor_styles[mode] = style;
+    e->cursor_style_changed = true;
+    return true;
+}
+
+static bool cmd_cut(EditorState *e, const CommandArgs *a)
+{
+    BUG_ON(a->nr_args);
+    View *view = e->view;
     const long x = view_get_preferred_x(view);
     if (view->selection) {
-        cut(prepare_selection(view), view->selection == SELECT_LINES);
+        bool is_lines = view->selection == SELECT_LINES;
+        cut(&e->clipboard, view, prepare_selection(view), is_lines);
         if (view->selection == SELECT_LINES) {
-            move_to_preferred_x(x);
+            move_to_preferred_x(view, x);
         }
-        unselect();
+        unselect(view);
     } else {
         BlockIter tmp;
         block_iter_bol(&view->cursor);
         tmp = view->cursor;
-        cut(block_iter_eat_line(&tmp), true);
-        move_to_preferred_x(x);
+        cut(&e->clipboard, view, block_iter_eat_line(&tmp), true);
+        move_to_preferred_x(view, x);
     }
+    return true;
 }
 
-static void cmd_delete(const CommandArgs* UNUSED_ARG(a))
+static bool cmd_delete(EditorState *e, const CommandArgs *a)
 {
-    delete_ch();
+    BUG_ON(a->nr_args);
+    delete_ch(e->view);
+    return true;
 }
 
-static void cmd_delete_eol(const CommandArgs *a)
+static bool cmd_delete_eol(EditorState *e, const CommandArgs *a)
 {
+    View *view = e->view;
     if (view->selection) {
-        return;
+        // TODO: return false?
+        return true;
     }
 
     bool delete_newline_if_at_eol = has_flag(a, 'n');
@@ -359,209 +534,159 @@ static void cmd_delete_eol(const CommandArgs *a)
     if (delete_newline_if_at_eol) {
         CodePoint ch;
         if (block_iter_get_char(&view->cursor, &ch) == 1 && ch == '\n') {
-            delete_ch();
-            return;
+            delete_ch(view);
+            return true;
         }
     }
 
-    buffer_delete_bytes(block_iter_eol(&bi));
+    buffer_delete_bytes(view, block_iter_eol(&bi));
+    return true;
 }
 
-static void cmd_delete_line(const CommandArgs* UNUSED_ARG(a))
+static bool cmd_delete_line(EditorState *e, const CommandArgs *a)
 {
-    delete_lines();
+    BUG_ON(a->nr_args);
+    delete_lines(e->view);
+    return true;
 }
 
-static void cmd_delete_word(const CommandArgs *a)
+static bool cmd_delete_word(EditorState *e, const CommandArgs *a)
 {
     bool skip_non_word = has_flag(a, 's');
-    BlockIter bi = view->cursor;
-    buffer_delete_bytes(word_fwd(&bi, skip_non_word));
+    BlockIter bi = e->view->cursor;
+    buffer_delete_bytes(e->view, word_fwd(&bi, skip_non_word));
+    return true;
 }
 
-static void cmd_down(const CommandArgs *a)
+static bool cmd_down(EditorState *e, const CommandArgs *a)
 {
-    handle_select_chars_or_lines_flags(a);
-    move_down(1);
+    handle_select_chars_or_lines_flags(e->view, a);
+    move_down(e->view, 1);
+    return true;
 }
 
-static void cmd_eof(const CommandArgs* UNUSED_ARG(a))
+static bool cmd_eof(EditorState *e, const CommandArgs *a)
 {
-    do_selection(SELECT_NONE);
-    move_eof();
+    handle_select_chars_or_lines_flags(e->view, a);
+    move_eof(e->view);
+    return true;
 }
 
-static void cmd_eol(const CommandArgs *a)
+static bool cmd_eol(EditorState *e, const CommandArgs *a)
 {
-    handle_select_chars_flag(a);
-    move_eol();
+    handle_select_chars_flag(e->view, a);
+    move_eol(e->view);
+    return true;
 }
 
-static void cmd_eolsf(const CommandArgs* UNUSED_ARG(a))
+static bool cmd_eolsf(EditorState *e, const CommandArgs *a)
 {
-    do_selection(SELECT_NONE);
+    BUG_ON(a->nr_args);
+    View *view = e->view;
+    handle_select_chars_or_lines_flags(view, a);
+
     if (!block_iter_eol(&view->cursor)) {
-        long bottom = view->vy + window->edit_h - 1 - window_get_scroll_margin(window);
+        Window *window = e->window;
+        long margin = window_get_scroll_margin(window, e->options.scroll_margin);
+        long bottom = view->vy + window->edit_h - 1 - margin;
         if (view->cy < bottom) {
-            move_down(bottom - view->cy);
+            move_down(view, bottom - view->cy);
         } else {
             block_iter_eof(&view->cursor);
         }
     }
+
     view_reset_preferred_x(view);
+    return true;
 }
 
-static void cmd_erase(const CommandArgs* UNUSED_ARG(a))
+static bool cmd_erase(EditorState *e, const CommandArgs *a)
 {
-    erase();
+    BUG_ON(a->nr_args);
+    erase(e->view);
+    return true;
 }
 
-static void cmd_erase_bol(const CommandArgs* UNUSED_ARG(a))
+static bool cmd_erase_bol(EditorState *e, const CommandArgs *a)
 {
-    buffer_erase_bytes(block_iter_bol(&view->cursor));
+    BUG_ON(a->nr_args);
+    buffer_erase_bytes(e->view, block_iter_bol(&e->view->cursor));
+    return true;
 }
 
-static void cmd_erase_word(const CommandArgs *a)
+static bool cmd_erase_word(EditorState *e, const CommandArgs *a)
 {
+    View *view = e->view;
     bool skip_non_word = has_flag(a, 's');
-    buffer_erase_bytes(word_bwd(&view->cursor, skip_non_word));
+    buffer_erase_bytes(view, word_bwd(&view->cursor, skip_non_word));
+    return true;
 }
 
-static void cmd_errorfmt(const CommandArgs *a)
+static bool cmd_errorfmt(EditorState *e, const CommandArgs *a)
 {
+    BUG_ON(a->nr_args == 0);
+    const char *name = a->args[0];
+    if (a->nr_args == 1) {
+        remove_compiler(&e->compilers, name);
+        return true;
+    }
+
     bool ignore = has_flag(a, 'i');
-    add_error_fmt(a->args[0], ignore, a->args[1], a->args + 2);
+    return add_error_fmt(&e->compilers, name, ignore, a->args[1], a->args + 2);
 }
 
-static void cmd_eval(const CommandArgs *a)
+static bool cmd_exec(EditorState *e, const CommandArgs *a)
 {
-    SpawnContext ctx = {
-        .argv = a->args,
-        .input = STRING_VIEW_INIT,
-        .output = STRING_INIT,
-        .flags = SPAWN_DEFAULT
-    };
-    if (!spawn_filter(&ctx)) {
-        return;
-    }
-    exec_config(&commands, ctx.output.buffer, ctx.output.len);
-    string_free(&ctx.output);
-}
+    ExecAction actions[3] = {EXEC_TTY, EXEC_TTY, EXEC_TTY};
+    SpawnFlags spawn_flags = 0;
+    bool lflag = false;
+    bool move_after_insert = false;
+    bool strip_nl = false;
 
-static void cmd_exec_open(const CommandArgs *a)
-{
-    SpawnContext ctx = {
-        .argv = a->args,
-        .output = STRING_INIT,
-        .flags = has_flag(a, 's') ? SPAWN_QUIET : SPAWN_DEFAULT
-    };
-    if (!spawn_source(&ctx)) {
-        return;
-    }
-
-    PointerArray filenames = PTR_ARRAY_INIT;
-    for (size_t pos = 0, size = ctx.output.len; pos < size; ) {
-        char *filename = buf_next_line(ctx.output.buffer, &pos, size);
-        if (filename[0] != '\0') {
-            ptr_array_append(&filenames, filename);
+    for (size_t i = 0, n = a->nr_flags, argidx = 0, fd; i < n; i++) {
+        switch (a->flags[i]) {
+            case 'e': fd = STDERR_FILENO; break;
+            case 'i': fd = STDIN_FILENO; break;
+            case 'o': fd = STDOUT_FILENO; break;
+            case 'p': spawn_flags |= SPAWN_PROMPT; continue;
+            case 's': spawn_flags |= SPAWN_QUIET; continue;
+            case 't': spawn_flags &= ~SPAWN_QUIET; continue;
+            case 'l': lflag = true; continue;
+            case 'm': move_after_insert = true; continue;
+            case 'n': strip_nl = true; continue;
+            default: BUG("unexpected flag"); return false;
         }
-    }
-
-    ptr_array_append(&filenames, NULL);
-    window_open_files(window, (char**)filenames.ptrs, NULL);
-    macro_command_hook("open", (char**)filenames.ptrs);
-    ptr_array_free_array(&filenames);
-    string_free(&ctx.output);
-}
-
-static void cmd_exec_tag(const CommandArgs *a)
-{
-    SpawnContext ctx = {
-        .argv = a->args,
-        .output = STRING_INIT,
-        .flags = has_flag(a, 's') ? SPAWN_QUIET : SPAWN_DEFAULT
-    };
-    if (!spawn_source(&ctx)) {
-        return;
-    }
-
-    const char *tag = string_borrow_cstring(&ctx.output);
-    const char *nl = memchr(tag, '\n', ctx.output.len);
-    size_t tag_len = nl ? (size_t)(nl - tag) : ctx.output.len;
-
-    String s = string_new(tag_len + 16);
-    string_append_literal(&s, "tag ");
-    if (unlikely(tag[0] == '-')) {
-        string_append_literal(&s, "-- ");
-    }
-    string_append_escaped_arg_sv(&s, string_view(tag, tag_len), true);
-    string_free(&ctx.output);
-    handle_command(&commands, string_borrow_cstring(&s), true);
-    string_free(&s);
-}
-
-static const char **lines_and_columns_env(void)
-{
-    static char lines[DECIMAL_STR_MAX(window->edit_h)];
-    static char columns[DECIMAL_STR_MAX(window->edit_w)];
-    static const char *vars[] = {
-        "LINES", lines,
-        "COLUMNS", columns,
-        NULL,
-    };
-
-    xsnprintf(lines, sizeof lines, "%d", window->edit_h);
-    xsnprintf(columns, sizeof columns, "%d", window->edit_w);
-    return vars;
-}
-
-static void cmd_filter(const CommandArgs *a)
-{
-    BlockIter save = view->cursor;
-    SpawnContext ctx = {
-        .argv = a->args,
-        .env = lines_and_columns_env(),
-        .input = STRING_VIEW_INIT,
-        .output = STRING_INIT,
-        .flags = SPAWN_DEFAULT
-    };
-
-    if (view->selection) {
-        ctx.input.length = prepare_selection(view);
-    } else if (has_flag(a, 'l')) {
-        StringView line;
-        move_bol();
-        fill_line_ref(&view->cursor, &line);
-        ctx.input.length = line.length;
-    } else {
-        Block *blk;
-        block_for_each(blk, &buffer->blocks) {
-            ctx.input.length += blk->size;
+        const char *action_name = a->args[argidx++];
+        ExecAction action = lookup_exec_action(action_name, fd);
+        if (unlikely(action == EXEC_INVALID)) {
+            return error_msg("invalid action for -%c: '%s'", a->flags[i], action_name);
         }
-        move_bof();
+        actions[fd] = action;
     }
 
-    char *input = block_iter_get_bytes(&view->cursor, ctx.input.length);
-    ctx.input.data = input;
-    if (!spawn_filter(&ctx)) {
-        free(input);
-        view->cursor = save;
-        return;
+    if (lflag && actions[STDIN_FILENO] == EXEC_BUFFER) {
+        // For compat. with old "filter" and "pipe-to" commands
+        actions[STDIN_FILENO] = EXEC_LINE;
     }
 
-    free(input);
-    buffer_replace_bytes(ctx.input.length, ctx.output.buffer, ctx.output.len);
-    string_free(&ctx.output);
-    unselect();
+    const char **argv = (const char **)a->args + a->nr_flag_args;
+    ssize_t outlen = handle_exec(e, argv, actions, spawn_flags, strip_nl);
+    if (outlen <= 0) {
+        return outlen == 0;
+    }
+
+    if (move_after_insert && actions[STDOUT_FILENO] == EXEC_BUFFER) {
+        block_iter_skip_bytes(&e->view->cursor, outlen);
+    }
+    return true;
 }
 
-static void cmd_ft(const CommandArgs *a)
+static bool cmd_ft(EditorState *e, const CommandArgs *a)
 {
     char **args = a->args;
     const char *filetype = args[0];
-    if (unlikely(filetype[0] == '\0')) {
-        error_msg("Filetype can't be blank");
-        return;
+    if (unlikely(!is_valid_filetype_name(filetype))) {
+        return error_msg("Invalid filetype name: '%s'", filetype);
     }
 
     FileDetectionType dt = FT_EXTENSION;
@@ -580,142 +705,207 @@ static void cmd_ft(const CommandArgs *a)
         break;
     }
 
+    size_t nfailed = 0;
     for (size_t i = 1, n = a->nr_args; i < n; i++) {
-        add_filetype(filetype, args[i], dt);
+        if (!add_filetype(&e->filetypes, filetype, args[i], dt)) {
+            nfailed++;
+        }
     }
+
+    return nfailed == 0;
 }
 
-static void cmd_hi(const CommandArgs *a)
+static bool cmd_hi(EditorState *e, const CommandArgs *a)
 {
     if (unlikely(a->nr_args == 0)) {
-        exec_builtin_color_reset();
+        exec_builtin_color_reset(e);
         goto update;
     }
 
+    char **strs = a->args + 1;
+    size_t strs_len = a->nr_args - 1;
     TermColor color;
-    if (unlikely(!parse_term_color(&color, a->args + 1))) {
-        return;
+    ssize_t n = parse_term_color(&color, strs, strs_len);
+    if (unlikely(n != strs_len)) {
+        if (n < 0) {
+            return error_msg("too many colors");
+        }
+        BUG_ON(n > strs_len);
+        return error_msg("invalid color or attribute: '%s'", strs[n]);
     }
 
-    int32_t fg = color_to_nearest(color.fg, terminal.color_type);
-    int32_t bg = color_to_nearest(color.bg, terminal.color_type);
+    TermColorCapabilityType color_type = e->terminal.color_type;
+    bool optimize = e->options.optimize_true_color;
+    int32_t fg = color_to_nearest(color.fg, color_type, optimize);
+    int32_t bg = color_to_nearest(color.bg, color_type, optimize);
     if (
-        terminal.color_type != TERM_TRUE_COLOR
+        color_type != TERM_TRUE_COLOR
         && has_flag(a, 'c')
         && (fg != color.fg || bg != color.bg)
     ) {
-        return;
+        return true;
     }
 
     color.fg = fg;
     color.bg = bg;
-    set_highlight_color(a->args[0], &color);
+    set_highlight_color(&e->colors, a->args[0], &color);
 
 update:
-    // Don't call update_all_syntax_colors() needlessly.
-    // It is called right after config has been loaded.
-    if (editor.status != EDITOR_INITIALIZING) {
-        update_all_syntax_colors();
-        mark_everything_changed();
+    // Don't call update_all_syntax_colors() needlessly; it's called
+    // right after config has been loaded
+    if (e->status != EDITOR_INITIALIZING) {
+        update_all_syntax_colors(&e->syntaxes, &e->colors);
+        mark_everything_changed(e);
     }
+    return true;
 }
 
-static void cmd_include(const CommandArgs *a)
+static bool cmd_include(EditorState *e, const CommandArgs *a)
 {
     ConfigFlags flags = has_flag(a, 'q') ? CFG_NOFLAGS : CFG_MUST_EXIST;
     if (has_flag(a, 'b')) {
         flags |= CFG_BUILTIN;
     }
-    read_config(&commands, a->args[0], flags);
+    int err = read_normal_config(e, a->args[0], flags);
+    // TODO: Clean up read_normal_config() so this can be simplified to `err == 0`
+    return err == 0 || (err == ENOENT && !(flags & CFG_MUST_EXIST));
 }
 
-static void cmd_insert(const CommandArgs *a)
+static bool cmd_insert(EditorState *e, const CommandArgs *a)
 {
     const char *str = a->args[0];
     if (has_flag(a, 'k')) {
         for (size_t i = 0; str[i]; i++) {
-            insert_ch(str[i]);
+            insert_ch(e->view, str[i]);
         }
-        return;
+        return true;
     }
 
     bool move_after = has_flag(a, 'm');
-    insert_text(str, strlen(str), move_after);
+    insert_text(e->view, str, strlen(str), move_after);
+    return true;
 }
 
-static void cmd_join(const CommandArgs* UNUSED_ARG(a))
+static bool cmd_join(EditorState *e, const CommandArgs *a)
 {
-    join_lines();
+    BUG_ON(a->nr_args);
+    join_lines(e->view);
+    return true;
 }
 
-static void cmd_left(const CommandArgs *a)
+static bool cmd_left(EditorState *e, const CommandArgs *a)
 {
-    handle_select_chars_flag(a);
-    move_cursor_left();
+    handle_select_chars_flag(e->view, a);
+    move_cursor_left(e->view);
+    return true;
 }
 
-static void cmd_line(const CommandArgs *a)
+static bool cmd_line(EditorState *e, const CommandArgs *a)
+{
+    const char *str = a->args[0];
+    size_t line, column;
+    if (unlikely(!str_to_xfilepos(str, &line, &column))) {
+        return error_msg("Invalid line number: %s", str);
+    }
+
+    View *view = e->view;
+    long x = view_get_preferred_x(view);
+    unselect(view);
+
+    if (column >= 1) {
+        // Column was specified; move to exact position
+        move_to_filepos(view, line, column);
+    } else {
+        // Column was omitted; move to line while preserving current column
+        move_to_line(view, line);
+        move_to_preferred_x(view, x);
+    }
+
+    return true;
+}
+
+static bool cmd_load_syntax(EditorState *e, const CommandArgs *a)
 {
     const char *arg = a->args[0];
-    const long x = view_get_preferred_x(view);
-    size_t line;
-    if (!str_to_size(arg, &line) || line == 0) {
-        error_msg("Invalid line number: %s", arg);
-        return;
+    const char *slash = strrchr(arg, '/');
+    if (!slash) {
+        const char *filetype = arg;
+        if (find_syntax(&e->syntaxes, filetype)) {
+            return true;
+        }
+        return !!load_syntax_by_filetype(e, filetype);
     }
 
-    do_selection(SELECT_NONE);
-    move_to_line(view, line);
-    move_to_preferred_x(x);
-}
-
-static void cmd_load_syntax(const CommandArgs *a)
-{
-    const char *filename = a->args[0];
-    const char *filetype = path_basename(filename);
-    if (filename != filetype) {
-        if (find_syntax(filetype)) {
-            error_msg("Syntax for filetype %s already loaded", filetype);
-        } else {
-            int err;
-            load_syntax_file(filename, CFG_MUST_EXIST, &err);
-        }
-    } else {
-        if (!find_syntax(filetype)) {
-            load_syntax_by_filetype(filetype);
-        }
+    const char *filetype = slash + 1;
+    if (find_syntax(&e->syntaxes, filetype)) {
+        return error_msg("Syntax for filetype %s already loaded", filetype);
     }
+
+    int err;
+    return !!load_syntax_file(e, arg, CFG_MUST_EXIST, &err);
 }
 
-static void cmd_macro(const CommandArgs *a)
+static bool cmd_macro(EditorState *e, const CommandArgs *a)
 {
-    static const struct {
-        const char name[8];
-        void (*handler)(void);
-    } actions[] = {
-        {"record", macro_record},
-        {"stop", macro_stop},
-        {"toggle", macro_toggle},
-        {"cancel", macro_cancel},
-        {"play", macro_play},
-        {"run", macro_play},
-    };
+    CommandMacroState *m = &e->macro;
     const char *action = a->args[0];
-    for (size_t i = 0; i < ARRAY_COUNT(actions); i++) {
-        if (streq(action, actions[i].name)) {
-            actions[i].handler();
-            return;
+
+    if (streq(action, "play") || streq(action, "run")) {
+        for (size_t i = 0, n = m->macro.count; i < n; i++) {
+            const char *cmd_str = m->macro.ptrs[i];
+            if (!handle_normal_command(e, cmd_str, false)) {
+                return false;
+            }
         }
+        return true;
     }
-    error_msg("Unknown action '%s'", action);
+
+    const char *msg;
+    if (streq(action, "toggle")) {
+        if (m->recording) {
+            goto stop;
+        }
+        goto record;
+    }
+
+    if (streq(action, "record")) {
+        record:
+        msg = macro_record(m) ? "Recording macro" : "Already recording";
+        goto message;
+    }
+
+    if (streq(action, "stop")) {
+        stop:
+        if (!macro_stop(m)) {
+            msg = "Not recording";
+            goto message;
+        }
+        size_t count = m->macro.count;
+        const char *plural = (count != 1) ? "s" : "";
+        info_msg("Macro recording stopped; %zu command%s saved", count, plural);
+        return true;
+    }
+
+    if (streq(action, "cancel")) {
+        msg = macro_cancel(m) ? "Macro recording cancelled" : "Not recording";
+        goto message;
+    }
+
+    return error_msg("Unknown action '%s'", action);
+
+message:
+    info_msg("%s", msg);
+    // TODO: make this conditional?
+    return true;
 }
 
-static void cmd_match_bracket(const CommandArgs* UNUSED_ARG(a))
+static bool cmd_match_bracket(EditorState *e, const CommandArgs *a)
 {
+    BUG_ON(a->nr_args);
+    View *view = e->view;
     CodePoint cursor_char;
     if (!block_iter_get_char(&view->cursor, &cursor_char)) {
-        error_msg("No character under cursor");
-        return;
+        return error_msg("No character under cursor");
     }
 
     CodePoint target = cursor_char;
@@ -741,8 +931,7 @@ static void cmd_match_bracket(const CommandArgs* UNUSED_ARG(a))
         target--;
         goto search_bwd;
     default:
-        error_msg("Character under cursor not matchable");
-        return;
+        return error_msg("Character under cursor not matchable");
     }
 
 search_fwd:
@@ -751,9 +940,9 @@ search_fwd:
     while (block_iter_next_char(&bi, &u)) {
         if (u == target) {
             if (level == 0) {
-                bi.offset--;
+                block_iter_prev_char(&bi, &u);
                 view->cursor = bi;
-                return; // Found
+                return true; // Found
             }
             level--;
         } else if (u == cursor_char) {
@@ -767,7 +956,7 @@ search_bwd:
         if (u == target) {
             if (level == 0) {
                 view->cursor = bi;
-                return; // Found
+                return true; // Found
             }
             level--;
         } else if (u == cursor_char) {
@@ -776,57 +965,76 @@ search_bwd:
     }
 
 not_found:
-    error_msg("No matching bracket found");
+    return error_msg("No matching bracket found");
 }
 
-static void cmd_move_tab(const CommandArgs *a)
+static bool cmd_move_tab(EditorState *e, const CommandArgs *a)
 {
+    Window *window = e->window;
     const size_t ntabs = window->views.count;
     const char *str = a->args[0];
-    size_t to, from = ptr_array_idx(&window->views, view);
+    size_t to, from = ptr_array_idx(&window->views, e->view);
     BUG_ON(from >= ntabs);
     if (streq(str, "left")) {
-        to = (from ? from : ntabs) - 1;
+        to = size_decrement_wrapped(from, ntabs);
     } else if (streq(str, "right")) {
-        to = (from + 1) % ntabs;
+        to = size_increment_wrapped(from, ntabs);
     } else {
         if (!str_to_size(str, &to) || to == 0) {
-            error_msg("Invalid tab position %s", str);
-            return;
+            return error_msg("Invalid tab position %s", str);
         }
-        to--;
-        if (to >= ntabs) {
-            to = ntabs - 1;
-        }
+        to = MIN(to, ntabs) - 1;
     }
     ptr_array_move(&window->views, from, to);
     window->update_tabbar = true;
+    return true;
 }
 
-static void cmd_msg(const CommandArgs *a)
+static bool cmd_msg(EditorState *e, const CommandArgs *a)
 {
-    switch (last_flag(a)) {
-    case 'n':
-        activate_next_message();
-        return;
-    case 'p':
-        activate_prev_message();
-        return;
+    const char *str = a->args[0];
+    uint_least64_t np = cmdargs_flagset_value('n') | cmdargs_flagset_value('p');
+    if (u64_popcount(a->flag_set & np) + !!str >= 2) {
+        return error_msg("flags [-n|-p] and [number] argument are mutually exclusive");
     }
-    activate_current_message();
+
+    MessageArray *msgs = &e->messages;
+    size_t count = msgs->array.count;
+    if (count == 0) {
+        return true;
+    }
+
+    size_t p = msgs->pos;
+    BUG_ON(p >= count);
+    if (has_flag(a, 'n')) {
+        p = MIN(p + 1, count - 1);
+    } else if (has_flag(a, 'p')) {
+        p = p ? p - 1 : 0;
+    } else if (str) {
+        if (!str_to_size(str, &p) || p == 0) {
+            return error_msg("invalid message index: %s", str);
+        }
+        p = MIN(p - 1, count - 1);
+    }
+
+    msgs->pos = p;
+    return activate_current_message(e);
 }
 
-static void cmd_new_line(const CommandArgs* UNUSED_ARG(a))
+static bool cmd_new_line(EditorState *e, const CommandArgs *a)
 {
-    new_line();
+    new_line(e->view, has_flag(a, 'a'));
+    return true;
 }
 
-static void cmd_next(const CommandArgs* UNUSED_ARG(a))
+static bool cmd_next(EditorState *e, const CommandArgs *a)
 {
-    size_t i = ptr_array_idx(&window->views, view);
-    size_t n = window->views.count;
+    BUG_ON(a->nr_args);
+    size_t i = ptr_array_idx(&e->window->views, e->view);
+    size_t n = e->window->views.count;
     BUG_ON(i >= n);
-    set_view(window->views.ptrs[(i + 1) % n]);
+    set_view(e->window->views.ptrs[size_increment_wrapped(i, n)]);
+    return true;
 }
 
 static bool xglob(char **args, glob_t *globbuf)
@@ -846,22 +1054,20 @@ static bool xglob(char **args, glob_t *globbuf)
     }
 
     BUG_ON(err == GLOB_NOMATCH);
-    error_msg("glob: %s", (err == GLOB_NOSPACE) ? strerror(ENOMEM) : "failed");
     globfree(globbuf);
-    return false;
+    return error_msg("glob: %s", (err == GLOB_NOSPACE) ? strerror(ENOMEM) : "failed");
 }
 
-static void cmd_open(const CommandArgs *a)
+static bool cmd_open(EditorState *e, const CommandArgs *a)
 {
     bool temporary = has_flag(a, 't');
     if (unlikely(temporary && a->nr_args > 0)) {
-        error_msg("'open -t' can't be used with filename arguments");
-        return;
+        return error_msg("'open -t' can't be used with filename arguments");
     }
 
     const char *requested_encoding = NULL;
     char **args = a->args;
-    if (a->nr_flag_args > 0) {
+    if (unlikely(a->nr_flag_args > 0)) {
         // The "-e" flag is the only one that takes an argument, so the
         // above condition implies it was used
         BUG_ON(!has_flag(a, 'e'));
@@ -869,36 +1075,32 @@ static void cmd_open(const CommandArgs *a)
         args += a->nr_flag_args;
     }
 
-    Encoding encoding;
+    Encoding encoding = {.type = ENCODING_AUTODETECT};
     if (requested_encoding) {
-        EncodingType e = lookup_encoding(requested_encoding);
-        if (e == UTF8) {
-            encoding = encoding_from_type(e);
+        EncodingType enctype = lookup_encoding(requested_encoding);
+        if (enctype == UTF8) {
+            encoding = encoding_from_type(enctype);
         } else if (conversion_supported_by_iconv(requested_encoding, "UTF-8")) {
             encoding = encoding_from_name(requested_encoding);
         } else {
             if (errno == EINVAL) {
-                error_msg("Unsupported encoding '%s'", requested_encoding);
-            } else {
-                error_msg (
-                    "iconv conversion from '%s' failed: %s",
-                    requested_encoding,
-                    strerror(errno)
-                );
+                return error_msg("Unsupported encoding '%s'", requested_encoding);
             }
-            return;
+            return error_msg (
+                "iconv conversion from '%s' failed: %s",
+                requested_encoding,
+                strerror(errno)
+            );
         }
-    } else {
-        encoding = (Encoding){.type = ENCODING_AUTODETECT};
     }
 
     if (a->nr_args == 0) {
-        View *v = window_open_new_file(window);
-        v->buffer->temporary = temporary;
+        View *view = window_open_new_file(e->window);
+        view->buffer->temporary = temporary;
         if (requested_encoding) {
-            buffer_set_encoding(v->buffer, encoding);
+            buffer_set_encoding(view->buffer, encoding, e->options.utf8_bom);
         }
-        return;
+        return true;
     }
 
     char **paths = args;
@@ -906,58 +1108,62 @@ static void cmd_open(const CommandArgs *a)
     bool use_glob = has_flag(a, 'g');
     if (use_glob) {
         if (!xglob(args, &globbuf)) {
-            return;
+            return false;
         }
         paths = globbuf.gl_pathv;
     }
 
+    View *first_opened;
     if (!paths[1]) {
         // Previous view is remembered when opening single file
-        window_open_file(window, paths[0], &encoding);
+        first_opened = window_open_file(e->window, paths[0], &encoding);
     } else {
-        // It makes no sense to remember previous view when opening
-        // multiple files
-        window_open_files(window, paths, &encoding);
+        // It makes no sense to remember previous view when opening multiple files
+        first_opened = window_open_files(e->window, paths, &encoding);
     }
 
     if (use_glob) {
         globfree(&globbuf);
     }
+
+    return !!first_opened;
 }
 
-static void cmd_option(const CommandArgs *a)
+static bool cmd_option(EditorState *e, const CommandArgs *a)
 {
     BUG_ON(a->nr_args < 3);
     size_t nstrs = a->nr_args - 1;
-    if (unlikely(nstrs % 2 != 0)) {
-        error_msg("Missing option value");
-        return;
+    if (unlikely(nstrs & 1)) {
+        return error_msg("Missing option value");
     }
 
     char **strs = a->args + 1;
     if (unlikely(!validate_local_options(strs))) {
-        return;
+        return false;
     }
 
+    PointerArray *opts = &e->file_options;
     if (has_flag(a, 'r')) {
-        char *regex = xstrdup(a->args[0]);
-        char **opts = copy_string_array(strs, nstrs);
-        add_file_options(FILE_OPTIONS_FILENAME, regex, opts);
-        return;
+        const StringView pattern = strview_from_cstring(a->args[0]);
+        return add_file_options(opts, FOPTS_FILENAME, pattern, strs, nstrs);
     }
 
     const char *ft_list = a->args[0];
+    size_t errors = 0;
     for (size_t pos = 0, len = strlen(ft_list); pos < len; ) {
-        const StringView sv = get_delim(ft_list, &pos, len, ',');
-        char *filetype = xstrcut(sv.data, sv.length);
-        char **opts = copy_string_array(strs, nstrs);
-        add_file_options(FILE_OPTIONS_FILETYPE, filetype, opts);
+        const StringView filetype = get_delim(ft_list, &pos, len, ',');
+        if (!add_file_options(opts, FOPTS_FILETYPE, filetype, strs, nstrs)) {
+            errors++;
+        }
     }
+
+    return !errors;
 }
 
-static void cmd_blkdown(const CommandArgs *a)
+static bool cmd_blkdown(EditorState *e, const CommandArgs *a)
 {
-    handle_select_chars_or_lines_flags(a);
+    View *view = e->view;
+    handle_select_chars_or_lines_flags(view, a);
 
     // If current line is blank, skip past consecutive blank lines
     StringView line;
@@ -986,16 +1192,19 @@ static void cmd_blkdown(const CommandArgs *a)
     if (block_iter_is_eof(&tmp)) {
         view->cursor = tmp;
     }
+
+    return true;
 }
 
-static void cmd_blkup(const CommandArgs *a)
+static bool cmd_blkup(EditorState *e, const CommandArgs *a)
 {
-    handle_select_chars_or_lines_flags(a);
+    View *view = e->view;
+    handle_select_chars_or_lines_flags(view, a);
 
     // If cursor is on the first line, just move to bol
     if (view->cy == 0) {
         block_iter_bol(&view->cursor);
-        return;
+        return true;
     }
 
     // If current line is blank, skip past consecutive blank lines
@@ -1017,19 +1226,36 @@ static void cmd_blkup(const CommandArgs *a)
             break;
         }
     }
+
+    return true;
 }
 
-static void cmd_paste(const CommandArgs *a)
+static bool cmd_paste(EditorState *e, const CommandArgs *a)
 {
+    bool move_after = has_flag(a, 'm');
+    bool above_cursor = has_flag(a, 'a');
     bool at_cursor = has_flag(a, 'c');
-    paste(at_cursor);
+    PasteLinesType type = PASTE_LINES_BELOW_CURSOR;
+
+    if (above_cursor && at_cursor) {
+        return error_msg("flags -a and -c are mutually exclusive");
+    } else if (above_cursor) {
+        type = PASTE_LINES_ABOVE_CURSOR;
+    } else if (at_cursor) {
+        type = PASTE_LINES_INLINE;
+    }
+
+    paste(&e->clipboard, e->view, type, move_after);
+    return true;
 }
 
-static void cmd_pgdown(const CommandArgs *a)
+static bool cmd_pgdown(EditorState *e, const CommandArgs *a)
 {
-    handle_select_chars_or_lines_flags(a);
+    View *view = e->view;
+    handle_select_chars_or_lines_flags(view, a);
 
-    long margin = window_get_scroll_margin(window);
+    Window *window = e->window;
+    long margin = window_get_scroll_margin(window, e->options.scroll_margin);
     long bottom = view->vy + window->edit_h - 1 - margin;
     long count;
 
@@ -1038,14 +1264,18 @@ static void cmd_pgdown(const CommandArgs *a)
     } else {
         count = window->edit_h - 1 - margin * 2;
     }
-    move_down(count);
+
+    move_down(view, count);
+    return true;
 }
 
-static void cmd_pgup(const CommandArgs *a)
+static bool cmd_pgup(EditorState *e, const CommandArgs *a)
 {
-    handle_select_chars_or_lines_flags(a);
+    View *view = e->view;
+    handle_select_chars_or_lines_flags(view, a);
 
-    long margin = window_get_scroll_margin(window);
+    Window *window = e->window;
+    long margin = window_get_scroll_margin(window, e->options.scroll_margin);
     long top = view->vy + margin;
     long count;
 
@@ -1054,287 +1284,296 @@ static void cmd_pgup(const CommandArgs *a)
     } else {
         count = window->edit_h - 1 - margin * 2;
     }
-    move_up(count);
+
+    move_up(view, count);
+    return true;
 }
 
-static void cmd_pipe_from(const CommandArgs *a)
+static bool cmd_prev(EditorState *e, const CommandArgs *a)
 {
-    SpawnContext ctx = {
-        .argv = a->args,
-        .env = lines_and_columns_env(),
-        .output = STRING_INIT,
-        .flags = SPAWN_QUIET
-    };
-    if (!spawn_source(&ctx)) {
-        return;
-    }
-
-    size_t del_len = 0;
-    if (view->selection) {
-        del_len = prepare_selection(view);
-        unselect();
-    }
-
-    bool strip_nl = has_flag(a, 's');
-    bool move = has_flag(a, 'm');
-    size_t ins_len = ctx.output.len;
-    if (strip_nl) {
-        if (ins_len && ctx.output.buffer[ins_len - 1] == '\n') {
-            ins_len--;
-            if (ins_len && ctx.output.buffer[ins_len - 1] == '\r') {
-                ins_len--;
-            }
-        }
-    }
-
-    buffer_replace_bytes(del_len, ctx.output.buffer, ins_len);
-    string_free(&ctx.output);
-
-    if (move) {
-        block_iter_skip_bytes(&view->cursor, ins_len);
-    }
-}
-
-static void cmd_pipe_to(const CommandArgs *a)
-{
-    const BlockIter saved_cursor = view->cursor;
-    const ssize_t saved_sel_so = view->sel_so;
-    const ssize_t saved_sel_eo = view->sel_eo;
-
-    size_t input_len = 0;
-    if (view->selection) {
-        input_len = prepare_selection(view);
-    } else if (has_flag(a, 'l')) {
-        StringView line;
-        move_bol();
-        fill_line_ref(&view->cursor, &line);
-        input_len = line.length;
-    } else {
-        Block *blk;
-        block_for_each(blk, &buffer->blocks) {
-            input_len += blk->size;
-        }
-        move_bof();
-    }
-
-    char *input = block_iter_get_bytes(&view->cursor, input_len);
-    SpawnContext ctx = {
-        .argv = a->args,
-        .input = string_view(input, input_len),
-        .flags = SPAWN_DEFAULT
-    };
-    spawn_sink(&ctx);
-    free(input);
-
-    // Restore cursor and selection offsets, instead of calling unselect()
-    view->cursor = saved_cursor;
-    view->sel_so = saved_sel_so;
-    view->sel_eo = saved_sel_eo;
-}
-
-static void cmd_prev(const CommandArgs* UNUSED_ARG(a))
-{
-    size_t i = ptr_array_idx(&window->views, view);
-    size_t n = window->views.count;
+    BUG_ON(a->nr_args);
+    size_t i = ptr_array_idx(&e->window->views, e->view);
+    size_t n = e->window->views.count;
     BUG_ON(i >= n);
-    set_view(window->views.ptrs[(i ? i : n) - 1]);
+    set_view(e->window->views.ptrs[size_decrement_wrapped(i, n)]);
+    return true;
 }
 
-static void cmd_quit(const CommandArgs *a)
+static View *window_find_modified_view(Window *window)
 {
-    int exit_code = 0;
+    if (buffer_modified(window->view->buffer)) {
+        return window->view;
+    }
+    for (size_t i = 0, n = window->views.count; i < n; i++) {
+        View *view = window->views.ptrs[i];
+        if (buffer_modified(view->buffer)) {
+            return view;
+        }
+    }
+    return NULL;
+}
+
+static size_t count_modified_buffers(const PointerArray *buffers, View **first)
+{
+    View *modified = NULL;
+    size_t nr_modified = 0;
+    for (size_t i = 0, n = buffers->count; i < n; i++) {
+        Buffer *buffer = buffers->ptrs[i];
+        if (!buffer_modified(buffer)) {
+            continue;
+        }
+        nr_modified++;
+        if (!modified) {
+            modified = buffer->views.ptrs[0];
+        }
+    }
+
+    BUG_ON(nr_modified > 0 && !modified);
+    *first = modified;
+    return nr_modified;
+}
+
+static bool cmd_quit(EditorState *e, const CommandArgs *a)
+{
+    int exit_code = EDITOR_EXIT_OK;
     if (a->nr_args) {
         if (!str_to_int(a->args[0], &exit_code)) {
-            error_msg("Not a valid integer argument: '%s'", a->args[0]);
-            return;
+            return error_msg("Not a valid integer argument: '%s'", a->args[0]);
         }
-        if (exit_code < 0 || exit_code > 125) {
-            error_msg("Exit code should be between 0 and 125");
-            return;
+        int max = EDITOR_EXIT_MAX;
+        if (exit_code < 0 || exit_code > max) {
+            return error_msg("Exit code should be between 0 and %d", max);
         }
     }
 
-    if (has_flag(a, 'f')) {
+    View *first_modified = NULL;
+    size_t n = count_modified_buffers(&e->buffers, &first_modified);
+    if (n == 0) {
         goto exit;
     }
 
-    for (size_t i = 0, n = editor.buffers.count; i < n; i++) {
-        Buffer *b = editor.buffers.ptrs[i];
-        if (buffer_modified(b)) {
-            // Activate modified buffer
-            View *v = window_find_view(window, b);
-            if (!v) {
-                // Buffer isn't open in current window.
-                // Activate first window of the buffer.
-                v = b->views.ptrs[0];
-                window = v->window;
-                mark_everything_changed();
-            }
-            set_view(v);
-            if (has_flag(a, 'p')) {
-                if (dialog_prompt("Quit without saving changes? [y/N]", "ny") == 'y') {
-                    goto exit;
-                }
-                return;
-            } else {
-                error_msg (
-                    "Save modified files or run 'quit -f' to quit"
-                    " without saving."
-                );
-                return;
-            }
-        }
+    BUG_ON(!first_modified);
+    const char *plural = (n > 1) ? "s" : "";
+    if (has_flag(a, 'f')) {
+        LOG_INFO("force quitting with %zu modified buffer%s", n, plural);
+        goto exit;
     }
 
+    // Activate a modified view (giving preference to the current view or
+    // a view in the current window)
+    View *view = window_find_modified_view(e->window);
+    set_view(view ? view : first_modified);
+
+    if (!has_flag(a, 'p')) {
+        return error_msg("Save modified files or run 'quit -f' to quit without saving");
+    }
+
+    char question[128];
+    xsnprintf (
+        question, sizeof question,
+        "Quit without saving %zu modified buffer%s? [y/N]",
+        n, plural
+    );
+
+    if (dialog_prompt(e, question, "ny") != 'y') {
+        return false;
+    }
+
+    LOG_INFO("quit prompt accepted with %zu modified buffer%s", n, plural);
+
 exit:
-    editor.status = EDITOR_EXITING;
-    editor.exit_code = exit_code;
+    e->status = exit_code;
+    return true;
 }
 
-static void cmd_redo(const CommandArgs *a)
+static bool cmd_redo(EditorState *e, const CommandArgs *a)
 {
     char *arg = a->args[0];
     unsigned long change_id = 0;
     if (arg) {
         if (!str_to_ulong(arg, &change_id) || change_id == 0) {
-            error_msg("Invalid change id: %s", arg);
-            return;
+            return error_msg("Invalid change id: %s", arg);
         }
     }
-    if (redo(change_id)) {
-        unselect();
+    if (!redo(e->view, change_id)) {
+        return false;
     }
+
+    unselect(e->view);
+    return true;
 }
 
-static void cmd_refresh(const CommandArgs* UNUSED_ARG(a))
+static bool cmd_refresh(EditorState *e, const CommandArgs *a)
 {
-    mark_everything_changed();
+    BUG_ON(a->nr_args);
+    mark_everything_changed(e);
+    return true;
 }
 
-static void cmd_repeat(const CommandArgs *a)
+static bool repeat_insert(EditorState *e, const char *str, unsigned int count, bool move_after)
 {
-    unsigned int count = 0;
-    if (!str_to_uint(a->args[0], &count)) {
-        error_msg("Not a valid repeat count: %s", a->args[0]);
-        return;
-    } else if (count == 0) {
-        return;
+    size_t str_len = strlen(str);
+    size_t bufsize;
+    if (unlikely(size_multiply_overflows(count, str_len, &bufsize))) {
+        return error_msg("Repeated insert would overflow");
+    }
+    if (unlikely(bufsize == 0)) {
+        return true;
     }
 
-    const Command *cmd = find_normal_command(a->args[1]);
-    if (!cmd) {
-        error_msg("No such command: %s", a->args[1]);
-        return;
+    char *buf = malloc(bufsize);
+    if (unlikely(!buf)) {
+        return error_msg_errno("malloc");
     }
 
-    CommandArgs a2 = {.args = a->args + 2};
-    current_command = cmd;
-    bool ok = parse_args(cmd, &a2);
-    current_command = NULL;
-    if (!ok) {
-        return;
-    }
-
-    // Optimized special case for "insert" command
-    if (cmd->cmd == cmd_insert && !has_flag(&a2, 'k')) {
-        const char *str = a2.args[0];
-        size_t str_len = strlen(str);
-        size_t bufsize;
-        if (size_multiply_overflows(count, str_len, &bufsize)) {
-            error_msg("Repeated insert would overflow");
-            return;
-        }
-        char *buf = malloc(bufsize);
-        if (!buf) {
-            perror_msg("malloc");
-            return;
-        }
-        // TODO: for many repeats of small strings, fill in the first 4K
-        // and then use that to batch copy larger blocks (making sure to
-        // handle any unaligned remainder).
+    char tmp[4096];
+    if (str_len == 1) {
+        memset(buf, str[0], bufsize);
+        goto insert;
+    } else if (bufsize < 2 * sizeof(tmp) || str_len > sizeof(tmp) / 8) {
         for (size_t i = 0; i < count; i++) {
             memcpy(buf + (i * str_len), str, str_len);
         }
-        bool move_after = has_flag(&a2, 'm');
-        insert_text(buf, bufsize, move_after);
-        free(buf);
-        return;
+        goto insert;
+    }
+
+    size_t strs_per_tmp = sizeof(tmp) / str_len;
+    size_t tmp_len = strs_per_tmp * str_len;
+    size_t tmps_per_buf = bufsize / tmp_len;
+    size_t remainder = bufsize % tmp_len;
+
+    // Create a block of text containing `strs_per_tmp` concatenated strs
+    for (size_t i = 0; i < strs_per_tmp; i++) {
+        memcpy(tmp + (i * str_len), str, str_len);
+    }
+
+    // Copy `tmps_per_buf` copies of `tmp` into `buf`
+    for (size_t i = 0; i < tmps_per_buf; i++) {
+        memcpy(buf + (i * tmp_len), tmp, tmp_len);
+    }
+
+    // Copy the remainder into `buf` (if any)
+    if (remainder) {
+        memcpy(buf + (tmps_per_buf * tmp_len), tmp, remainder);
+    }
+
+    LOG_DEBUG (
+        "Optimized %u inserts of %zu bytes into %zu inserts of %zu bytes",
+        count, str_len,
+        tmps_per_buf, tmp_len
+    );
+
+insert:
+    insert_text(e->view, buf, bufsize, move_after);
+    free(buf);
+    return true;
+}
+
+static bool cmd_repeat(EditorState *e, const CommandArgs *a)
+{
+    unsigned int count;
+    if (unlikely(!str_to_uint(a->args[0], &count))) {
+        return error_msg("Not a valid repeat count: %s", a->args[0]);
+    }
+    if (unlikely(count == 0)) {
+        return true;
+    }
+
+    const Command *cmd = find_normal_command(a->args[1]);
+    if (unlikely(!cmd)) {
+        return error_msg("No such command: %s", a->args[1]);
+    }
+
+    CommandArgs a2 = cmdargs_new(a->args + 2);
+    current_command = cmd;
+    bool ok = parse_args(cmd, &a2);
+    current_command = NULL;
+    if (unlikely(!ok)) {
+        return false;
+    }
+
+    CommandFunc fn = cmd->cmd;
+    if (fn == (CommandFunc)cmd_insert && !has_flag(&a2, 'k')) {
+        // Use optimized implementation for repeated "insert"
+        return repeat_insert(e, a2.args[0], count, has_flag(&a2, 'm'));
     }
 
     while (count--) {
-        cmd->cmd(&a2);
+        fn(e, &a2);
     }
+    // TODO: return false if fn() fails?
+    return true;
 }
 
-static void cmd_replace(const CommandArgs *a)
+static bool cmd_replace(EditorState *e, const CommandArgs *a)
 {
-    unsigned int flags = 0;
-    for (const char *pf = a->flags; *pf; pf++) {
-        switch (*pf) {
-        case 'b':
-            flags |= REPLACE_BASIC;
-            break;
-        case 'c':
-            flags |= REPLACE_CONFIRM;
-            break;
-        case 'g':
-            flags |= REPLACE_GLOBAL;
-            break;
-        case 'i':
-            flags |= REPLACE_IGNORE_CASE;
-            break;
-        }
-    }
-    reg_replace(a->args[0], a->args[1], flags);
-}
-
-static void cmd_right(const CommandArgs *a)
-{
-    handle_select_chars_flag(a);
-    move_cursor_right();
-}
-
-static void cmd_run(const CommandArgs *a)
-{
-    SpawnContext ctx = {
-        .argv = a->args,
-        .flags = SPAWN_DEFAULT
+    static const FlagMapping map[] = {
+        {'b', REPLACE_BASIC},
+        {'c', REPLACE_CONFIRM},
+        {'g', REPLACE_GLOBAL},
+        {'i', REPLACE_IGNORE_CASE},
     };
-    for (const char *pf = a->flags; *pf; pf++) {
-        switch (*pf) {
-        case 'p':
-            ctx.flags |= SPAWN_PROMPT;
-            break;
-        case 's':
-            ctx.flags |= SPAWN_QUIET;
-            break;
-        }
-    }
-    spawn(&ctx);
+
+    ReplaceFlags flags = cmdargs_convert_flags(a, map, ARRAYLEN(map));
+    return reg_replace(e->view, a->args[0], a->args[1], flags);
 }
 
-static bool stat_changed(const Buffer *b, const struct stat *st)
+static bool cmd_right(EditorState *e, const CommandArgs *a)
+{
+    handle_select_chars_flag(e->view, a);
+    move_cursor_right(e->view);
+    return true;
+}
+
+static bool stat_changed(const FileInfo *file, const struct stat *st)
 {
     // Don't compare st_mode because we allow chmod 755 etc.
-    return st->st_mtime != b->file.mtime
-        || st->st_dev != b->file.dev
-        || st->st_ino != b->file.ino;
+    return !timespecs_equal(get_stat_mtime(st), &file->mtime)
+        || st->st_dev != file->dev
+        || st->st_ino != file->ino
+        || st->st_size != file->size;
 }
 
-static void cmd_save(const CommandArgs *a)
+static bool save_unmodified_buffer(Buffer *buffer, const char *filename)
 {
+    SaveUnmodifiedType type = buffer->options.save_unmodified;
+    if (type == SAVE_NONE) {
+        LOG_INFO("buffer unchanged; leaving file untouched");
+        return true;
+    }
+
+    BUG_ON(type != SAVE_TOUCH);
+    struct timespec times[2];
+    if (unlikely(clock_gettime(CLOCK_REALTIME, &times[0]) != 0)) {
+        LOG_ERRNO("aborting partial save; clock_gettime() failed");
+        return false;
+    }
+
+    times[1] = times[0];
+    if (unlikely(utimensat(AT_FDCWD, filename, times, 0) != 0)) {
+        LOG_ERRNO("aborting partial save; utimensat() failed");
+        return false;
+    }
+
+    buffer->file.mtime = times[0];
+    LOG_INFO("buffer unchanged; mtime/atime updated");
+    return true;
+}
+
+static bool cmd_save(EditorState *e, const CommandArgs *a)
+{
+    Buffer *buffer = e->buffer;
     if (unlikely(buffer->stdout_buffer)) {
         const char *f = buffer_filename(buffer);
         info_msg("%s can't be saved; it will be piped to stdout on exit", f);
-        return;
+        return true;
     }
 
     bool dos_nl = has_flag(a, 'd');
     bool unix_nl = has_flag(a, 'u');
     bool crlf = buffer->crlf_newlines;
     if (unlikely(dos_nl && unix_nl)) {
-        error_msg("flags -d and -u can't be used together");
-        return;
+        return error_msg("flags -d and -u can't be used together");
     } else if (dos_nl) {
         crlf = true;
     } else if (unix_nl) {
@@ -1343,7 +1582,7 @@ static void cmd_save(const CommandArgs *a)
 
     const char *requested_encoding = NULL;
     char **args = a->args;
-    if (a->nr_flag_args > 0) {
+    if (unlikely(a->nr_flag_args > 0)) {
         BUG_ON(!has_flag(a, 'e'));
         requested_encoding = args[a->nr_flag_args - 1];
         args += a->nr_flag_args;
@@ -1352,12 +1591,12 @@ static void cmd_save(const CommandArgs *a)
     Encoding encoding = buffer->encoding;
     bool bom = buffer->bom;
     if (requested_encoding) {
-        EncodingType e = lookup_encoding(requested_encoding);
-        if (e == UTF8) {
+        EncodingType et = lookup_encoding(requested_encoding);
+        if (et == UTF8) {
             if (encoding.type != UTF8) {
                 // Encoding changed
-                encoding = encoding_from_type(e);
-                bom = editor.options.utf8_bom;
+                encoding = encoding_from_type(et);
+                bom = e->options.utf8_bom;
             }
         } else if (conversion_supported_by_iconv("UTF-8", requested_encoding)) {
             encoding = encoding_from_name(requested_encoding);
@@ -1367,23 +1606,20 @@ static void cmd_save(const CommandArgs *a)
             }
         } else {
             if (errno == EINVAL) {
-                error_msg("Unsupported encoding '%s'", requested_encoding);
-            } else {
-                error_msg (
-                    "iconv conversion to '%s' failed: %s",
-                    requested_encoding,
-                    strerror(errno)
-                );
+                return error_msg("Unsupported encoding '%s'", requested_encoding);
             }
-            return;
+            return error_msg (
+                "iconv conversion to '%s' failed: %s",
+                requested_encoding,
+                strerror(errno)
+            );
         }
     }
 
     bool b = has_flag(a, 'b');
     bool B = has_flag(a, 'B');
     if (unlikely(b && B)) {
-        error_msg("flags -b and -B can't be used together");
-        return;
+        return error_msg("flags -b and -B can't be used together");
     } else if (b) {
         bom = true;
     } else if (B) {
@@ -1395,13 +1631,11 @@ static void cmd_save(const CommandArgs *a)
     bool new_locked = false;
     if (a->nr_args > 0) {
         if (args[0][0] == '\0') {
-            error_msg("Empty filename not allowed");
-            goto error;
+            return error_msg("Empty filename not allowed");
         }
         char *tmp = path_absolute(args[0]);
         if (!tmp) {
-            error_msg("Failed to make absolute path: %s", strerror(errno));
-            goto error;
+            return error_msg_errno("Failed to make absolute path");
         }
         if (absolute && streq(tmp, absolute)) {
             free(tmp);
@@ -1410,64 +1644,36 @@ static void cmd_save(const CommandArgs *a)
         }
     } else {
         if (!absolute) {
-            bool prompt = has_flag(a, 'p');
-            if (prompt) {
-                set_input_mode(INPUT_COMMAND);
-                cmdline_set_text(&editor.cmdline, "save ");
-                // This branch is not really an error, but we still return via
-                // the "error" label because we need to clean up memory and
-                // that's all it's used for currently.
-                goto error;
-            } else {
-                error_msg("No filename.");
-                goto error;
+            if (!has_flag(a, 'p')) {
+                return error_msg("No filename");
             }
+            set_input_mode(e, INPUT_COMMAND);
+            cmdline_set_text(&e->cmdline, "save ");
+            return true;
         }
         if (buffer->readonly && !force) {
-            error_msg("Use -f to force saving read-only file.");
-            goto error;
+            return error_msg("Use -f to force saving read-only file");
         }
     }
 
     mode_t old_mode = buffer->file.mode;
+    bool hardlinks = false;
     struct stat st;
-    if (stat(absolute, &st)) {
+    bool stat_ok = !stat(absolute, &st);
+    if (!stat_ok) {
         if (errno != ENOENT) {
             error_msg("stat failed for %s: %s", absolute, strerror(errno));
             goto error;
-        }
-        if (editor.options.lock_files) {
-            if (absolute == buffer->abs_filename) {
-                if (!buffer->locked) {
-                    if (!lock_file(absolute)) {
-                        if (!force) {
-                            error_msg("Can't lock file %s", absolute);
-                            goto error;
-                        }
-                    } else {
-                        buffer->locked = true;
-                    }
-                }
-            } else {
-                if (!lock_file(absolute)) {
-                    if (!force) {
-                        error_msg("Can't lock file %s", absolute);
-                        goto error;
-                    }
-                } else {
-                    new_locked = true;
-                }
-            }
         }
     } else {
         if (
             absolute == buffer->abs_filename
             && !force
-            && stat_changed(buffer, &st)
+            && stat_changed(&buffer->file, &st)
         ) {
             error_msg (
-                "File has been modified by another process."
-                " Use 'save -f' to force overwrite."
+                "File has been modified by another process; "
+                "use 'save -f' to force overwrite"
             );
             goto error;
         }
@@ -1475,39 +1681,60 @@ static void cmd_save(const CommandArgs *a)
             error_msg("Will not overwrite directory %s", absolute);
             goto error;
         }
-        if (editor.options.lock_files) {
-            if (absolute == buffer->abs_filename) {
-                if (!buffer->locked) {
-                    if (!lock_file(absolute)) {
-                        if (!force) {
-                            error_msg("Can't lock file %s", absolute);
-                            goto error;
-                        }
-                    } else {
-                        buffer->locked = true;
-                    }
-                }
-            } else {
+        hardlinks = (st.st_nlink >= 2);
+    }
+
+    if (e->options.lock_files) {
+        if (absolute == buffer->abs_filename) {
+            if (!buffer->locked) {
                 if (!lock_file(absolute)) {
                     if (!force) {
                         error_msg("Can't lock file %s", absolute);
                         goto error;
                     }
                 } else {
-                    new_locked = true;
+                    buffer->locked = true;
                 }
             }
+        } else {
+            if (!lock_file(absolute)) {
+                if (!force) {
+                    error_msg("Can't lock file %s", absolute);
+                    goto error;
+                }
+            } else {
+                new_locked = true;
+            }
         }
+    }
+
+    if (stat_ok) {
         if (absolute != buffer->abs_filename && !force) {
-            error_msg("Use -f to overwrite %s.", absolute);
+            error_msg("Use -f to overwrite %s", absolute);
             goto error;
         }
-
         // Allow chmod 755 etc.
         buffer->file.mode = st.st_mode;
     }
 
-    if (!save_buffer(buffer, absolute, &encoding, crlf, bom)) {
+    if (
+        stat_ok
+        && buffer->options.save_unmodified != SAVE_FULL
+        && !stat_changed(&buffer->file, &st)
+        && st.st_uid == buffer->file.uid
+        && st.st_gid == buffer->file.gid
+        && !buffer_modified(buffer)
+        && absolute == buffer->abs_filename
+        && encoding.name == buffer->encoding.name
+        && crlf == buffer->crlf_newlines
+        && bom == buffer->bom
+        && save_unmodified_buffer(buffer, absolute)
+    ) {
+        BUG_ON(new_locked);
+        return true;
+    }
+
+    if (!save_buffer(buffer, absolute, &encoding, crlf, bom, hardlinks)) {
         goto error;
     }
 
@@ -1529,20 +1756,22 @@ static void cmd_save(const CommandArgs *a)
 
         free(buffer->abs_filename);
         buffer->abs_filename = absolute;
-        update_short_filename(buffer);
+        update_short_filename(buffer, &e->home_dir);
 
         // Filename change is not detected (only buffer_modified() change)
         mark_buffer_tabbars_changed(buffer);
     }
     if (!old_mode && streq(buffer->options.filetype, "none")) {
         // New file and most likely user has not changed the filetype
-        if (buffer_detect_filetype(buffer)) {
-            set_file_options(buffer);
+        if (buffer_detect_filetype(buffer, &e->filetypes)) {
+            set_file_options(e, buffer);
             set_editorconfig_options(buffer);
-            buffer_update_syntax(buffer);
+            buffer_update_syntax(e, buffer);
         }
     }
-    return;
+
+    return true;
+
 error:
     if (new_locked) {
         unlock_file(absolute);
@@ -1550,155 +1779,168 @@ error:
     if (absolute != buffer->abs_filename) {
         free(absolute);
     }
+    return false;
 }
 
-static void cmd_scroll_down(const CommandArgs* UNUSED_ARG(a))
+static bool cmd_scroll_down(EditorState *e, const CommandArgs *a)
 {
+    BUG_ON(a->nr_args);
+    View *view = e->view;
     view->vy++;
     if (view->cy < view->vy) {
-        move_down(1);
+        move_down(view, 1);
     }
+    return true;
 }
 
-static void cmd_scroll_pgdown(const CommandArgs* UNUSED_ARG(a))
+static bool cmd_scroll_pgdown(EditorState *e, const CommandArgs *a)
 {
-    long max = buffer->nl - window->edit_h + 1;
+    BUG_ON(a->nr_args);
+    Window *window = e->window;
+    View *view = e->view;
+    long max = view->buffer->nl - window->edit_h + 1;
     if (view->vy < max && max > 0) {
         long count = window->edit_h - 1;
         if (view->vy + count > max) {
             count = max - view->vy;
         }
         view->vy += count;
-        move_down(count);
-    } else if (view->cy < buffer->nl) {
-        move_down(buffer->nl - view->cy);
+        move_down(view, count);
+    } else if (view->cy < view->buffer->nl) {
+        move_down(view, view->buffer->nl - view->cy);
     }
+    return true;
 }
 
-static void cmd_scroll_pgup(const CommandArgs* UNUSED_ARG(a))
+static bool cmd_scroll_pgup(EditorState *e, const CommandArgs *a)
 {
+    BUG_ON(a->nr_args);
+    Window *window = e->window;
+    View *view = e->view;
     if (view->vy > 0) {
-        long count = window->edit_h - 1;
-        if (count > view->vy) {
-            count = view->vy;
-        }
+        long count = MIN(window->edit_h - 1, view->vy);
         view->vy -= count;
-        move_up(count);
+        move_up(view, count);
     } else if (view->cy > 0) {
-        move_up(view->cy);
+        move_up(view, view->cy);
     }
+    return true;
 }
 
-static void cmd_scroll_up(const CommandArgs* UNUSED_ARG(a))
+static bool cmd_scroll_up(EditorState *e, const CommandArgs *a)
 {
+    BUG_ON(a->nr_args);
+    Window *window = e->window;
+    View *view = e->view;
     if (view->vy) {
         view->vy--;
     }
     if (view->vy + window->edit_h <= view->cy) {
-        move_up(1);
+        move_up(view, 1);
     }
+    return true;
 }
 
-static void cmd_search(const CommandArgs *a)
+static uint_least64_t get_flagset_npw(void)
 {
-    char *pattern = a->args[0];
-    bool history = !has_flag(a, 'H');
-    bool next = has_flag(a, 'n');
-    bool prev = has_flag(a, 'p');
-    bool w = has_flag(a, 'w');
-    SearchDirection dir = has_flag(a, 'r') ? SEARCH_BWD : SEARCH_FWD;
+    uint_least64_t npw = 0;
+    npw |= cmdargs_flagset_value('n');
+    npw |= cmdargs_flagset_value('p');
+    npw |= cmdargs_flagset_value('w');
+    return npw;
+}
 
-    if (unlikely(w && pattern)) {
-        error_msg("flag -w can't be used with search pattern.");
-        return;
-    }
-    if (unlikely(next && prev)) {
-        error_msg("flags -n and -p can't be used together");
-        return;
+static bool cmd_search(EditorState *e, const CommandArgs *a)
+{
+    const char *pattern = a->args[0];
+    if (u64_popcount(a->flag_set & get_flagset_npw()) + !!pattern >= 2) {
+        return error_msg("flags [-n|-p|-w] and [pattern] argument are mutually exclusive");
     }
 
+    View *view = e->view;
     char pattbuf[4096];
-    if (w) {
+    bool use_word_under_cursor = has_flag(a, 'w');
+
+    if (use_word_under_cursor) {
         StringView word = view_get_word_under_cursor(view);
         if (word.length == 0) {
             // Error message would not be very useful here
-            return;
+            return false;
         }
-        const size_t bmax = sizeof(regexp_word_boundary.start);
-        static_assert_compatible_types(regexp_word_boundary.start, char[8]);
+        const RegexpWordBoundaryTokens *rwbt = &e->regexp_word_tokens;
+        const size_t bmax = sizeof(rwbt->start);
+        static_assert_compatible_types(rwbt->start, char[8]);
         if (unlikely(word.length >= sizeof(pattbuf) - (bmax * 2))) {
-            error_msg("word under cursor too long");
-            return;
+            return error_msg("word under cursor too long");
         }
-        char *ptr = stpncpy(pattbuf, regexp_word_boundary.start, bmax);
+        char *ptr = stpncpy(pattbuf, rwbt->start, bmax);
         memcpy(ptr, word.data, word.length);
-        memcpy(ptr + word.length, regexp_word_boundary.end, bmax);
+        memcpy(ptr + word.length, rwbt->end, bmax);
         pattern = pattbuf;
     }
 
-    do_selection(SELECT_NONE);
+    SearchState *search = &e->search;
+    SearchCaseSensitivity cs = e->options.case_sensitive_search;
+    unselect(view);
 
-    if (pattern) {
-        set_search_direction(dir);
-        search_set_regexp(pattern);
-        if (w) {
-            search_next_word();
-        } else {
-            search_next();
-        }
-        if (history) {
-            history_add(&editor.search_history, pattern);
-        }
-    } else if (next) {
-        search_next();
-    } else if (prev) {
-        search_prev();
+    if (has_flag(a, 'n')) {
+        return search_next(view, search, cs);
+    }
+    if (has_flag(a, 'p')) {
+        return search_prev(view, search, cs);
+    }
+
+    search->reverse = has_flag(a, 'r');
+    if (!pattern) {
+        set_input_mode(e, INPUT_SEARCH);
+        return true;
+    }
+
+    bool found;
+    search_set_regexp(search, pattern);
+    if (use_word_under_cursor) {
+        found = search_next_word(view, search, cs);
     } else {
-        set_input_mode(INPUT_SEARCH);
-        set_search_direction(dir);
+        found = search_next(view, search, cs);
     }
+
+    if (!has_flag(a, 'H')) {
+        history_add(&e->search_history, pattern);
+    }
+
+    return found;
 }
 
-static void cmd_select(const CommandArgs *a)
+static bool cmd_select_block(EditorState *e, const CommandArgs *a)
 {
-    SelectionType sel = has_flag(a, 'l') ? SELECT_LINES : SELECT_CHARS;
-    bool block = has_flag(a, 'b');
-    bool keep = has_flag(a, 'k');
-    view->next_movement_cancels_selection = false;
+    BUG_ON(a->nr_args);
+    select_block(e->view);
 
-    if (block) {
-        select_block();
-        return;
-    }
-
-    if (view->selection) {
-        if (!keep && view->selection == sel) {
-            unselect();
-            return;
-        }
-        view->selection = sel;
-        mark_all_lines_changed(buffer);
-        return;
-    }
-
-    view->sel_so = block_iter_get_offset(&view->cursor);
-    view->sel_eo = UINT_MAX;
-    view->selection = sel;
-
-    // Need to mark current line changed because cursor might
-    // move up or down before screen is updated
-    view_update_cursor_y(view);
-    buffer_mark_lines_changed(buffer, view->cy, view->cy);
+    // TODO: return false if select_block() doesn't select anything?
+    return true;
 }
 
-static void cmd_set(const CommandArgs *a)
+static bool cmd_select(EditorState *e, const CommandArgs *a)
+{
+    View *view = e->view;
+    SelectionType sel = has_flag(a, 'l') ? SELECT_LINES : SELECT_CHARS;
+    bool keep = has_flag(a, 'k');
+    if (!keep && view->selection && view->selection == sel) {
+        sel = SELECT_NONE;
+    }
+
+    view->select_mode = sel;
+    do_selection(view, sel);
+    return true;
+}
+
+static bool cmd_set(EditorState *e, const CommandArgs *a)
 {
     bool global = has_flag(a, 'g');
     bool local = has_flag(a, 'l');
-    if (!buffer) {
-        if (local) {
-            error_msg("Flag -l makes no sense in config file.");
-            return;
+    if (!e->buffer) {
+        if (unlikely(local)) {
+            return error_msg("Flag -l makes no sense in config file");
         }
         global = true;
     }
@@ -1706,24 +1948,27 @@ static void cmd_set(const CommandArgs *a)
     char **args = a->args;
     size_t count = a->nr_args;
     if (count == 1) {
-        set_bool_option(args[0], local, global);
-        return;
-    } else if (count % 2 != 0) {
-        error_msg("One or even number of arguments expected.");
-        return;
+        return set_bool_option(e, args[0], local, global);
+    }
+    if (count & 1) {
+        return error_msg("One or even number of arguments expected");
     }
 
+    size_t errors = 0;
     for (size_t i = 0; i < count; i += 2) {
-        set_option(args[i], args[i + 1], local, global);
+        if (!set_option(e, args[i], args[i + 1], local, global)) {
+            errors++;
+        }
     }
+
+    return !errors;
 }
 
-static void cmd_setenv(const CommandArgs *a)
+static bool cmd_setenv(EditorState* UNUSED_ARG(e), const CommandArgs *a)
 {
     const char *name = a->args[0];
     if (unlikely(streq(name, "DTE_VERSION"))) {
-        error_msg("$DTE_VERSION cannot be changed");
-        return;
+        return error_msg("$DTE_VERSION cannot be changed");
     }
 
     const size_t nr_args = a->nr_args;
@@ -1735,142 +1980,151 @@ static void cmd_setenv(const CommandArgs *a)
         res = unsetenv(name);
     }
 
-    if (unlikely(res != 0)) {
-        if (errno == EINVAL) {
-            error_msg("Invalid environment variable name '%s'", name);
-        } else {
-            perror_msg(nr_args == 2 ? "setenv" : "unsetenv");
-        }
+    if (likely(res == 0)) {
+        return true;
     }
+
+    if (errno == EINVAL) {
+        return error_msg("Invalid environment variable name '%s'", name);
+    }
+
+    return error_msg_errno(nr_args == 2 ? "setenv" : "unsetenv");
 }
 
-static void cmd_shift(const CommandArgs *a)
+static bool cmd_shift(EditorState *e, const CommandArgs *a)
 {
     const char *arg = a->args[0];
     int count;
     if (!str_to_int(arg, &count)) {
-        error_msg("Invalid number: %s", arg);
-        return;
+        return error_msg("Invalid number: %s", arg);
     }
     if (count == 0) {
-        error_msg("Count must be non-zero.");
-        return;
+        return error_msg("Count must be non-zero");
     }
-    shift_lines(count);
+    shift_lines(e->view, count);
+    return true;
 }
 
-static void cmd_show(const CommandArgs *a)
+static bool cmd_show(EditorState *e, const CommandArgs *a)
 {
-    BUG_ON(a->nr_args == 1 && a->args[1]);
-    bool cflag = a->nr_flags != 0;
-    if (cflag && a->nr_args < 2) {
-        error_msg("\"show -c\" requires 2 arguments");
-        return;
+    bool write_to_cmdline = has_flag(a, 'c');
+    if (write_to_cmdline && a->nr_args < 2) {
+        return error_msg("\"show -c\" requires 2 arguments");
     }
-    show(a->args[0], a->args[1], cflag);
+    return show(e, a->args[0], a->args[1], write_to_cmdline);
 }
 
-static void cmd_suspend(const CommandArgs* UNUSED_ARG(a))
+static bool cmd_suspend(EditorState *e, const CommandArgs *a)
 {
-    suspend();
+    BUG_ON(a->nr_args);
+    if (e->status == EDITOR_INITIALIZING) {
+        LOG_WARNING("suspend request ignored");
+        return false;
+    }
+
+    if (e->session_leader) {
+        return error_msg("Session leader can't suspend");
+    }
+
+    ui_end(e);
+    bool suspended = !kill(0, SIGSTOP);
+    if (!suspended) {
+        error_msg_errno("kill");
+    }
+
+    term_raw();
+    ui_start(e);
+    return suspended;
 }
 
-static void cmd_tag(const CommandArgs *a)
+static bool cmd_tag(EditorState *e, const CommandArgs *a)
 {
     if (has_flag(a, 'r')) {
-        pop_file_location();
-        return;
+        bookmark_pop(e->window, &e->bookmarks);
+        return true;
     }
 
-    clear_messages();
-    TagFile *tf = load_tag_file();
-    if (!tf) {
-        error_msg("No tag file.");
-        return;
-    }
-
-    const char *name = a->args[0];
-    char *word = NULL;
-    if (!name) {
-        StringView w = view_get_word_under_cursor(view);
-        if (w.length == 0) {
-            return;
-        }
-        word = xstrcut(w.data, w.length);
-        name = word;
-    }
-
-    PointerArray tags = PTR_ARRAY_INIT;
-    // Filename helps to find correct tags
-    tag_file_find_tags(tf, buffer->abs_filename, name, &tags);
-    if (tags.count == 0) {
-        error_msg("Tag '%s' not found", name);
+    StringView name;
+    if (a->args[0]) {
+        name = strview_from_cstring(a->args[0]);
     } else {
-        for (size_t i = 0, n = tags.count; i < n; i++) {
-            Tag *t = tags.ptrs[i];
-            char buf[512];
-            size_t len = xsnprintf(buf, sizeof(buf), "Tag %s", name);
-            Message *m = new_message(buf, len);
-            m->loc = xnew0(FileLocation, 1);
-            m->loc->filename = tag_file_get_tag_filename(tf, t);
-            if (t->pattern) {
-                m->loc->pattern = t->pattern;
-                t->pattern = NULL;
-            } else {
-                m->loc->line = t->line;
-            }
-            add_message(m);
+        name = view_get_word_under_cursor(e->view);
+        if (name.length == 0) {
+            return false;
         }
-        free_tags(&tags);
-        activate_current_message_save();
     }
-    free(word);
+
+    const char *filename = e->buffer->abs_filename;
+    size_t ntags = tag_lookup(&e->tagfile, &name, filename, &e->messages);
+    activate_current_message_save(e);
+    return (ntags > 0);
 }
 
-static void cmd_title(const CommandArgs *a)
+static bool cmd_title(EditorState *e, const CommandArgs *a)
 {
+    Buffer *buffer = e->buffer;
     if (buffer->abs_filename) {
-        error_msg("saved buffers can't be retitled");
-        return;
+        return error_msg("saved buffers can't be retitled");
     }
     set_display_filename(buffer, xstrdup(a->args[0]));
     mark_buffer_tabbars_changed(buffer);
+    return true;
 }
 
-static void cmd_toggle(const CommandArgs *a)
+static bool cmd_toggle(EditorState *e, const CommandArgs *a)
 {
     bool global = has_flag(a, 'g');
     bool verbose = has_flag(a, 'v');
     const char *option_name = a->args[0];
     size_t nr_values = a->nr_args - 1;
-    if (nr_values) {
-        char **values = a->args + 1;
-        toggle_option_values(option_name, global, verbose, values, nr_values);
-    } else {
-        toggle_option(option_name, global, verbose);
+    if (nr_values == 0) {
+        return toggle_option(e, option_name, global, verbose);
     }
+
+    char **values = a->args + 1;
+    return toggle_option_values(e, option_name, global, verbose, values, nr_values);
 }
 
-static void cmd_undo(const CommandArgs* UNUSED_ARG(a))
+static bool cmd_undo(EditorState *e, const CommandArgs *a)
 {
-    if (undo()) {
-        unselect();
+    View *view = e->view;
+    bool move_only = has_flag(a, 'm');
+    if (move_only) {
+        const Change *change = view->buffer->cur_change;
+        if (!change->next) {
+            // If there's only 1 change, there's nothing meaningful to move to
+            return false;
+        }
+        block_iter_goto_offset(&view->cursor, change->offset);
+        view_reset_preferred_x(view);
+        return true;
     }
+
+    if (!undo(view)) {
+        return false;
+    }
+
+    unselect(view);
+    return true;
 }
 
-static void cmd_unselect(const CommandArgs* UNUSED_ARG(a))
+static bool cmd_unselect(EditorState *e, const CommandArgs *a)
 {
-    unselect();
+    BUG_ON(a->nr_args);
+    unselect(e->view);
+    return true;
 }
 
-static void cmd_up(const CommandArgs *a)
+static bool cmd_up(EditorState *e, const CommandArgs *a)
 {
-    handle_select_chars_or_lines_flags(a);
-    move_up(1);
+    handle_select_chars_or_lines_flags(e->view, a);
+    move_up(e->view, 1);
+    return true;
 }
 
-static void cmd_view(const CommandArgs *a)
+static bool cmd_view(EditorState *e, const CommandArgs *a)
 {
+    Window *window = e->window;
     BUG_ON(window->views.count == 0);
     const char *arg = a->args[0];
     size_t idx;
@@ -1878,119 +2132,130 @@ static void cmd_view(const CommandArgs *a)
         idx = window->views.count - 1;
     } else {
         if (!str_to_size(arg, &idx) || idx == 0) {
-            error_msg("Invalid view index: %s", arg);
-            return;
+            return error_msg("Invalid view index: %s", arg);
         }
-        idx--;
-        if (idx > window->views.count - 1) {
-            idx = window->views.count - 1;
-        }
+        idx = MIN(idx, window->views.count) - 1;
     }
     set_view(window->views.ptrs[idx]);
+    return true;
 }
 
-static void cmd_wclose(const CommandArgs *a)
+static bool cmd_wclose(EditorState *e, const CommandArgs *a)
 {
+    View *view = window_find_unclosable_view(e->window);
     bool force = has_flag(a, 'f');
+    if (!view || force) {
+        goto close;
+    }
+
     bool prompt = has_flag(a, 'p');
-    View *v = window_find_unclosable_view(window);
-    if (v && !force) {
-        set_view(v);
-        if (prompt) {
-            if (dialog_prompt("Close window without saving? [y/N]", "ny") != 'y') {
-                return;
-            }
-        } else {
-            error_msg (
-                "Save modified files or run 'wclose -f' to close "
-                "window without saving."
-            );
-            return;
-        }
+    set_view(view);
+    if (!prompt) {
+        return error_msg (
+            "Save modified files or run 'wclose -f' to close "
+            "window without saving"
+        );
     }
-    window_close_current();
-}
 
-static void cmd_wflip(const CommandArgs* UNUSED_ARG(a))
-{
-    Frame *f = window->frame;
-    if (!f->parent) {
-        return;
+    if (dialog_prompt(e, "Close window without saving? [y/N]", "ny") != 'y') {
+        return false;
     }
-    f->parent->vertical ^= 1;
-    mark_everything_changed();
+
+close:
+    window_close(e->window);
+    return true;
 }
 
-static void cmd_wnext(const CommandArgs* UNUSED_ARG(a))
+static bool cmd_wflip(EditorState *e, const CommandArgs *a)
 {
-    window = next_window(window);
-    set_view(window->view);
-    mark_everything_changed();
-    debug_frames();
+    BUG_ON(a->nr_args);
+    Frame *frame = e->window->frame;
+    if (!frame->parent) {
+        return false;
+    }
+    frame->parent->vertical ^= 1;
+    mark_everything_changed(e);
+    return true;
 }
 
-static void cmd_word_bwd(const CommandArgs *a)
+static bool cmd_wnext(EditorState *e, const CommandArgs *a)
 {
-    handle_select_chars_flag(a);
+    BUG_ON(a->nr_args);
+    e->window = next_window(e->window);
+    set_view(e->window->view);
+    mark_everything_changed(e);
+    debug_frame(e->root_frame);
+    return true;
+}
+
+static bool cmd_word_bwd(EditorState *e, const CommandArgs *a)
+{
+    handle_select_chars_flag(e->view, a);
     bool skip_non_word = has_flag(a, 's');
-    word_bwd(&view->cursor, skip_non_word);
-    view_reset_preferred_x(view);
+    word_bwd(&e->view->cursor, skip_non_word);
+    view_reset_preferred_x(e->view);
+    return true;
 }
 
-static void cmd_word_fwd(const CommandArgs *a)
+static bool cmd_word_fwd(EditorState *e, const CommandArgs *a)
 {
-    handle_select_chars_flag(a);
+    handle_select_chars_flag(e->view, a);
     bool skip_non_word = has_flag(a, 's');
-    word_fwd(&view->cursor, skip_non_word);
-    view_reset_preferred_x(view);
+    word_fwd(&e->view->cursor, skip_non_word);
+    view_reset_preferred_x(e->view);
+    return true;
 }
 
-static void cmd_wprev(const CommandArgs* UNUSED_ARG(a))
+static bool cmd_wprev(EditorState *e, const CommandArgs *a)
 {
-    window = prev_window(window);
-    set_view(window->view);
-    mark_everything_changed();
-    debug_frames();
+    BUG_ON(a->nr_args);
+    e->window = prev_window(e->window);
+    set_view(e->window->view);
+    mark_everything_changed(e);
+    debug_frame(e->root_frame);
+    return true;
 }
 
-static void cmd_wrap_paragraph(const CommandArgs *a)
+static bool cmd_wrap_paragraph(EditorState *e, const CommandArgs *a)
 {
     const char *arg = a->args[0];
-    size_t width = (size_t)buffer->options.text_width;
+    unsigned int width = e->buffer->options.text_width;
     if (arg) {
-        if (!str_to_size(arg, &width) || width == 0 || width > 1000) {
-            error_msg("Invalid paragraph width: %s", arg);
-            return;
+        if (!str_to_uint(arg, &width)) {
+            return error_msg("invalid paragraph width: %s", arg);
+        }
+        unsigned int max = TEXT_WIDTH_MAX;
+        if (width < 1 || width > max) {
+            return error_msg("width must be between 1 and %u", max);
         }
     }
-    format_paragraph(width);
+    format_paragraph(e->view, width);
+    return true;
 }
 
-static void cmd_wresize(const CommandArgs *a)
+static bool cmd_wresize(EditorState *e, const CommandArgs *a)
 {
+    Window *window = e->window;
     if (!window->frame->parent) {
         // Only window
-        return;
+        return false;
     }
 
     ResizeDirection dir = RESIZE_DIRECTION_AUTO;
-    if (a->nr_flags) {
-        switch (a->flags[a->nr_flags - 1]) {
-        case 'h':
-            dir = RESIZE_DIRECTION_HORIZONTAL;
-            break;
-        case 'v':
-            dir = RESIZE_DIRECTION_VERTICAL;
-            break;
-        }
+    switch (last_flag(a)) {
+    case 'h':
+        dir = RESIZE_DIRECTION_HORIZONTAL;
+        break;
+    case 'v':
+        dir = RESIZE_DIRECTION_VERTICAL;
+        break;
     }
 
     const char *arg = a->args[0];
     if (arg) {
         int n;
         if (!str_to_int(arg, &n)) {
-            error_msg("Invalid resize value: %s", arg);
-            return;
+            return error_msg("Invalid resize value: %s", arg);
         }
         if (arg[0] == '+' || arg[0] == '-') {
             add_to_frame_size(window->frame, dir, n);
@@ -2000,11 +2265,14 @@ static void cmd_wresize(const CommandArgs *a)
     } else {
         equalize_frame_sizes(window->frame->parent);
     }
-    mark_everything_changed();
-    debug_frames();
+
+    mark_everything_changed(e);
+    debug_frame(e->root_frame);
+    // TODO: return false if resize failed?
+    return true;
 }
 
-static void cmd_wsplit(const CommandArgs *a)
+static bool cmd_wsplit(EditorState *e, const CommandArgs *a)
 {
     bool before = has_flag(a, 'b');
     bool use_glob = has_flag(a, 'g') && a->nr_args > 0;
@@ -2013,113 +2281,116 @@ static void cmd_wsplit(const CommandArgs *a)
     bool temporary = has_flag(a, 't');
     bool empty = temporary || has_flag(a, 'n');
 
-    if (empty && a->nr_args > 0) {
-        error_msg("flags -n and -t can't be used with filename arguments");
-        return;
+    if (unlikely(empty && a->nr_args > 0)) {
+        return error_msg("flags -n and -t can't be used with filename arguments");
     }
 
     char **paths = a->args;
     glob_t globbuf;
     if (use_glob) {
         if (!xglob(a->args, &globbuf)) {
-            return;
+            return false;
         }
         paths = globbuf.gl_pathv;
     }
 
-    Frame *f;
+    Frame *frame;
     if (root) {
-        f = split_root(vertical, before);
+        frame = split_root_frame(e, vertical, before);
     } else {
-        f = split_frame(window, vertical, before);
+        frame = split_frame(e->window, vertical, before);
     }
 
-    View *save = view;
-    window = f->window;
-    view = NULL;
-    buffer = NULL;
-    mark_everything_changed();
+    View *save = e->view;
+    e->window = frame->window;
+    e->view = NULL;
+    e->buffer = NULL;
+    mark_everything_changed(e);
 
+    View *view;
     if (empty) {
-        window_open_new_file(window);
-        buffer->temporary = temporary;
+        view = window_open_new_file(e->window);
+        view->buffer->temporary = temporary;
     } else if (paths[0]) {
-        window_open_files(window, paths, NULL);
+        view = window_open_files(e->window, paths, NULL);
     } else {
-        View *new = window_add_buffer(window, save->buffer);
-        new->cursor = save->cursor;
-        set_view(new);
+        view = window_add_buffer(e->window, save->buffer);
+        view->cursor = save->cursor;
+        set_view(view);
     }
 
     if (use_glob) {
         globfree(&globbuf);
     }
 
-    if (window->views.count == 0) {
+    if (!view) {
         // Open failed, remove new window
-        remove_frame(window->frame);
-        view = save;
-        buffer = view->buffer;
-        window = view->window;
+        remove_frame(e, e->window->frame);
+        e->view = save;
+        e->buffer = save->buffer;
+        e->window = save->window;
     }
 
-    debug_frames();
+    debug_frame(e->root_frame);
+    return !!view;
 }
 
-static void cmd_wswap(const CommandArgs* UNUSED_ARG(a))
+static bool cmd_wswap(EditorState *e, const CommandArgs *a)
 {
-    Frame *parent = window->frame->parent;
+    BUG_ON(a->nr_args);
+    Frame *frame = e->window->frame;
+    Frame *parent = frame->parent;
     if (!parent) {
-        return;
+        return false;
     }
 
-    size_t i = ptr_array_idx(&parent->frames, window->frame);
-    BUG_ON(i >= parent->frames.count);
-    size_t j = i + 1;
-    if (j == parent->frames.count) {
-        j = 0;
-    }
+    size_t count = parent->frames.count;
+    size_t current = ptr_array_idx(&parent->frames, frame);
+    BUG_ON(current >= count);
+    size_t next = size_increment_wrapped(current, count);
 
-    Frame *tmp = parent->frames.ptrs[i];
-    parent->frames.ptrs[i] = parent->frames.ptrs[j];
-    parent->frames.ptrs[j] = tmp;
-    mark_everything_changed();
+    void **ptrs = parent->frames.ptrs;
+    Frame *tmp = ptrs[current];
+    ptrs[current] = ptrs[next];
+    ptrs[next] = tmp;
+    mark_everything_changed(e);
+    return true;
 }
+
+IGNORE_WARNING("-Wincompatible-pointer-types")
 
 static const Command cmds[] = {
-    {"alias", "-", true, 2, 2, cmd_alias},
-    {"bind", "-", true, 1, 2, cmd_bind},
+    {"alias", "-", true, 1, 2, cmd_alias},
+    {"bind", "-cns", true, 1, 2, cmd_bind},
     {"blkdown", "cl", false, 0, 0, cmd_blkdown},
     {"blkup", "cl", false, 0, 0, cmd_blkup},
-    {"bof", "", false, 0, 0, cmd_bof},
-    {"bol", "cs", false, 0, 0, cmd_bol},
-    {"bolsf", "", false, 0, 0, cmd_bolsf},
+    {"bof", "cl", false, 0, 0, cmd_bof},
+    {"bol", "cst", false, 0, 0, cmd_bol},
+    {"bolsf", "cl", false, 0, 0, cmd_bolsf},
     {"bookmark", "r", false, 0, 0, cmd_bookmark},
     {"case", "lu", false, 0, 0, cmd_case},
     {"cd", "", true, 1, 1, cmd_cd},
     {"center-view", "", false, 0, 0, cmd_center_view},
-    {"clear", "", false, 0, 0, cmd_clear},
+    {"clear", "i", false, 0, 0, cmd_clear},
     {"close", "fpqw", false, 0, 0, cmd_close},
     {"command", "-", false, 0, 1, cmd_command},
     {"compile", "-1ps", false, 2, -1, cmd_compile},
-    {"copy", "k", false, 0, 0, cmd_copy},
+    {"copy", "bikp", false, 0, 0, cmd_copy},
+    {"cursor", "", true, 0, 3, cmd_cursor},
     {"cut", "", false, 0, 0, cmd_cut},
     {"delete", "", false, 0, 0, cmd_delete},
     {"delete-eol", "n", false, 0, 0, cmd_delete_eol},
     {"delete-line", "", false, 0, 0, cmd_delete_line},
     {"delete-word", "s", false, 0, 0, cmd_delete_word},
     {"down", "cl", false, 0, 0, cmd_down},
-    {"eof", "", false, 0, 0, cmd_eof},
+    {"eof", "cl", false, 0, 0, cmd_eof},
     {"eol", "c", false, 0, 0, cmd_eol},
-    {"eolsf", "", false, 0, 0, cmd_eolsf},
+    {"eolsf", "cl", false, 0, 0, cmd_eolsf},
     {"erase", "", false, 0, 0, cmd_erase},
     {"erase-bol", "", false, 0, 0, cmd_erase_bol},
     {"erase-word", "s", false, 0, 0, cmd_erase_word},
-    {"errorfmt", "i", true, 2, 18, cmd_errorfmt},
-    {"eval", "-", false, 1, -1, cmd_eval},
-    {"exec-open", "-s", false, 1, -1, cmd_exec_open},
-    {"exec-tag", "-s", false, 1, -1, cmd_exec_tag},
-    {"filter", "-l", false, 1, -1, cmd_filter},
+    {"errorfmt", "i", true, 1, 2 + ERRORFMT_CAPTURE_MAX, cmd_errorfmt},
+    {"exec", "-e=i=o=lmnpst", false, 1, -1, cmd_exec},
     {"ft", "-bcfi", true, 2, -1, cmd_ft},
     {"hi", "-c", true, 0, -1, cmd_hi},
     {"include", "bq", true, 1, 1, cmd_include},
@@ -2131,16 +2402,14 @@ static const Command cmds[] = {
     {"macro", "", false, 1, 1, cmd_macro},
     {"match-bracket", "", false, 0, 0, cmd_match_bracket},
     {"move-tab", "", false, 1, 1, cmd_move_tab},
-    {"msg", "np", false, 0, 0, cmd_msg},
-    {"new-line", "", false, 0, 0, cmd_new_line},
+    {"msg", "np", false, 0, 1, cmd_msg},
+    {"new-line", "a", false, 0, 0, cmd_new_line},
     {"next", "", false, 0, 0, cmd_next},
     {"open", "e=gt", false, 0, -1, cmd_open},
     {"option", "-r", true, 3, -1, cmd_option},
-    {"paste", "c", false, 0, 0, cmd_paste},
+    {"paste", "acm", false, 0, 0, cmd_paste},
     {"pgdown", "cl", false, 0, 0, cmd_pgdown},
     {"pgup", "cl", false, 0, 0, cmd_pgup},
-    {"pipe-from", "-ms", false, 1, -1, cmd_pipe_from},
-    {"pipe-to", "-l", false, 1, -1, cmd_pipe_to},
     {"prev", "", false, 0, 0, cmd_prev},
     {"quit", "fp", false, 0, 1, cmd_quit},
     {"redo", "", false, 0, 1, cmd_redo},
@@ -2148,14 +2417,14 @@ static const Command cmds[] = {
     {"repeat", "-", false, 2, -1, cmd_repeat},
     {"replace", "bcgi", false, 2, 2, cmd_replace},
     {"right", "c", false, 0, 0, cmd_right},
-    {"run", "-ps", false, 1, -1, cmd_run},
     {"save", "Bbde=fpu", false, 0, 1, cmd_save},
     {"scroll-down", "", false, 0, 0, cmd_scroll_down},
     {"scroll-pgdown", "", false, 0, 0, cmd_scroll_pgdown},
     {"scroll-pgup", "", false, 0, 0, cmd_scroll_pgup},
     {"scroll-up", "", false, 0, 0, cmd_scroll_up},
     {"search", "Hnprw", false, 0, 1, cmd_search},
-    {"select", "bkl", false, 0, 0, cmd_select},
+    {"select", "kl", false, 0, 0, cmd_select},
+    {"select-block", "", false, 0, 0, cmd_select_block},
     {"set", "gl", true, 1, -1, cmd_set},
     {"setenv", "", true, 1, 2, cmd_setenv},
     {"shift", "", false, 1, 1, cmd_shift},
@@ -2163,8 +2432,8 @@ static const Command cmds[] = {
     {"suspend", "", false, 0, 0, cmd_suspend},
     {"tag", "r", false, 0, 1, cmd_tag},
     {"title", "", false, 1, 1, cmd_title},
-    {"toggle", "glv", false, 1, -1, cmd_toggle},
-    {"undo", "", false, 0, 0, cmd_undo},
+    {"toggle", "gv", false, 1, -1, cmd_toggle},
+    {"undo", "m", false, 0, 0, cmd_undo},
     {"unselect", "", false, 0, 0, cmd_unselect},
     {"up", "cl", false, 0, 0, cmd_up},
     {"view", "", false, 1, 1, cmd_view},
@@ -2180,25 +2449,21 @@ static const Command cmds[] = {
     {"wswap", "", false, 0, 0, cmd_wswap},
 };
 
+UNIGNORE_WARNINGS
+
 static bool allow_macro_recording(const Command *cmd, char **args)
 {
-    IGNORE_WARNING("-Wpedantic")
-    static const void *const non_recordable[] = {
-        cmd_macro, cmd_command, cmd_exec_open, cmd_exec_tag,
-    };
-    for (size_t i = 0; i < ARRAY_COUNT(non_recordable); i++) {
-        if (cmd->cmd == non_recordable[i]) {
-            return false;
-        }
+    CommandFunc fn = cmd->cmd;
+    if (fn == (CommandFunc)cmd_macro || fn == (CommandFunc)cmd_command) {
+        return false;
     }
-    UNIGNORE_WARNINGS
 
-    if (cmd->cmd == cmd_search) {
+    if (fn == (CommandFunc)cmd_search) {
         char **args_copy = copy_string_array(args, string_array_length(args));
-        CommandArgs a = {.args = args_copy};
+        CommandArgs a = cmdargs_new(args_copy);
         bool ret = true;
-        if (do_parse_args(cmd, &a) == 0) {
-            if (a.nr_args == 0 && !strpbrk(a.flags, "npw")) {
+        if (do_parse_args(cmd, &a) == ARGERR_NONE) {
+            if (a.nr_args == 0 && !(a.flag_set & get_flagset_npw())) {
                 // If command is "search" with no pattern argument and without
                 // flags -n, -p or -w, the command would put the editor into
                 // search mode, which shouldn't be recorded.
@@ -2208,7 +2473,57 @@ static bool allow_macro_recording(const Command *cmd, char **args)
         free_string_array(args_copy);
         return ret;
     }
+
+    if (fn == (CommandFunc)cmd_exec) {
+        // TODO: don't record -o with open/tag/eval/msg
+    }
+
     return true;
+}
+
+UNITTEST {
+    const char *args[4] = {NULL};
+    char **argp = (char**)args;
+    const Command *cmd = find_normal_command("left");
+    BUG_ON(!cmd);
+    BUG_ON(!allow_macro_recording(cmd, argp));
+
+    cmd = find_normal_command("exec");
+    BUG_ON(!cmd);
+    BUG_ON(!allow_macro_recording(cmd, argp));
+
+    cmd = find_normal_command("command");
+    BUG_ON(!cmd);
+    BUG_ON(allow_macro_recording(cmd, argp));
+
+    cmd = find_normal_command("macro");
+    BUG_ON(!cmd);
+    BUG_ON(allow_macro_recording(cmd, argp));
+
+    cmd = find_normal_command("search");
+    BUG_ON(!cmd);
+    BUG_ON(allow_macro_recording(cmd, argp));
+    args[0] = "xyz";
+    BUG_ON(!allow_macro_recording(cmd, argp));
+    args[0] = "-n";
+    BUG_ON(!allow_macro_recording(cmd, argp));
+    args[0] = "-p";
+    BUG_ON(!allow_macro_recording(cmd, argp));
+    args[0] = "-w";
+    BUG_ON(!allow_macro_recording(cmd, argp));
+    args[0] = "-Hr";
+    BUG_ON(allow_macro_recording(cmd, argp));
+    args[1] = "str";
+    BUG_ON(!allow_macro_recording(cmd, argp));
+}
+
+static void record_command(const Command *cmd, char **args, void *userdata)
+{
+    if (!allow_macro_recording(cmd, args)) {
+        return;
+    }
+    EditorState *e = userdata;
+    macro_command_hook(&e->macro, cmd->name, args);
 }
 
 const Command *find_normal_command(const char *name)
@@ -2216,28 +2531,49 @@ const Command *find_normal_command(const char *name)
     return BSEARCH(name, cmds, command_cmp);
 }
 
-const CommandSet commands = {
+const CommandSet normal_commands = {
     .lookup = find_normal_command,
-    .allow_recording = allow_macro_recording,
+    .macro_record = record_command,
+    .expand_variable = expand_normal_var,
+    .expand_env_vars = true,
 };
 
-void collect_normal_commands(const char *prefix)
+const char *find_normal_alias(const char *name, void *userdata)
 {
-    for (size_t i = 0, n = ARRAY_COUNT(cmds); i < n; i++) {
-        const Command *c = &cmds[i];
-        if (str_has_prefix(c->name, prefix)) {
-            add_completion(xstrdup(c->name));
-        }
-    }
+    EditorState *e = userdata;
+    return find_alias(&e->aliases, name);
+}
+
+bool handle_normal_command(EditorState *e, const char *cmd, bool allow_recording)
+{
+    CommandRunner runner = cmdrunner_for_mode(e, INPUT_NORMAL, allow_recording);
+    return handle_command(&runner, cmd);
+}
+
+void exec_normal_config(EditorState *e, StringView config)
+{
+    CommandRunner runner = cmdrunner_for_mode(e, INPUT_NORMAL, false);
+    exec_config(&runner, config);
+}
+
+int read_normal_config(EditorState *e, const char *filename, ConfigFlags flags)
+{
+    CommandRunner runner = cmdrunner_for_mode(e, INPUT_NORMAL, false);
+    return read_config(&runner, filename, flags);
+}
+
+void collect_normal_commands(PointerArray *a, const char *prefix)
+{
+    COLLECT_STRING_FIELDS(cmds, name, a, prefix);
 }
 
 UNITTEST {
     CHECK_BSEARCH_ARRAY(cmds, name, strcmp);
 
-    for (size_t i = 0, n = ARRAY_COUNT(cmds); i < n; i++) {
+    for (size_t i = 0, n = ARRAYLEN(cmds); i < n; i++) {
         // Check that flags arrays is null-terminated within bounds
         const char *const flags = cmds[i].flags;
-        BUG_ON(flags[ARRAY_COUNT(cmds[0].flags) - 1] != '\0');
+        BUG_ON(flags[ARRAYLEN(cmds[0].flags) - 1] != '\0');
 
         // Count number of real flags (i.e. not including '-' or '=')
         size_t nr_real_flags = 0;
@@ -2253,6 +2589,6 @@ UNITTEST {
         // Check that max. number of real flags fits in CommandArgs::flags
         // array (and also leaves 1 byte for null-terminator)
         CommandArgs a;
-        BUG_ON(nr_real_flags >= ARRAY_COUNT(a.flags));
+        BUG_ON(nr_real_flags >= ARRAYLEN(a.flags));
     }
 }

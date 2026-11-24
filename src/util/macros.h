@@ -13,15 +13,18 @@
 #define MAX(a, b) ((a) > (b) ? (a) : (b))
 #define MAX3(a, b, c) MAX(a, MAX(b, c))
 #define MAX4(a, b, c, d) MAX(a, MAX3(b, c, d))
+#define CLAMP(x, lo, hi) MIN(hi, MAX(lo, x))
 #define IS_POWER_OF_2(x) (((x) > 0) && (((x) & ((x) - 1)) == 0))
 #define DECIMAL_STR_MAX(T) ((sizeof(T) * 3) + 2)
+#define HEX_STR_MAX(T) ((sizeof(T) * 2) + 2)
+#define BITSIZE(T) (sizeof(T) * 8)
 #define DO_PRAGMA(x) _Pragma(#x)
 
 // Calculate the number of elements in an array.
 // The extra division on the third line is a trick to help prevent
 // passing a pointer to the first element of an array instead of a
 // reference to the array itself.
-#define ARRAY_COUNT(x) ( \
+#define ARRAYLEN(x) ( \
     (sizeof(x) / sizeof((x)[0])) \
     / ((size_t)(!(sizeof(x) % sizeof((x)[0])))) \
 )
@@ -46,10 +49,22 @@
     #define HAS_ATTRIBUTE(x) 0
 #endif
 
+#ifdef __has_c_attribute
+    #define HAS_C_ATTRIBUTE(x) __has_c_attribute(x)
+#else
+    #define HAS_C_ATTRIBUTE(x) 0
+#endif
+
 #ifdef __has_builtin
     #define HAS_BUILTIN(x) __has_builtin(x)
 #else
     #define HAS_BUILTIN(x) 0
+#endif
+
+#ifdef __has_include
+    #define HAS_INCLUDE(x) __has_include(x)
+#else
+    #define HAS_INCLUDE(x) 0
 #endif
 
 #ifdef __has_warning
@@ -65,7 +80,7 @@
 #endif
 
 // __has_extension() is a Clang macro used to determine if a feature is
-// available even if not standardized in the current "-std" mode.
+// available even if not standardized in the current "-std" mode
 #ifdef __has_extension
     #define HAS_EXTENSION(x) __has_extension(x)
 #else
@@ -81,7 +96,9 @@
     #define MSAN_ENABLED 1
 #endif
 
-#if GNUC_AT_LEAST(3, 0) || HAS_ATTRIBUTE(unused) || defined(__TINYC__)
+#if __STDC_VERSION__ > 202300L
+    #define UNUSED [[__maybe_unused__]]
+#elif GNUC_AT_LEAST(3, 0) || HAS_ATTRIBUTE(unused) || defined(__TINYC__)
     #define UNUSED __attribute__((__unused__))
 #else
     #define UNUSED
@@ -94,21 +111,21 @@
 #endif
 
 #if GNUC_AT_LEAST(3, 0) || HAS_ATTRIBUTE(malloc)
-    #define MALLOC __attribute__((__malloc__))
+    #define MALLOC WARN_UNUSED_RESULT __attribute__((__malloc__))
 #else
-    #define MALLOC
+    #define MALLOC WARN_UNUSED_RESULT
 #endif
 
 #if GNUC_AT_LEAST(3, 0) || HAS_ATTRIBUTE(pure)
-    #define PURE __attribute__((__pure__))
+    #define PURE WARN_UNUSED_RESULT __attribute__((__pure__))
 #else
-    #define PURE
+    #define PURE WARN_UNUSED_RESULT
 #endif
 
 #if GNUC_AT_LEAST(3, 0) || HAS_ATTRIBUTE(const)
-    #define CONST_FN __attribute__((__const__))
+    #define CONST_FN WARN_UNUSED_RESULT __attribute__((__const__))
 #else
-    #define CONST_FN
+    #define CONST_FN WARN_UNUSED_RESULT
 #endif
 
 #if GNUC_AT_LEAST(3, 0) || HAS_ATTRIBUTE(constructor)
@@ -120,17 +137,21 @@
 #if GNUC_AT_LEAST(3, 0) || HAS_ATTRIBUTE(format)
     #define PRINTF(x) __attribute__((__format__(__printf__, (x), (x + 1))))
     #define VPRINTF(x) __attribute__((__format__(__printf__, (x), 0)))
+    #define STRFTIME(x) __attribute__((__format__(__strftime__, (x), 0)))
 #else
     #define PRINTF(x)
     #define VPRINTF(x)
+    #define STRFTIME(x)
 #endif
 
 #if (GNUC_AT_LEAST(3, 0) || HAS_BUILTIN(__builtin_expect)) && defined(__OPTIMIZE__)
     #define likely(x) __builtin_expect(!!(x), 1)
     #define unlikely(x) __builtin_expect(!!(x), 0)
+    #define BUILTIN_EXPECT(x, expected) __builtin_expect((x), (expected))
 #else
     #define likely(x) (x)
     #define unlikely(x) (x)
+    #define BUILTIN_EXPECT(x, expected) (x)
 #endif
 
 #if GNUC_AT_LEAST(3, 0) || HAS_BUILTIN(__builtin_constant_p) || defined(__TINYC__)
@@ -236,22 +257,31 @@
 #endif
 
 #define UNUSED_ARG(x) unused__ ## x UNUSED
-#define XMALLOC MALLOC RETURNS_NONNULL WARN_UNUSED_RESULT
+#define XMALLOC MALLOC RETURNS_NONNULL
 #define XSTRDUP XMALLOC NONNULL_ARGS
 #define NONNULL_ARGS_AND_RETURN RETURNS_NONNULL NONNULL_ARGS
 
-#if __STDC_VERSION__ >= 201112L
-    #define alignof(t) _Alignof(t)
-    #define noreturn _Noreturn
+#if __STDC_VERSION__ > 202300L
+    #define ALIGNOF(t) alignof(t)
+#elif __STDC_VERSION__ >= 201112L
+    #define ALIGNOF(t) _Alignof(t)
 #elif GNUC_AT_LEAST(3, 0)
-    #define alignof(t) __alignof__(t)
-    #define noreturn __attribute__((__noreturn__))
+    #define ALIGNOF(t) __alignof__(t)
 #else
-    #define alignof(t) MIN(sizeof(t), offsetof(struct{char c; t x;}, x))
-    #define noreturn
+    #define ALIGNOF(t) MIN(sizeof(t), offsetof(struct{char c; t x;}, x))
 #endif
 
 #if __STDC_VERSION__ >= 201112L
+    #define noreturn _Noreturn
+#elif GNUC_AT_LEAST(3, 0)
+    #define noreturn __attribute__((__noreturn__))
+#else
+    #define noreturn
+#endif
+
+#if __STDC_VERSION__ > 202300L
+    #define HAS_STATIC_ASSERT 1
+#elif __STDC_VERSION__ >= 201112L
     #define static_assert(x) _Static_assert((x), #x)
     #define HAS_STATIC_ASSERT 1
 #elif GNUC_AT_LEAST(4, 6) || HAS_EXTENSION(c_static_assert)
@@ -305,9 +335,9 @@
 #endif
 
 #if defined(DEBUG) && (DEBUG > 0)
-    #define UNITTEST static void CONSTRUCTOR XPASTE(unittest_, COUNTER_)(void)
+    #define UNITTEST CONSTRUCTOR static void XPASTE(unittest_, COUNTER_)(void)
 #else
-    #define UNITTEST static void UNUSED XPASTE(unittest_, COUNTER_)(void)
+    #define UNITTEST UNUSED static void XPASTE(unittest_, COUNTER_)(void)
 #endif
 
 #ifdef __clang__

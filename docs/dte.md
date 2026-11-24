@@ -1,7 +1,7 @@
 ---
 title: dte
 section: 1
-date: February 2021
+date: October 2022
 description: A small, configurable text editor
 author: [Craig Barnes, Timo Hirvonen]
 seealso: ["`dterc`", "`dte-syntax`"]
@@ -14,7 +14,7 @@ seealso: ["`dterc`", "`dte-syntax`"]
 \[**-c** _command_]
 \[**-t** _ctag_]
 \[**-r** _rcfile_]
-\[\[**+**line] _file_]...  
+\[\[+_line_\[,_column_]] _file_]...  
 **dte** \[**-h**|**-B**|**-K**|**-V**|**-b** _rcname_|**-s** _file_]
 
 # Options
@@ -61,18 +61,22 @@ seealso: ["`dterc`", "`dte-syntax`"]
 `-V`
 :   Display the version number and exit.
 
++_line_,_column_ arguments can be used to specify the initial cursor
+position of the next _file_ argument. These can also be specified in
+the format +_line_:_column_.
+
 # Key Bindings
 
 There are 3 editor modes, each having a different set of key bindings.
-Normal mode bindings can be customized by using the [`bind`] command
-(see [`dterc`]) or displayed using the [`show bind`] command.
+Bindings can be customized using the [`bind`] command (see [`dterc`])
+or displayed using the [`show bind`] command.
 
 The key bindings listed below are in the same format as accepted by
 the [`bind`] command. In particular, key combinations are represented
 as follows:
 
 * `M-x` is Alt+x
-* `C-V` (or `^V`) is Ctrl+v
+* `C-v` (or `^V`) is Ctrl+v
 * `S-left` is Shift+left
 * `C-M-S-left` is Ctrl+Alt+Shift+left
 
@@ -91,25 +95,25 @@ are also various key combinations bound by default:
 `C-S-up`, `C-S-down`
 :   Move cursor and select whole lines
 
-`^C`
+`C-c`
 :   Copy current line or selection
 
-`^X`
+`C-x`
 :   Cut current line or selection
 
-`^V`
+`C-v`
 :   Paste
 
-`^Z`
+`C-z`
 :   Undo
 
-`^Y`
+`C-y`
 :   Redo
 
 `M-x`
 :   Enter command mode
 
-`^F`
+`C-f`
 :   Enter search mode
 
 `F3`
@@ -118,19 +122,19 @@ are also various key combinations bound by default:
 `F4`
 :   Search previous
 
-`^T`
+`C-t`
 :   Open new buffer
 
 `M-1`, `M-2` ... `M-9`
 :   Switch to buffer 1 (or 2, 3, 4, etc.)
 
-`^W`
+`C-w`
 :   Close current buffer
 
-`^S`
+`C-s`
 :   Save
 
-`^Q`
+`C-q`
 :   Quit
 
 ## Command Mode
@@ -149,31 +153,31 @@ The key bindings for command mode are:
 `tab`
 :   Auto-complete current command or argument
 
-`^A`, `home`
+`C-a`, `home`
 :   Go to beginning of command line
 
-`^B`, `left`
+`C-b`, `left`
 :   Move left
 
-`^C`, `^G`, `Esc`
+`C-c`, `C-g`, `Esc`
 :   Exit command mode
 
-`^D`, `delete`
+`C-d`, `delete`
 :   Delete
 
-`^E`, `end`
+`C-e`, `end`
 :   Go to end of command line
 
-`^F`, `right`
+`C-f`, `right`
 :   Move right
 
-`^K`, `M-delete`
+`C-k`, `M-delete`
 :   Delete to end of command line
 
-`^U`
+`C-u`
 :   Delete to beginning of command line
 
-`^W`, `M-C-?` (Alt+Backspace)
+`C-w`, `M-C-?` (Alt+Backspace)
 :   Erase word
 
 ## Search Mode
@@ -215,7 +219,30 @@ The following environment variables are inspected at startup:
     supported.
 
 `COLORTERM`
-:   Enables support for 24-bit terminal colors, if set to `truecolor`.
+:   Enables support for 24-bit terminal colors, if set to `truecolor` or
+    `24bit`.
+
+The following environment variables affect various library routines used
+by dte and are inspected on every use:
+
+`PATH`
+:   Colon-delimited list of directory prefixes, used by [`execvp`]
+    to find executables.
+
+The following environment variables are set by dte:
+
+`DTE_VERSION`
+:   Editor version string. This is set at startup to the same version
+    string as shown by `dte -V`.
+
+`PWD`
+:   Absolute path of the current working directory; set when changing
+    directory with the [`cd`] command.
+
+`OLDPWD`
+:   Absolute path of the previous working directory; set when changing
+    directory with the [`cd`] command and also used to determine which
+    directory `cd -` switches to.
 
 # Files
 
@@ -260,15 +287,18 @@ The following environment variables are inspected at startup:
 `74`
 :   Input/output error.
 
+`78`
+:   Configuration error.
+
 Note: the above exit codes are set by the editor itself, with values in
 accordance with [`sysexits`]. The exit code may also be set to values
 in the range `0`..`125` by the [`quit`] command.
 
 # Examples
 
-Open `/etc/passwd` with cursor on line 3:
+Open `/etc/passwd` with cursor on line 3, column 8:
 
-    dte +3 /etc/passwd
+    dte +3:8 /etc/passwd
 
 Run several commands at startup:
 
@@ -287,7 +317,7 @@ Interactively filter a shell pipeline:
 It's advised to NOT run shell pipelines with multiple interactive
 programs that try to control the terminal. For example:
 
-    echo 'Don't run this example!!' | dte | less
+    echo "Don't run this example!!" | dte | less
 
 A shell will run these processes in parallel and both `dte` and `less`
 will then try to control the terminal at the same time; clobbering the
@@ -297,6 +327,7 @@ input/output of both.
 [`dterc`]: dterc.html
 [`dte-syntax`]: dte-syntax.html
 [`bind`]: dterc.html#bind
+[`cd`]: dterc.html#cd
 [`show bind`]: dterc.html#show
 [`next`]: dterc.html#next
 [`prev`]: dterc.html#prev
@@ -306,4 +337,5 @@ input/output of both.
 [`lock-files`]: dterc.html#lock-files
 [`file-history`]: dterc.html#file-history
 [`ctags`]: https://en.wikipedia.org/wiki/Ctags
-[`sysexits`]: https://www.freebsd.org/cgi/man.cgi?query=sysexits
+[`sysexits`]: https://man.freebsd.org/cgi/man.cgi?query=sysexits
+[`execvp`]: https://pubs.opengroup.org/onlinepubs/9699919799/functions/exec.html

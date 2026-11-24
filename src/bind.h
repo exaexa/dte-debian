@@ -1,23 +1,19 @@
 #ifndef BIND_H
 #define BIND_H
 
-#include "command/run.h"
+#include <stdbool.h>
+#include "command/cache.h"
+#include "editor.h"
 #include "terminal/key.h"
+#include "util/intmap.h"
+#include "util/macros.h"
 #include "util/string.h"
 
-typedef struct {
-    // The cached command and parsed arguments (NULL if not cached)
-    const Command *cmd;
-    CommandArgs a;
-    // The original command string
-    char cmd_str[];
-} KeyBinding;
-
-void add_binding(const char *keystr, const char *command);
-void remove_binding(const char *keystr);
-const KeyBinding *lookup_binding(KeyCode key);
-void handle_binding(KeyCode key);
-void collect_bound_keys(const char *keystr_prefix);
-String dump_bindings(void);
+void add_binding(IntMap *bindings, KeyCode key, CachedCommand *cc) NONNULL_ARGS;
+void remove_binding(IntMap *bindings, KeyCode key) NONNULL_ARGS;
+const CachedCommand *lookup_binding(const IntMap *bindings, KeyCode key) NONNULL_ARGS;
+bool handle_binding(EditorState *e, InputMode mode, KeyCode key) NONNULL_ARGS WARN_UNUSED_RESULT;
+void free_bindings(IntMap *bindings) NONNULL_ARGS;
+bool dump_bindings(const IntMap *bindings, const char *flag, String *buf) NONNULL_ARGS WARN_UNUSED_RESULT;
 
 #endif

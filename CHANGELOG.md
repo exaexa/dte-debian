@@ -1,8 +1,164 @@
 Releases
 ========
 
-v1.10 (not yet released)
+v1.11.1 (latest release)
 ------------------------
+
+Released on 2023-03-01.
+
+**Additions:**
+
+* Added a [`show setenv`][`show`] sub-command.
+* Added an `-m` flag to the [`undo`] command, to allow moving to the last
+  change without undoing it.
+* Added support for Super (`s-`) and Hyper (`H-`) modifiers in key bindings.
+* Added a syntax highlighter for [Coccinelle] "semantic patch" (`*.cocci`)
+  files.
+* Added rules for handling CDATA sections to the XML syntax highlighter.
+* Added auto-completion for command flags.
+
+**Fixes:**
+
+* Fixed a bug that was causing key bindings to not work properly when
+  the Num Lock and/or Caps Lock modifiers were in effect in terminals
+  supporting the [kitty keyboard protocol].
+* Fixed the [`save`] command, to avoid breaking hard links when writing
+  to existing files.
+* Fixed an issue in the build system causing `make distcheck` to fail.
+
+**Other changes:**
+
+* Changed built-in filetype detection so that a `dot_` filename prefix is
+  equivalent to a `.` prefix, or more specifically `dot_bashrc` is now
+  treated the same way as `.bashrc`.
+* Changed the [`default`] command in [`dte-syntax`] files to show an error
+  if there are duplicate arguments.
+* [Removed][commit 0fe5e5f224e832a] the built-in `xsel` alias.
+
+**Downloads:**
+
+* [dte-1.11.1.tar.gz](https://craigbarnes.gitlab.io/dist/dte/dte-1.11.1.tar.gz)
+* [dte-1.11.1.tar.gz.sig](https://craigbarnes.gitlab.io/dist/dte/dte-1.11.1.tar.gz.sig)
+
+v1.11
+-----
+
+Released on 2023-01-21.
+
+**Additions:**
+
+* Added 15 new command flags:
+  * [`bind -n`][`bind`]
+  * [`bind -c`][`bind`] (custom key bindings in [`command`] mode)
+  * [`bind -s`][`bind`] (custom key bindings in [`search`] mode)
+  * [`bol -t`][`bol`]
+  * [`bof -c`][`bof`]
+  * [`bof -l`][`bof`]
+  * [`eof -c`][`eof`]
+  * [`eof -l`][`eof`]
+  * [`clear -i`][`clear`]
+  * [`copy -b`][`copy`] (copy to system clipboard)
+  * [`copy -i`][`copy`]
+  * [`copy -p`][`copy`]
+  * [`paste -a`][`paste`]
+  * [`paste -m`][`paste`]
+  * [`new-line -a`][`new-line`]
+* Added a new [`exec`] command, (this replaces `run`, `filter`, `pipe-from`,
+  `pipe-to`, `eval`, `exec-open` and `exec-tag`, which are now just built-in
+  [aliases][exec aliases] of [`exec`]).
+* Added [`overwrite`] and [`optimize-true-color`] options.
+* Added built-in [`$RFILE`], [`$FILEDIR`] and [`$COLNO`] variables.
+* Added `hi`, `msg` and `set` arguments to the [`show`] command.
+* Added a _number_ argument to the [`msg`] command.
+* Added support for 3-digit `#rgb` colors to the [`hi`] command (in addition
+  to the existing `#rrggbb` support).
+* Added support for binding `F13`-`F20` keys.
+* Added support for parsing alternate encodings of `F1`-`F4` keys
+  (e.g. `CSI P`) sent by some terminals.
+* Added support for the [Kitty keyboard protocol][] (which significantly
+  increases the number of bindable key combos).
+* Added syntax highlighters for JSON, Go Module (`go.mod`), G-code and
+  `.gitignore` files.
+* Added support for binary literals and hex float literals to the C syntax
+  highlighter.
+* Added support for escaped newlines in string literals to the C syntax
+  highlighter.
+* Added support for `<<-EOF` heredocs to the shell syntax highlighter.
+* Added support for template literals to the JavaScript syntax highlighter.
+* Added support for terminal "synchronized updates" (both the DCS-based
+  variant and the private mode `2026` variant).
+* Added documentation for the [`bookmark`] command.
+* Added `$PATH`, `$PWD`, `$OLDPWD` and `$DTE_VERSION` to the [environment]
+  section of the [`dte`] man page.
+* Added extended support for [Contour] and [WezTerm] terminals.
+* Added an [AppStream] metadata file, which is installed by default when
+  running `make install` (except on macOS).
+
+**Improvements:**
+
+* Updated Unicode support to version 15.
+* Allowed [`alias`] and [`errorfmt`] entries to be removed, by running
+  the commands with only 1 argument.
+* Improved command auto-completion for [`alias`], [`bind`], [`cd`],
+  [`redo`], [`move-tab`] and [`quit`] commands.
+* Improved documentation for [`alias`]. [`tag`], [`hi`], [`msg`] and
+  [`wsplit`] commands.
+* Changed [`quit -p`][`quit`] to display the number of modified/unsaved
+  buffers in the dialog prompt.
+* Excluded `.` and `..` from filename auto-completions.
+* Allowed `-c <command>` options to be used multiple (up to 8) times.
+* Allowed `+lineno,colno` command-line arguments (in addition to
+  `+lineno`).
+* Extended [`line`] command to accept a `lineno,colno` argument (in
+  addition to `lineno`).
+* Limited the size of `.editorconfig` files to 32MiB.
+* Enabled "enhanced" regex features on macOS, by using the
+  [`REG_ENHANCED`] flag when calling `regcomp(3)`.
+* Improved support for the [`modifyOtherKeys`] keyboard mode (which
+  increases the number of bindable key combos somewhat), by emitting
+  the escape sequence to enable it at startup.
+* Various improvements to built-in filetype detection.
+* Various performance/efficiency improvements.
+
+**Fixes:**
+
+* Fixed a bug that caused searches started by [`search -r`][`search`] to
+  be incorrectly recorded by `macro record`.
+* Fixed a bug that caused "broken pipe" errors to occur if the terminal
+  was resized during certain long-running commands (e.g. [`compile`]).
+* Fixed several regular expressions in built-in configs that were using
+  non-portable regex features (`\s`, `\b` and `\w`) and causing errors
+  on some systems.
+* [Fixed][commit c4af2b1a15c96e8] a portability issue that was causing
+  execution of external commands to fail with "function not implemented"
+  errors on some systems (notably Debian GNU/kFreeBSD).
+
+**Breaking changes:**
+
+* Changed the default Ctrl+v key binding to [`paste -a`][`paste`]
+  (previously `paste -c`).
+* Removed the `display-invisible` global option.
+* Removed the `-b` flag from the `select` command.
+* Renamed the built-in `coffeescript` filetype to `coffee`.
+* Made the [`str`] command in [`dte-syntax`] files produce an error if
+  used with single-byte arguments ([`char`] should be used instead).
+* The `pipe-from` `-s` flag was effectively renamed to `-n`, as part of
+  the [changes][commit d0c22068c340e79] made for the new [`exec`] command.
+
+**Other changes:**
+
+* Increased the minimum [GNU Make] version requirement to 4.0.
+* Increased the minimum [GCC] version requirement to 4.8.
+
+**Downloads:**
+
+* [dte-1.11.tar.gz](https://craigbarnes.gitlab.io/dist/dte/dte-1.11.tar.gz)
+* [dte-1.11.tar.gz.sig](https://craigbarnes.gitlab.io/dist/dte/dte-1.11.tar.gz.sig)
+
+v1.10
+-----
+
+Released on 2021-04-03.
 
 **Additions:**
 
@@ -10,15 +166,15 @@ v1.10 (not yet released)
   * [`blkdown`]
   * [`blkup`]
   * [`delete-line`]
-  * [`exec-open`]
-  * [`exec-tag`]
+  * `exec-open` (note: replaced by [`exec`] in v1.11)
+  * `exec-tag` (note: replaced by [`exec`] in v1.11)
   * [`macro`]
   * [`match-bracket`]
 * Added 12 new command flags:
   * [`include -q`][`include`]
   * [`hi -c`][`hi`]
-  * [`filter -l`][`filter`]
-  * [`pipe-to -l`][`pipe-to`]
+  * `filter -l` (note: replaced by [`exec`] in v1.11)
+  * `pipe-to -l` (note: replaced by [`exec`] in v1.11)
   * [`close -p`][`close`]
   * [`wclose -p`][`wclose`]
   * [`open -t`][`open`]
@@ -80,8 +236,13 @@ v1.10 (not yet released)
 * Removed support for vertical tab bars (the `tab-bar` option was
   changed from an enum to a Boolean).
 
-v1.9.1 (latest release)
------------------------
+**Downloads:**
+
+* [dte-1.10.tar.gz](https://craigbarnes.gitlab.io/dist/dte/dte-1.10.tar.gz)
+* [dte-1.10.tar.gz.sig](https://craigbarnes.gitlab.io/dist/dte/dte-1.10.tar.gz.sig)
+
+v1.9.1
+------
 
 Released on 2019-09-29.
 
@@ -416,7 +577,7 @@ Public Key
 A detached PGP signature file is provided for each release. The public
 key for verifying these signatures is available to download at
 <https://craigbarnes.gitlab.io/pubkey/0330BEB4.asc>
-or from the keyserver at `hkps://hkps.pool.sks-keyservers.net`.
+or from the keyserver at `hkps://keys.openpgp.org`.
 
 Checksums
 =========
@@ -432,44 +593,85 @@ statically-linked with [musl] libc and require nothing of the host
 system except a somewhat recent kernel.
 
 * [`dte-master-linux-x86_64.tar.gz`](https://craigbarnes.gitlab.io/dte/dte-master-linux-x86_64.tar.gz)
-* [`dte-1.9.1-linux-x86_64.tar.gz`](https://craigbarnes.gitlab.io/dist/dte/dte-1.9.1-linux-x86_64.tar.gz)
+* [`dte-1.11-linux-x86_64.tar.gz`](https://craigbarnes.gitlab.io/dist/dte/dte-1.11-linux-x86_64.tar.gz)
 
 *Note*: only `x86_64` builds are available for now. Feel free to open an
 [issue] if you need builds for other architectures.
 
 
 [website]: https://craigbarnes.gitlab.io/dte/
+[Contour]: https://github.com/contour-terminal/contour
+[WezTerm]: https://wezfurlong.org/wezterm/
+[Kitty keyboard protocol]: https://sw.kovidgoyal.net/kitty/keyboard-protocol/
+[`modifyOtherKeys`]: https://invisible-island.net/xterm/manpage/xterm.html#VT100-Widget-Resources:modifyOtherKeys
+[GNU Make]: https://www.gnu.org/software/make/
+[GCC]: https://gcc.gnu.org/
+[AppStream]: https://www.freedesktop.org/software/appstream/docs/
+[Coccinelle]: https://coccinelle.gitlabpages.inria.fr/website/
+[`REG_ENHANCED`]: https://www.unix.com/man-page/osx/7/re_format/
+[commit d0c22068c340e79]: https://gitlab.com/craigbarnes/dte/-/commit/d0c22068c340e795f4e98e6d2bcea6a228f57403
+[commit c4af2b1a15c96e8]: https://gitlab.com/craigbarnes/dte/-/commit/c4af2b1a15c96e820452c183e81e9bd415492778
+[commit 0fe5e5f224e832a]: https://gitlab.com/craigbarnes/dte/-/commit/0fe5e5f224e832a382ce1fb7e6b4e0d6f0da8f55
+[exec aliases]: https://gitlab.com/craigbarnes/dte/-/blob/14dd15b72383db784156b20d4ab7ac392552fe59/config/rc#L60-66
 [dex]: https://github.com/tihirvon/dex
 [dex v1.0]: https://github.com/tihirvon/dex/releases/tag/v1.0
-[ECMA-48]: https://www.ecma-international.org/publications/standards/Ecma-048.htm
+[ECMA-48]: https://www.ecma-international.org/publications-and-standards/standards/ecma-48/
 [musl]: https://www.musl-libc.org/
 [issue]: https://gitlab.com/craigbarnes/dte/-/issues
-[`dterc`]: https://craigbarnes.gitlab.io/dte/dterc.html
 
+[`dte`]: https://craigbarnes.gitlab.io/dte/dte.html
+[environment]: https://craigbarnes.gitlab.io/dte/dte.html#environment
+
+[`dte-syntax`]: https://craigbarnes.gitlab.io/dte/dte-syntax.html
+[`str`]: https://craigbarnes.gitlab.io/dte/dte-syntax.html#str
+[`char`]: https://craigbarnes.gitlab.io/dte/dte-syntax.html#char
+[`default`]: https://craigbarnes.gitlab.io/dte/dte-syntax.html#default
+
+[`dterc`]: https://craigbarnes.gitlab.io/dte/dterc.html
+[`alias`]: https://craigbarnes.gitlab.io/dte/dterc.html#alias
+[`bind`]: https://craigbarnes.gitlab.io/dte/dterc.html#bind
 [`blkdown`]: https://craigbarnes.gitlab.io/dte/dterc.html#blkdown
 [`blkup`]: https://craigbarnes.gitlab.io/dte/dterc.html#blkup
+[`bof`]: https://craigbarnes.gitlab.io/dte/dterc.html#bof
+[`bol`]: https://craigbarnes.gitlab.io/dte/dterc.html#bol
+[`bookmark`]: https://craigbarnes.gitlab.io/dte/dterc.html#bookmark
+[`cd`]: https://craigbarnes.gitlab.io/dte/dterc.html#cd
+[`clear`]: https://craigbarnes.gitlab.io/dte/dterc.html#clear
 [`close`]: https://craigbarnes.gitlab.io/dte/dterc.html#close
+[`command`]: https://craigbarnes.gitlab.io/dte/dterc.html#command
+[`compile`]: https://craigbarnes.gitlab.io/dte/dterc.html#compile
 [`copy`]: https://craigbarnes.gitlab.io/dte/dterc.html#copy
 [`delete-line`]: https://craigbarnes.gitlab.io/dte/dterc.html#delete-line
+[`eof`]: https://craigbarnes.gitlab.io/dte/dterc.html#eof
 [`errorfmt`]: https://craigbarnes.gitlab.io/dte/dterc.html#errorfmt
-[`exec-open`]: https://craigbarnes.gitlab.io/dte/dterc.html#exec-open
-[`exec-tag`]: https://craigbarnes.gitlab.io/dte/dterc.html#exec-tag
-[`filter`]: https://craigbarnes.gitlab.io/dte/dterc.html#filter
+[`exec`]: https://craigbarnes.gitlab.io/dte/dterc.html#exec
 [`hi`]: https://craigbarnes.gitlab.io/dte/dterc.html#hi
 [`include`]: https://craigbarnes.gitlab.io/dte/dterc.html#include
+[`line`]: https://craigbarnes.gitlab.io/dte/dterc.html#line
 [`macro`]: https://craigbarnes.gitlab.io/dte/dterc.html#macro
 [`match-bracket`]: https://craigbarnes.gitlab.io/dte/dterc.html#match-bracket
+[`move-tab`]: https://craigbarnes.gitlab.io/dte/dterc.html#move-tab
+[`msg`]: https://craigbarnes.gitlab.io/dte/dterc.html#msg
+[`new-line`]: https://craigbarnes.gitlab.io/dte/dterc.html#new-line
 [`open`]: https://craigbarnes.gitlab.io/dte/dterc.html#open
-[`pipe-to`]: https://craigbarnes.gitlab.io/dte/dterc.html#pipe-to
+[`paste`]: https://craigbarnes.gitlab.io/dte/dterc.html#paste
 [`quit`]: https://craigbarnes.gitlab.io/dte/dterc.html#quit
+[`redo`]: https://craigbarnes.gitlab.io/dte/dterc.html#redo
 [`replace`]: https://craigbarnes.gitlab.io/dte/dterc.html#replace
 [`save`]: https://craigbarnes.gitlab.io/dte/dterc.html#save
+[`search`]: https://craigbarnes.gitlab.io/dte/dterc.html#search
 [`show`]: https://craigbarnes.gitlab.io/dte/dterc.html#show
 [`tag`]: https://craigbarnes.gitlab.io/dte/dterc.html#tag
+[`undo`]: https://craigbarnes.gitlab.io/dte/dterc.html#undo
 [`wclose`]: https://craigbarnes.gitlab.io/dte/dterc.html#wclose
 [`wsplit`]: https://craigbarnes.gitlab.io/dte/dterc.html#wsplit
 
 [double-quoted]: https://craigbarnes.gitlab.io/dte/dterc.html#double-quoted-strings
+[`optimize-true-color`]: https://craigbarnes.gitlab.io/dte/dterc.html#optimize-true-color
+[`overwrite`]: https://craigbarnes.gitlab.io/dte/dterc.html#overwrite
 [`select-cursor-char`]: https://craigbarnes.gitlab.io/dte/dterc.html#select-cursor-char
 [`utf8-bom`]: https://craigbarnes.gitlab.io/dte/dterc.html#utf8-bom
 [statusline]: https://craigbarnes.gitlab.io/dte/dterc.html#statusline-left
+[`$COLNO`]: https://craigbarnes.gitlab.io/dte/dterc.html#COLNO
+[`$RFILE`]: https://craigbarnes.gitlab.io/dte/dterc.html#RFILE
+[`$FILEDIR`]: https://craigbarnes.gitlab.io/dte/dterc.html#FILEDIR

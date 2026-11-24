@@ -7,8 +7,7 @@ export VPREFIX="$1"
 
 # This value is filled automatically for git-archive(1) tarballs.
 # See also: "export-subst" in gitattributes(5).
-# shellcheck disable=SC2016
-distinfo_commit_short='6e37409d'
+distinfo_commit_short='892aade3'
 
 if expr "$distinfo_commit_short" : '[0-9a-f]\{7,40\}$' >/dev/null; then
     echo "${VPREFIX}-g${distinfo_commit_short}-dist"

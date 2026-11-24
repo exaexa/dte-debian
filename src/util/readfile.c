@@ -1,42 +1,60 @@
 #include <errno.h>
+#include <limits.h>
 #include <stdlib.h>
 #include <sys/stat.h>
-#include <unistd.h>
 #include "readfile.h"
 #include "xreadwrite.h"
 
-ssize_t read_file(const char *filename, char **bufp)
+ssize_t read_file_with_limit(const char *filename, char **bufp, size_t size_limit)
 {
-    *bufp = NULL;
     int fd = xopen(filename, O_RDONLY | O_CLOEXEC, 0);
     if (fd == -1) {
-        return -1;
+        goto error_noclose;
     }
 
+    int saved_errno;
     struct stat st;
-    if (fstat(fd, &st) == -1) {
-        xclose(fd);
-        return -1;
+    if (unlikely(fstat(fd, &st) == -1)) {
+        goto error;
     }
-    if (S_ISDIR(st.st_mode)) {
-        xclose(fd);
+    if (unlikely(S_ISDIR(st.st_mode))) {
         errno = EISDIR;
-        return -1;
+        goto error;
     }
 
-    char *buf = malloc(st.st_size + 1);
+    off_t size = st.st_size;
+    size_limit = size_limit ? MIN(size_limit, SSIZE_MAX) : SSIZE_MAX;
+    if (unlikely(size > size_limit)) {
+        errno = EFBIG;
+        goto error;
+    }
+
+    char *buf = malloc(size + 1);
     if (unlikely(!buf)) {
-        xclose(fd);
-        return -1;
+        goto error;
     }
 
-    ssize_t r = xread(fd, buf, st.st_size);
-    xclose(fd);
-    if (r > 0) {
-        buf[r] = '\0';
-        *bufp = buf;
-    } else {
+    ssize_t r = xread_all(fd, buf, size);
+    if (unlikely(r < 0)) {
         free(buf);
+        goto error;
     }
+
+    buf[r] = '\0';
+    *bufp = buf;
+    xclose(fd);
     return r;
+
+error:
+    saved_errno = errno;
+    xclose(fd);
+    errno = saved_errno;
+error_noclose:
+    *bufp = NULL;
+    return -1;
+}
+
+ssize_t read_file(const char *filename, char **bufp)
+{
+    return read_file_with_limit(filename, bufp, 0);
 }

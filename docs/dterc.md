@@ -1,7 +1,7 @@
 ---
 title: dterc
 section: 5
-date: March 2021
+date: December 2022
 description: Command and configuration language used by dte
 author: [Craig Barnes, Timo Hirvonen]
 seealso: ["`dte`", "`dte-syntax`"]
@@ -41,7 +41,15 @@ the same name.
 
 ### **$FILE**
 
-The filename of the current buffer (or an empty string if unsaved).
+The absolute filename of the current buffer (or an empty string if unsaved).
+
+### **$RFILE**
+
+The relative filename of the current buffer (or an empty string if unsaved).
+
+### **$FILEDIR**
+
+The directory part of `$FILE`.
 
 ### **$FILETYPE**
 
@@ -50,6 +58,10 @@ The value of the [`filetype`] option for the current buffer.
 ### **$LINENO**
 
 The line number of the cursor in the current buffer.
+
+### **$COLNO**
+
+The column number of the cursor in the current buffer.
 
 ### **$WORD**
 
@@ -81,14 +93,14 @@ Double quoted strings may contain the following escapes:
 :   Double quote
 
 `\x0a`
-:   Hexadecimal byte value 0x0a. Note that `\x00` is not supported
-    because strings are NUL-terminated.
+:   Hexadecimal byte value 0x0A (note that `\x00` is not supported,
+    because strings are null-terminated)
 
 `\u20ac`
-:   Four hex digit Unicode code point U+20AC.
+:   Four hex digit Unicode code point U+20AC
 
 `\U000020ac`
-:   Eight hex digit Unicode code point U+20AC.
+:   Eight hex digit Unicode code point U+20AC
 
 # Commands
 
@@ -98,18 +110,25 @@ Configuration commands are used to customize certain aspects of the
 editor, for example adding key bindings, setting options, etc. These
 are the only commands allowed in user config files.
 
-### **alias** _name_ _command_
+### **alias** _name_ [_command_]
 
-Create an alias _name_ for _command_.
+Create an alias _name_ for _command_. If no _command_ is given then any
+existing alias for _name_ is removed.
 
-Example:
+Aliases can be used in command mode or [bound][`bind`] to keys, just as
+normal commands can. When aliases are used in place of commands, they
+are first recursively expanded (to allow aliases of aliases) and any
+additional arguments are then added to the end of the expanded command.
+
+For example, if the following alias is created:
 
     alias read 'pipe-from cat'
 
-Now you can run `read file.txt` to insert `file.txt` into the current
-buffer.
+this can then be invoked as `read file.txt`, which will expand to
+the command `pipe-from cat file.txt` and thus cause `file.txt` to be
+inserted into the current buffer.
 
-### **bind** _key_ [_command_]
+### **bind** [**-cns**] _key_ [_command_]
 
 Bind _command_ to _key_. If no _command_ is given then any existing
 binding for _key_ is removed.
@@ -130,18 +149,80 @@ Special keys:
 * `enter`
 * `tab`
 * `space`
-* `F1`..`F12`
+* `F1`..`F20`
 
 Modifiers:
 
 Ctrl:
-:   `C-X` or `^X`
+:   `C-x` (or `^X`)
 
 Alt:
-:   `M-X`
+:   `M-x`
 
 Shift:
 :   `S-left`
+
+Super:
+:   `s-left`
+
+Hyper:
+:   `H-left`
+
+The _key_ is bound in normal mode by default, unless one or more of the
+following flags are used:
+
+`-c`
+:   Add binding for [`command`] mode
+
+`-n`
+:   Add binding for normal mode
+
+`-s`
+:   Add binding for [`search`] mode
+
+The commands available in normal mode are the ones listed in the main
+sections of this manual.
+
+The commands available in [`command`]/[`search`] modes are as follows:
+
+* `left`
+* `right`
+* `word-bwd`
+* `word-fwd`
+* `bol`
+* `eol`
+* `delete`
+* `delete-word`
+* `delete-eol`
+* `erase`
+* `erase-word`
+* `erase-bol`
+* `clear`
+* `copy` [**-bip**]
+* `paste` [**-m**]
+* `toggle` [**-g**] _option_ [_values_]...
+* `accept` [**-eH**] - Execute command or perform search
+* `cancel` - Return to normal mode
+* `history-next` - Find next history item matching current prefix
+* `history-prev` - Find previous history item matching current prefix
+* `complete-next` - Select next auto-completion in command mode
+* `complete-prev` - Select previous auto-completion in command mode
+* `direction` - Toggle search direction in search mode
+
+Most of these commands behave in a similar fashion to the normal mode
+commands of the same name. The exceptions to this have been given a
+short description above.
+
+Most of the command flags also behave similarly to the normal mode
+equivalents, except for `accept -H`, which accepts the current text
+without adding a history entry and `accept -e` (search mode only)
+which escapes all [`regex`] special characters before performing a
+(plain-text) search.
+
+See also:
+
+* The ["key bindings"] section in the [`dte`] man page
+* The [`show bind`] command (below)
 
 ### **set** [**-gl**] _option_ [_value_] ...
 
@@ -178,7 +259,7 @@ See also: [`toggle`] and [`option`] commands.
 
 Set (or unset) environment variable.
 
-### **hi** [**-c**] _name_ [_fg-color_ [_bg-color_]] [_attribute_]...
+### **hi** [**-c**] [_name_] [_fg-color_ [_bg-color_]] [_attribute_]...
 
 Set highlight color.
 
@@ -206,7 +287,8 @@ The _fg-color_ and _bg-color_ arguments can be one of the following:
 * No value (equivalent to `default`)
 * A numeric value between `-2` and `255`
 * A 256-color palette value in R/G/B notation (e.g. `0/3/5`)
-* A true color value in CSS-style #RRGGBB notation (e.g. `#ab90df`)
+* A true color value in #RRGGBB notation (e.g. `#ab90df`)
+* A true color value in #RGB notation (e.g. `#1ef`)
 * `keep` (`-2`)
 * `default` (`-1`)
 * `black` (`0`)
@@ -231,7 +313,7 @@ are grayscale values.
 
 If the terminal has limited support for rendering colors, the _fg-color_
 and _bg-color_ arguments will fall back to the nearest supported color
-(unless the `-c` flag is used).
+(unless the `-c` flag is used; see below).
 
 The _attribute_ argument(s) can be any combination of the following:
 
@@ -256,9 +338,14 @@ Unset fg/bg colors are inherited from highlight color `default`.
 If you don't set fg/bg for the highlight color `default` then
 terminal's default fg/bg is used.
 
+If `hi` is run without any arguments, all highlight colors are
+removed and a baseline set of defaults is then loaded (as if by
+running [`include -b`] on the built-in [`color/reset`] config).
+
 `-c`
 :   Do nothing at all if the terminal can't display _fg-color_ and/or
-    _bg-color_ with full precision
+    _bg-color_ with full precision (this can be used to set up tiered
+    color schemes that use the best supported colors automatically)
 
 ### **ft** [**-b**|**-c**|**-f**|**-i**] _filetype_ _string_...
 
@@ -318,9 +405,10 @@ Read and execute commands from _file_.
 :   Don't show an error message if _file_ doesn't exist
 
 Note: "built-in files" are config files bundled into the program binary.
-See the `-B` and `-b` flags in the [`dte`] man page for more information.
+See the `-B` and `-b` flags in the [`dte`] man page and the [`show include`]
+command for more information.
 
-### **errorfmt** [**-i**] _compiler_ _regexp_ [file|line|column|message|_]...
+### **errorfmt** [**-i**] _compiler_ [_regexp_] [file|line|column|message|_]...
 
 Register a [`regex`] pattern, for later use with the [`compile`] command.
 
@@ -337,6 +425,9 @@ file position. To use parentheses in _regexp_ but ignore the capture, use
 Running `errorfmt` multiple times with the same _compiler_ name appends
 each _regexp_ to a list. When running `compile`, the entries in the
 specified list are checked for a match in the same order they were added.
+
+If only 1 argument (i.e. _compiler_) is given, all patterns previously
+added for that compiler name will be removed.
 
 For a basic example of usage, see the output of `dte -b compiler/go`.
 
@@ -382,7 +473,7 @@ Change the working directory and update `$PWD` and `$OLDPWD`. Running
 Enter command mode. If _text_ is given then it is written to the command
 line (see the default `^L` key binding for why this is useful).
 
-### **search** [**-Hnprw**] [_pattern_]
+### **search** [**-Hr**] [**-n**|**-p**|**-w**|_pattern_]
 
 If no flags or just `-r` and no _pattern_ given then dte changes to
 search mode where you can type a regular expression to search.
@@ -413,10 +504,10 @@ Trigger a full redraw of the screen.
 Open file. If _filename_ is omitted, a new file is opened.
 
 `-e` _encoding_
-:   Set file _encoding_. See `iconv -l` for list of supported encodings.
+:   Set file _encoding_ (see `iconv -l` for list of supported encodings)
 
 `-g`
-:   Perform [`glob`] expansion on _filename_.
+:   Perform [`glob`] expansion on _filename_
 
 `-t`
 :   Mark buffer as "temporary" (always closeable, without warnings for
@@ -445,7 +536,7 @@ Save current buffer.
 :   Open a command prompt if there's no specified or existing _filename_
 
 `-e` _encoding_
-:   Set file _encoding_. See `iconv -l` for list of supported encodings.
+:   Set file _encoding_ (see `iconv -l` for list of supported encodings)
 
 See also: [`newline`] and [`utf8-bom`] global options
 
@@ -483,32 +574,32 @@ Move current tab to position _N_ or 1 position left or right.
 
 ## Window Management Commands
 
-### **wsplit** [**-bghnrt**] [_filename_]...
+### **wsplit** [**-bghr**] [**-n**|**-t**|_filename_...]
 
 Split the current window.
 
 _filename_ arguments will be opened in a manner similar to the [`open`]
-command. If there are no arguments, the contents of the new window will
-be an additional view of the current buffer.
+command. If there are no _filename_ arguments, the contents of the new
+window will be an additional view of the current buffer.
 
 `-b`
-:   Add new window before current instead of after.
+:   Add new window before current instead of after
 
 `-g`
-:   Perform [`glob`] expansion on _filename_.
+:   Perform [`glob`] expansion on _filename_
 
 `-h`
-:   Split horizontally instead of vertically.
+:   Split horizontally instead of vertically
 
 `-n`
-:   Create a new, empty buffer.
+:   Create a new, empty buffer
 
 `-r`
-:   Split root instead of current window.
+:   Split root instead of current window
 
 `-t`
-:   Mark buffer as "temporary" (always closeable, without warnings
-    for "unsaved changes")
+:   Create a new, empty buffer and mark it as "temporary" (always
+    closeable, without warnings for "unsaved changes")
 
 ### **wclose** [**-f**|**-p**]
 
@@ -539,15 +630,15 @@ If no parameter given, equalize window sizes in current frame.
 :   Resize vertically
 
 _N_
-:   Set size of current window to _N_ characters.
+:   Set size of current window to _N_ columns/rows
 
 `+`_N_
-:   Increase size of current window by _N_ characters.
+:   Increase size of current window by _N_ columns/rows
 
 `-`_N_
-:   Decrease size of current window by _N_ characters. Use `--` to
+:   Decrease size of current window by _N_ columns/rows (use `--` to
     prevent the minus symbol being parsed as an option flag, e.g.
-    `wresize -- -5`.
+    `wresize -- -5`)
 
 ### **wflip**
 
@@ -620,32 +711,36 @@ Move backward one word.
 `-s`
 :   Skip special characters
 
-### **bol** [**-cs**]
+### **bol** [**-c**] [**-s**|**-t**]
 
 Move to beginning of current line.
 
 `-s`
 :   Move to beginning of indented text or beginning of line, depending
-    on current cursor position.
+    on current cursor position
+
+`-t`
+:   Like `-s`, but with the additional behavior of moving back and forth
+    between the two positions
 
 ### **eol** [**-c**]
 
 Move to end of current line.
 
-### **bof**
+### **bof** [**-c**|**-l**]
 
 Move to beginning of file.
 
-### **eof**
+### **eof** [**-c**|**-l**]
 
 Move to end of file.
 
-### **bolsf**
+### **bolsf** [**-c**|**-l**]
 
 Incrementally move to beginning of line, then beginning of screen, then
 beginning of file.
 
-### **eolsf**
+### **eolsf** [**-c**|**-l**]
 
 Incrementally move to end of line, then end of screen, then end of file.
 
@@ -676,29 +771,52 @@ Center view to cursor.
 Move to the bracket character paired with the one under the cursor.
 The character under the cursor should be one of `{}[]()<>`.
 
-### **line** _number_
+### **line** _lineno_[`,`_colno_]
 
-Go to line.
+Move the cursor to the line number specified by _lineno_ and
+(optionally) the column number specified by _colno_. The delimiter
+between the two numbers can either be a comma (`,`) or a colon (`:`).
 
-### **tag** [**-r**] [_tag_]
+Examples:
 
-Save the current location and jump to the location of _tag_. If no _tag_
-argument is specified then the word under the cursor is used instead.
+    line 19
+    line 20,15
+    line 20:15
 
-This command requires a `tags` file generated by [`ctags`]. `tags` files
-are searched for in the current working directory and its parent
-directories.
+### **bookmark** [**-r**]
+
+Save the current file/cursor location to a stack.
 
 `-r`
-:   jump back to the previous location
+:   Jump back to the previous location (and pop it off the stack)
+
+### **tag** [**-r**|_tag_]
+
+Save the current file/cursor location to a stack and jump to the
+location of _tag_. If the _tag_ argument is not given, the word under
+the cursor is used instead (unless `-r` is used).
+
+The location for _tag_ is determined by parsing a `tags` file from the
+current directory, or any of its parent directories. These files are
+expected be encoded in [`ctags`] format.
+
+`-r`
+:   Jump back to the previous location (and pop it off the stack)
+
+Note: the saving of the cursor location described above is much the same
+as running [`bookmark`] and `tag -r` is identical to `bookmark -r`.
 
 See also: [`msg`] command.
 
-### **msg** [**-n**|**-p**]
+### **msg** [**-n**|**-p**|_number_]
 
-Show latest, next (`-n`) or previous (`-p`) message. If its location
-is known (compile error or tag message) then the file will be
-opened and cursor moved to the location.
+Display and/or navigate messages, as generated by the [`compile`]
+and [`tag`] commands. If the activated message has an associated
+file location, the file will be opened and the cursor moved to
+the appropriate position.
+
+If no `-n` or `-p` flag or _number_ argument is given, the current
+message will be displayed.
 
 `-n`
 :   Next message
@@ -706,33 +824,65 @@ opened and cursor moved to the location.
 `-p`
 :   Previous message
 
-See also: [`compile`] and [`tag`] commands.
-
 ## Editing Commands
 
 ### **cut**
 
 Cut current line or selection.
 
-### **copy** [**-k**]
+### **copy** [**-bikp**]
 
 Copy current line or selection.
+
+`-b`
+:   Copy to system clipboard
+
+`-i`
+:   Copy to internal copy buffer (this is the default, if no **-bip**
+    flags are used)
 
 `-k`
 :   Keep selection (by default, selections are lost after copying)
 
-### **paste** [**-c**]
+`-p`
+:   Copy to system "primary selection"
 
-Paste text previously copied by the [`copy`] or [`cut`] commands.
+Note that the **-b** and **-p** flags depend upon the terminal
+supporting "OSC 52" escape sequences. If the terminal lacks this
+support, these flags will simply do nothing. OSC 52 sends data over
+the wire, so it can be used over SSH and still work as expected,
+unlike most other methods of copying to the system clipboard.
+
+The **-i**, **-b** and **-p** flags can be used together, to allow
+copying to multiple targets in a single command. For example:
+
+    copy -ib
+
+### **paste** [**-m**] [**-a**|**-c**]
+
+Insert text previously copied by the [`copy`] or [`cut`] commands.
+
+If the text to be inserted was copied from a whole-line selection
+(e.g. `down -l; copy`) or as a whole, single line (e.g. `unselect; copy`)
+the default behaviour is to insert the text at the start of the line
+below the cursor.
+
+`-a`
+:   Paste above the cursor (instead of below), if pasting whole lines
 
 `-c`
-:   Paste at the cursor position, even when the text was copied as
-    a whole-line selection (where the usual default is to paste at
-    the start of the next line)
+:   Always paste directly at the cursor position, even when pasting
+    whole lines (instead of below/above the cursor)
+
+`-m`
+:   Move after the pasted text
 
 ### **undo**
 
 Undo latest change.
+
+`-m`
+:   Move to the change, without undoing it
 
 ### **redo** [_choice_]
 
@@ -748,13 +898,19 @@ then, for example, `redo 1`.
 
 Clear current line.
 
+`-i`
+:   Do not [`auto-indent`] the line after clearing
+
 ### **join**
 
 Join selection or next line to current.
 
-### **new-line**
+### **new-line** [**-a**]
 
-Insert empty line under current line.
+Insert empty line below current line.
+
+`-a`
+:   Insert above current line, instead of below
 
 ### **delete**
 
@@ -804,15 +960,15 @@ vice versa.
 `-u`
 :   Upper case
 
-### **insert** [**-km**] _text_
+### **insert** [**-k**|**-m**] _text_
 
 Insert _text_ into the buffer.
 
 `-k`
-:   Insert one character at a time, as if manually typed. Normally
+:   Insert one character at a time, as if manually typed (normally
     _text_ is inserted exactly as specified, but this option allows
     it to be affected by special input handling like auto-indents,
-    whitespace trimming, line-by-line undo, etc.
+    whitespace trimming, line-by-line undo, etc.)
 
 `-m`
 :   Move after inserted text
@@ -875,17 +1031,16 @@ This command merges the selection into one paragraph. To format
 multiple paragraphs use the external `fmt` program with the
 [`filter`] command, e.g. `filter fmt -w 60`.
 
-### **select** [**-bkl**]
+### **select** [**-kl**]
 
-Enter selection mode. All movement commands while in this mode extend
-the selected area.
+Enter selection mode. All basic movement commands while in this mode
+extend the selected area, until either the [`unselect`] command is used
+(e.g. by pressing `Esc`) or some other operation (e.g. [`delete`],
+[`insert`], etc.) clears the selection.
 
 Note: A better way to create selections is to hold the Shift key whilst
 moving the cursor. The `select` command exists mostly as a fallback,
 for terminals with limited key binding support.
-
-`-b`
-:   Select block between opening `{` and closing `}` curly braces
 
 `-k`
 :   Keep existing selections
@@ -895,58 +1050,97 @@ for terminals with limited key binding support.
 
 ### **unselect**
 
-Unselect.
+Cancel selection.
 
 ## External Commands
 
-### **filter** [**-l**] _command_ [_parameter_]...
+### **exec** [**-pstmn**] [**-ioe** _action_]... _command_ [_parameter_]...
 
-Filter selected text or whole file through external _command_.
+Execute external _command_, with custom actions for standard streams.
+The `-i`, `-o` and `-e` options represent standard input, output and
+error respectively and each one can be given a specific _action_, as
+described below.
 
-Example:
+The following _action_ arguments are supported by all **-ioe** options:
+
+* `null` - redirect to `/dev/null`
+* `tty` - redirect to controlling terminal (default action)
+
+Actions for stdin (`-i`):
+
+* `buffer` - pipe selected text or whole buffer (to _command_)
+* `line` - pipe selected text or current line
+* `word` - pipe selected text or current word
+* `command` - pipe command history
+* `search` - pipe search history
+* `msg` - pipe list of numbered messages (see [`msg`] command)
+
+Actions for stdout (`-o`):
+
+* `buffer` - [`insert`] output (from _command_) into buffer
+* `eval` - execute output as dterc commands
+* `msg` - run [`msg`] command with numerical argument parsed from first
+  line of output
+* `open` - run [`open`] command with each line of output as an argument
+* `tag` - run [`tag`] command with first line of output as an argument
+
+Actions for stderr (`-e`):
+
+* `errmsg` - if _command_ exits non-zero, display first line of stderr
+  output as an error message
+
+`-i` _action_
+:   Specify standard input action
+
+`-o` _action_
+:   Specify standard output action
+
+`-e` _action_
+:   Specify standard error action
+
+`-p`
+:   Display "press any key to continue" prompt
+
+`-s`
+:   Don't yield terminal control to child processes and transparently
+    convert `tty` actions to `null` (use this to avoid screen flicker
+    when _command_ doesn't need terminal access)
+
+`-t`
+:   Cancel the effects of `-s` (last one wins)
+
+`-m`
+:   Move cursor after any inserted text
+
+`-n`
+:   Strip newline from end of inserted text
+
+For convenience, there are several built-in aliases to simplify common
+uses of `exec`:
+
+    alias filter 'exec -s -i buffer -o buffer -e errmsg'
+    alias pipe-from 'exec -s -o buffer -e errmsg'
+    alias pipe-to 'exec -s -i buffer -e errmsg'
+    alias run 'exec'
+    alias eval 'exec -o eval'
+    alias exec-open 'exec -o open'
+    alias exec-tag 'exec -o tag'
+    alias exec-msg 'exec -o msg -i msg'
+
+Examples:
 
     filter sort -r
+    filter sh -c 'tr a-z A-Z | sed s/foo/bar/'
+    pipe-to xsel -b
+    exec-open -s find . -type f -name *.h
+    exec-open -s git ls-files --modified
+    exec-open fzf -m --reverse
+    exec-tag -s echo main
+    exec-tag sh -c 'readtags -l | cut -f1 | sort | uniq | fzf --reverse'
 
 Note that _command_ is executed directly using [`execvp`]. To use shell
 features like pipes or redirection, use a shell interpreter as the
-_command_. For example:
-
-    filter sh -c 'tr a-z A-Z | sed s/foo/bar/'
-
-`-l`
-:   Operate on current line instead of whole file, if there's no selection
-
-### **pipe-from** [**-ms**] _command_ [_parameter_]...
-
-Run external _command_ and insert its standard output.
-
-`-m`
-:   Move after the inserted text
-
-`-s`
-:   Strip newline from end of output
-
-### **pipe-to** [**-l**] _command_ [_parameter_]...
-
-Run external _command_ and pipe the selected text (or whole file) to
-its standard input.
-
-Can be used to e.g. write text to the system clipboard:
-
-    pipe-to xsel -b
-
-`-l`
-:   Operate on current line instead of whole file, if there's no selection
-
-### **run** [**-ps**] _command_ [_parameters_]...
-
-Run external _command_.
-
-`-p`
-:   Display "Press any key to continue" prompt
-
-`-s`
-:   Silent -- both `stderr` and `stdout` are redirected to `/dev/null`
+_command_ (see second example above).
 
 ### **compile** [**-1ps**] _errorfmt_ _command_ [_parameters_]...
 
@@ -969,38 +1163,6 @@ exits successfully, parsed messages can be navigated using the
 :   Silent. Both `stderr` and `stdout` are redirected to `/dev/null`
 
 See also: [`errorfmt`] and [`msg`] commands.
-
-### **eval** _command_ [_parameter_]...
-
-Run external _command_ and execute its standard output text as dterc
-commands.
-
-### **exec-open** [**-s**] _command_ [_parameter_]...
-
-Run external _command_ and open all filenames listed on its standard
-output.
-
-`-s`
-:   Don't yield terminal control to the child process
-
-Example uses:
-
-    exec-open -s find . -type f -name *.h
-    exec-open -s git ls-files --modified
-    exec-open fzf -m --reverse
-
-### **exec-tag** [**-s**] _command_ [_parameter_]...
-
-Run external _command_ and then execute the `tag` command with its
-first line of standard output as the argument.
-
-`-s`
-:   Don't yield terminal control to the child process
-
-Example uses:
-
-    exec-tag -s echo main
-    exec-tag sh -c 'readtags -l | cut -f1 | sort | uniq | fzf --reverse'
 
 ## Other Commands
 
@@ -1049,17 +1211,29 @@ The _type_ argument can be one of:
 `ft`
 :   Show [filetype associations][`ft`]
 
+`hi`
+:   Show [highlight colors][`hi`]
+
 `include`
 :   Show [built-in configs][`include`]
 
 `macro`
 :   Show last recorded [macro][`macro`]
 
+`msg`
+:   Show [messages][`msg`]
+
 `option`
-:   Show [option values](#options)
+:   Show [option values](#options) and automatic [`option`] entries
 
 `search`
 :   Show [search history][`search`]
+
+`set`
+:   Show [option values](#options)
+
+`setenv`
+:   Show environment variables, in terms of the [`setenv`] command
 
 `wsplit`
 :   Show [window dimensions][`wsplit`]
@@ -1068,8 +1242,12 @@ The _key_ argument is the name of the entry to look up (e.g. the alias
 name). If this argument is omitted, the full list of entries of the
 specified _type_ will be displayed in a new buffer.
 
+Note: the majority of _type_ arguments correspond to a command of the
+same name and some _type_ arguments don't take any _key_ argument.
+
 `-c`
-:   write value to command line (if possible)
+:   write output to the command line (for most _type_ arguments) or to
+    the current buffer (when _type_ is `errorfmt` or `include`)
 
 ### **macro** _action_
 
@@ -1107,18 +1285,14 @@ command to set default options for specific file types.
 ### **case-sensitive-search** [true]
 
 `false`
-:   Search is case-insensitive.
+:   Search is case-insensitive
 
 `true`
-:   Search is case-sensitive.
+:   Search is case-sensitive
 
 `auto`
 :   If search string contains an uppercase letter search is
-    case-sensitive, otherwise it is case-insensitive.
-
-### **display-invisible** [false]
-
-Display invisible characters.
+    case-sensitive, otherwise it is case-insensitive
 
 ### **display-special** [false]
 
@@ -1155,6 +1329,20 @@ created files.
 Note: buffers opened from existing files will have their newline
 type detected automatically.
 
+### **optimize-true-color** [true]
+
+If set to `true`, this option will cause the [`hi`] command to
+automatically replace 24-bit #RRGGBB colors with palette colors 16-255,
+but only if there's an exact color match among the default, extended
+palette colors.
+
+This allows defining color schemes in #RRGGBB notation while still
+sending the shortest possible escape sequence to the terminal.
+
+Note: this optimization only works if the terminal has not been
+configured with custom values for colors 16-255. If you have changed
+these extended palette colors, you should set this option to `false`.
+
 ### **select-cursor-char** [true]
 
 Whether to include the character under the cursor in selections.
@@ -1172,64 +1360,70 @@ terminal supports it).
 
 Show line numbers.
 
-### **statusline-left** [" %f%s%m%r%s%M"]
+### **statusline-left** [" %f%s%m%s%r%s%M"]
 
 Format string for the left aligned part of status line.
 
 `%f`
-:   Filename.
+:   Filename
 
 `%m`
-:   Prints `*` if file is has been modified since last save.
+:   Prints `*` if file has been modified since last save
 
 `%r`
-:   Prints `RO` for read-only buffers or `TMP` for temporary buffers.
+:   Prints `RO` for read-only buffers or `TMP` for temporary buffers
 
 `%y`
-:   Cursor row.
+:   Cursor row
 
 `%Y`
-:   Total rows in file.
+:   Total rows in file
 
 `%x`
-:   Cursor display column.
+:   Cursor display column
 
 `%X`
 :   Cursor column as characters. If it differs from cursor display
-    column then both are shown (e.g. `2-9`).
+    column then both are shown (e.g. `2-9`)
 
 `%p`
-:   Position in percentage.
+:   Position in percentage
 
 `%E`
-:   File encoding.
+:   File encoding
+
+`%b`
+:   Prints `BOM` if file has a byte order mark
 
 `%M`
-:   Miscellaneous status information.
+:   Miscellaneous status information
 
 `%n`
-:   Line-ending (`LF` or `CRLF`).
+:   Line-ending (`LF` or `CRLF`)
 
 `%N`
-:   Line-ending (only if `CRLF`).
+:   Line-ending (only if `CRLF`)
 
 `%s`
 :   Separator (a single space, unless the preceding format character
-    expanded to an empty string).
+    expanded to an empty string)
 
 `%S`
-:   Like `%s`, but 3 spaces instead of 1.
+:   Like `%s`, but 3 spaces instead of 1
 
 `%t`
-:   File type.
+:   [File type][`filetype`]
 
 `%u`
-:   Hexadecimal Unicode value value of character under cursor.
+:   Hexadecimal Unicode value value of character under cursor
+
+`%o`
+:   Prints `OVR` or `INS` for [`overwrite`] mode on or off respectively
 
 `%%`
-:   Literal `%`.
+:   Literal `%`
 
-### **statusline-right** [" %y,%X   %u   %E%s%b%s%n %t   %p "]
+### **statusline-right** [" %y,%X  %u  %o  %E%s%b%s%n %t   %p "]
 
 Format string for the right aligned part of status line.
 
@@ -1308,6 +1502,11 @@ See also: the `FILES` section in the [`dte`] man page.
 
 Size of indentation in spaces.
 
+### **overwrite** [false]
+
+If set to `true`, typing will overwrite existing characters within current
+line instead of inserting before them.
+
 ### **syntax** [true]
 
 Use syntax highlighting.
@@ -1333,8 +1532,7 @@ errors should be highlighted. Set to `""` to disable.
     the same as `space-indent`.
 
 `space-align`
-:   Highlight spaces used for alignment after tab
-    indents as errors.
+:   Highlight spaces used for alignment after tab indents as errors.
 
 `space-indent`
 :   Highlight space indents as errors. Note that this still allows
@@ -1360,16 +1558,18 @@ errors should be highlighted. Set to `""` to disable.
 
 [`dte`]: dte.html
 [`dte-syntax`]: dte-syntax.html
+["key bindings"]: dte.html#key-bindings
 [`$DTE_HOME`]: dte.html#environment
+[double quotes]: #double-quoted-strings
+[`color/reset`]: https://gitlab.com/craigbarnes/dte/-/blob/master/config/color/reset
 [`execvp`]: https://pubs.opengroup.org/onlinepubs/9699919799/functions/execvp.html
 [`glob`]: https://pubs.opengroup.org/onlinepubs/9699919799/functions/glob.html
 [`regex`]: https://pubs.opengroup.org/onlinepubs/9699919799/basedefs/V1_chap09.html#tag_09_04
-[`xterm`]: https://invisible-island.net/xterm/
 [`ctags`]: https://ctags.io/
-[double quotes]: #double-quoted-strings
 
 [`alias`]: #alias
 [`bind`]: #bind
+[`bookmark`]: #bookmark
 [`command`]: #command
 [`compile`]: #compile
 [`copy`]: #copy
@@ -1381,10 +1581,11 @@ errors should be highlighted. Set to `""` to disable.
 [`filter`]: #filter
 [`ft`]: #ft
 [`hi`]: #hi
+[`include -b`]: #include
 [`include`]: #include
+[`insert`]: #insert
 [`left`]: #left
 [`macro`]: #macro
-[`message`]: #message
 [`msg`]: #msg
 [`open`]: #open
 [`option`]: #option
@@ -1392,14 +1593,16 @@ errors should be highlighted. Set to `""` to disable.
 [`pgup`]: #pgup
 [`right`]: #right
 [`save`]: #save
-[`scroll-pgdown`]: #scroll-pgdown
-[`scroll-pgup`]: #scroll-pgup
 [`search`]: #search
 [`set`]: #set
+[`setenv`]: #setenv
+[`show bind`]: #show
+[`show include`]: #show
 [`show macro`]: #show
 [`tag`]: #tag
 [`toggle`]: #toggle
 [`undo`]: #undo
+[`unselect`]: #unselect
 [`wrap-paragraph`]: #wrap-paragraph
 [`wsplit`]: #wsplit
 
@@ -1409,6 +1612,7 @@ errors should be highlighted. Set to `""` to disable.
 [`indent-regex`]: #indent-regex
 [`indent-width`]: #indent-width
 [`newline`]: #newline
+[`overwrite`]: #overwrite
 [`tab-width`]: #tab-width
 [`text-width`]: #text-width
 [`utf8-bom`]: #utf8-bom

@@ -54,36 +54,36 @@ bind C-M-S-delete 'delete-eol'
 # on the terminal, so they're both bound to "erase" by default for
 # portability. On some terminals one may be equivalent to Backspace
 # and the other Ctrl+Backspace.
-bind C-H erase
+bind C-h erase
 bind C-? erase
-bind M-C-H 'erase-word -s'
+bind M-C-h 'erase-word -s'
 bind M-C-? 'erase-word -s'
 
-bind ^C 'copy -k'
-bind ^F search
-bind ^G 'search -n'
-# ^I == Tab
-bind ^L 'command line\ '
-# ^M == Enter
-bind ^N open
-bind ^O 'command open\ '
-bind ^Q 'quit -p'
-bind ^R 'command replace\ '
-bind ^S 'save -p'
-bind ^T open
-bind ^V 'paste -c'
-bind ^W 'close -pwq'
-bind ^X cut
-bind ^Y redo
-bind ^Z undo
-bind ^] tag
-bind ^[ unselect
+bind C-c 'copy -k'
+bind C-f search
+bind C-g 'search -n'
+# C-i == Tab
+bind C-l 'command line\ '
+# C-m == Enter
+bind C-n open
+bind C-o 'command open\ '
+bind C-q 'quit -p'
+bind C-r 'command replace\ '
+bind C-s 'save -p'
+bind C-t open
+bind C-v 'paste -a'
+bind C-w 'close -pwq'
+bind C-x cut
+bind C-y redo
+bind C-z undo
+bind C-] tag
+bind C-[ unselect
 
 bind M-b bof
 bind M-c 'toggle -v case-sensitive-search'
 bind M-e eof
 bind M-f 'search -w'
-bind M-F 'search -wr'
+bind M-S-f 'search -wr'
 bind M-j wrap-paragraph
 bind M-n 'msg -n'
 bind M-p 'msg -p'
@@ -104,24 +104,70 @@ bind M-0 'view last'
 
 bind M-, prev
 bind M-. next
-bind M-< wprev
-bind M-> wnext
 bind M-- 'shift -- -1'
 bind M-= 'shift +1'
 bind M-\; command
-bind M-: command
 bind M-/ search
-bind M-? 'search -r'
 
+bind M-< wprev
+bind M-> wnext
+bind M-: command
+bind M-? 'search -r'
 bind M-! 'move-tab left'
 bind M-@ 'move-tab right'
+
+bind M-S-, wprev
+bind M-S-. wnext
+bind M-S-\; command
+bind M-S-/ 'search -r'
+bind M-S-1 'move-tab left'
+bind M-S-2 'move-tab right'
 
 bind F1 'run man dterc'
 bind F3 'search -n'
 bind F4 'search -p'
 bind F5 refresh
 
-# Most terminals don't support sending these modifer+key combinations
+# Most terminals don't support sending these modifier+key combinations
 # as distinct sequences, so don't be surprised if they don't work.
 bind C-tab next
 bind C-S-tab prev
+
+# Command/search mode bindings:
+bind -cs left left
+bind -cs right right
+bind -cs up history-prev
+bind -cs down history-next
+bind -cs home bol
+bind -cs end eol
+bind -cs delete delete
+bind -cs C-left word-bwd
+bind -cs C-right word-fwd
+bind -cs M-left bol
+bind -cs M-right eol
+bind -cs C-delete delete-word
+bind -cs M-delete delete-word
+bind -cs C-M-h erase-word
+bind -cs C-M-? erase-word
+bind -cs C-a bol
+bind -cs C-b left
+bind -cs C-c cancel
+bind -cs C-d delete
+bind -cs C-e eol
+bind -cs C-f right
+bind -cs C-g cancel
+bind -cs C-h erase
+bind -cs C-k delete-eol
+bind -cs C-u erase-bol
+bind -cs C-w erase-word
+bind -cs C-? erase
+bind -cs C-[ cancel
+bind -cs M-b word-bwd
+bind -cs M-d delete-word
+bind -cs M-f word-fwd
+bind -cs enter accept
+bind -c tab complete-next
+bind -c S-tab complete-prev
+bind -s M-enter 'accept -e'
+bind -s M-c 'toggle case-sensitive-search'
+bind -s M-r direction

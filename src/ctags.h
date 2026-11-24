@@ -2,34 +2,30 @@
 #define CTAGS_H
 
 #include <stdbool.h>
-#include <sys/types.h>
+#include <stddef.h>
+#include "util/macros.h"
+#include "util/string-view.h"
 
 typedef struct {
-    char *filename;
-    char *buf;
-    size_t size;
-    time_t mtime;
-} TagFile;
-
-typedef struct {
-    char *name;
-    char *filename;
-    char *pattern;
-    char *member;
-    char *typeref;
-    unsigned long line;
-    char kind;
-    bool local;
+    StringView name; // Name of tag (points into TagFile::buf)
+    StringView filename; // File containing tag (points into TagFile::buf)
+    char *pattern; // Regex pattern used to locate tag (escaped ex command)
+    unsigned long lineno; // Line number in file (mutually exclusive with pattern)
+    char kind; // ASCII letter representing type of tag (e.g. f=function)
+    bool local; // Indicates if tag is local to file (e.g. "static" in C)
 } Tag;
 
+NONNULL_ARGS WARN_UNUSED_RESULT
 bool next_tag (
-    const TagFile *tf,
+    const char *buf,
+    size_t buf_len,
     size_t *posp,
-    const char *prefix,
+    const StringView *prefix,
     bool exact,
     Tag *t
 );
 
-void free_tag(Tag *t);
+bool parse_ctags_line(Tag *t, const char *line, size_t line_len) NONNULL_ARG(1);
+void free_tag(Tag *t) NONNULL_ARGS;
 
 #endif

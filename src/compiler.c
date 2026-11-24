@@ -1,89 +1,120 @@
 #include <stdlib.h>
+#include <string.h>
 #include "compiler.h"
 #include "command/serialize.h"
-#include "completion.h"
 #include "error.h"
 #include "regexp.h"
-#include "util/hashmap.h"
-#include "util/hashset.h"
+#include "util/array.h"
+#include "util/debug.h"
+#include "util/intern.h"
 #include "util/str-util.h"
 #include "util/xmalloc.h"
 
-static HashMap compilers = HASHMAP_INIT;
+static const char capture_names[][8] = {
+    [ERRFMT_FILE] = "file",
+    [ERRFMT_LINE] = "line",
+    [ERRFMT_COLUMN] = "column",
+    [ERRFMT_MESSAGE] = "message"
+};
 
-static Compiler *add_compiler(const char *name)
-{
-    Compiler *c = find_compiler(name);
-    if (c) {
-        return c;
-    }
-    c = xnew0(Compiler, 1);
-    hashmap_insert(&compilers, xstrdup(name), c);
-    return c;
+UNITTEST {
+    CHECK_STRING_ARRAY(capture_names);
 }
 
-Compiler *find_compiler(const char *name)
+static Compiler *find_or_add_compiler(HashMap *compilers, const char *name)
 {
-    return hashmap_get(&compilers, name);
+    Compiler *c = find_compiler(compilers, name);
+    return c ? c : hashmap_insert(compilers, xstrdup(name), xnew0(Compiler, 1));
 }
 
-void add_error_fmt (
-    const char *compiler,
+Compiler *find_compiler(const HashMap *compilers, const char *name)
+{
+    return hashmap_get(compilers, name);
+}
+
+bool add_error_fmt (
+    HashMap *compilers,
+    const char *name,
     bool ignore,
     const char *format,
     char **desc
 ) {
-    static const char names[][8] = {"file", "line", "column", "message"};
-    int idx[ARRAY_COUNT(names)] = {-1, -1, -1, 0};
+    int8_t idx[] = {
+        [ERRFMT_FILE] = -1,
+        [ERRFMT_LINE] = -1,
+        [ERRFMT_COLUMN] = -1,
+        [ERRFMT_MESSAGE] = 0,
+    };
 
-    for (size_t i = 0, j = 0; desc[i]; i++) {
-        for (j = 0; j < ARRAY_COUNT(names); j++) {
-            if (streq(desc[i], names[j])) {
-                idx[j] = ((int)i) + 1;
-                break;
-            }
-        }
+    size_t max_idx = 0;
+    for (size_t i = 0, j = 0, n = ARRAYLEN(capture_names); desc[i]; i++) {
+        BUG_ON(i >= ERRORFMT_CAPTURE_MAX);
         if (streq(desc[i], "_")) {
             continue;
         }
-        if (unlikely(j == ARRAY_COUNT(names))) {
-            error_msg("Unknown substring name %s.", desc[i]);
-            return;
+        for (j = 0; j < n; j++) {
+            if (streq(desc[i], capture_names[j])) {
+                max_idx = i + 1;
+                idx[j] = max_idx;
+                break;
+            }
+        }
+        if (unlikely(j == n)) {
+            return error_msg("unknown substring name %s", desc[i]);
         }
     }
 
     ErrorFormat *f = xnew(ErrorFormat, 1);
     f->ignore = ignore;
-    f->msg_idx = idx[3];
-    f->file_idx = idx[0];
-    f->line_idx = idx[1];
-    f->column_idx = idx[2];
+    static_assert_compatible_types(f->capture_index, idx);
+    memcpy(f->capture_index, idx, sizeof(idx));
 
-    if (!regexp_compile(&f->re, format, 0)) {
+    if (unlikely(!regexp_compile(&f->re, format, 0))) {
         free(f);
-        return;
+        return false;
     }
 
-    for (size_t i = 0; i < ARRAY_COUNT(idx); i++) {
-        // NOTE: -1 is larger than 0UL
-        if (unlikely(idx[i] > (int)f->re.re_nsub)) {
-            error_msg("Invalid substring count.");
-            regfree(&f->re);
-            free(f);
-            return;
-        }
+    if (unlikely(max_idx > f->re.re_nsub)) {
+        regfree(&f->re);
+        free(f);
+        return error_msg("invalid substring count");
     }
 
+    Compiler *compiler = find_or_add_compiler(compilers, name);
     f->pattern = str_intern(format);
-    ptr_array_append(&add_compiler(compiler)->error_formats, f);
+    ptr_array_append(&compiler->error_formats, f);
+    return true;
 }
 
-void collect_compilers(const char *prefix)
+static void free_error_format(ErrorFormat *f)
 {
-    collect_hashmap_keys(&compilers, prefix);
+    regfree(&f->re);
+    free(f);
 }
 
-static void append_compiler(String *s, const Compiler *c, const char *name)
+void free_compiler(Compiler *c)
+{
+    ptr_array_free_cb(&c->error_formats, FREE_FUNC(free_error_format));
+    free(c);
+}
+
+void remove_compiler(HashMap *compilers, const char *name)
+{
+    Compiler *c = hashmap_remove(compilers, name);
+    if (c) {
+        free_compiler(c);
+    }
+}
+
+void collect_errorfmt_capture_names(PointerArray *a, const char *prefix)
+{
+    COLLECT_STRINGS(capture_names, a, prefix);
+    if (str_has_prefix("_", prefix)) {
+        ptr_array_append(a, xstrdup("_"));
+    }
+}
+
+void dump_compiler(const Compiler *c, const char *name, String *s)
 {
     for (size_t i = 0, n = c->error_formats.count; i < n; i++) {
         ErrorFormat *e = c->error_formats.ptrs[i];
@@ -98,43 +129,23 @@ static void append_compiler(String *s, const Compiler *c, const char *name)
         string_append_byte(s, ' ');
         string_append_escaped_arg(s, e->pattern, true);
 
-        int max_idx = MAX4(e->file_idx, e->line_idx, e->column_idx, e->msg_idx);
-        BUG_ON(max_idx > 16);
+        static_assert(ARRAYLEN(e->capture_index) == 4);
+        const int8_t *a = e->capture_index;
+        int max_idx = MAX4(a[0], a[1], a[2], a[3]);
+        BUG_ON(max_idx > ERRORFMT_CAPTURE_MAX);
 
         for (int j = 1; j <= max_idx; j++) {
-            const char *idx_type = "_";
-            if (j == e->file_idx) {
-                idx_type = "file";
-            } else if (j == e->line_idx) {
-                idx_type = "line";
-            } else if (j == e->column_idx) {
-                idx_type = "column";
-            } else if (j == e->msg_idx) {
-                idx_type = "message";
+            const char *capname = "_";
+            for (size_t k = 0; k < ARRAYLEN(capture_names); k++) {
+                if (j == a[k]) {
+                    capname = capture_names[k];
+                    break;
+                }
             }
             string_append_byte(s, ' ');
-            string_append_cstring(s, idx_type);
+            string_append_cstring(s, capname);
         }
 
         string_append_byte(s, '\n');
     }
-}
-
-String dump_compiler(const Compiler *c, const char *name)
-{
-    String buf = string_new(512);
-    append_compiler(&buf, c, name);
-    return buf;
-}
-
-String dump_compilers(void)
-{
-    String buf = string_new(4096);
-    for (HashMapIter it = hashmap_iter(&compilers); hashmap_next(&it); ) {
-        const char *name = it.entry->key;
-        const Compiler *c = it.entry->value;
-        append_compiler(&buf, c, name);
-        string_append_byte(&buf, '\n');
-    }
-    return buf;
 }

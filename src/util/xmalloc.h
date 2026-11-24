@@ -3,16 +3,16 @@
 
 #include <stddef.h>
 #include <string.h>
+#include "arith.h"
 #include "macros.h"
 
+#define XMEMDUP(ptr) xmemdup(ptr, sizeof(*ptr))
 #define xnew(type, n) xmalloc(size_multiply(sizeof(type), (n)))
 #define xnew0(type, n) xcalloc(size_multiply(sizeof(type), (n)))
 
 #define xrenew(mem, n) do { \
     mem = xrealloc(mem, size_multiply(sizeof(*mem), (n))); \
 } while (0)
-
-#define xmemdup_literal(l) xmemdup(l, sizeof("" l ""))
 
 void *xmalloc(size_t size) XMALLOC ALLOC_SIZE(1);
 void *xcalloc(size_t size) XMALLOC ALLOC_SIZE(1);
@@ -39,14 +39,6 @@ static inline void *xmemdup(const void *ptr, size_t size)
     return memcpy(xmalloc(size), ptr, size);
 }
 
-// Round x up to a multiple of r (which *must* be a power of 2)
-static inline size_t round_size_to_next_multiple(size_t x, size_t r)
-DIAGNOSE_IF(!IS_POWER_OF_2(r))
-{
-    r--;
-    return (x + r) & ~r;
-}
-
 XSTRDUP
 static inline char *xstrcut(const char *str, size_t size)
 {
@@ -59,6 +51,17 @@ XSTRDUP
 static inline char *xstrslice(const char *str, size_t pos, size_t end)
 {
     return xstrcut(str + pos, end - pos);
+}
+
+XSTRDUP
+static inline char *xstrjoin(const char *s1, const char *s2)
+{
+    size_t n1 = strlen(s1);
+    size_t n2 = strlen(s2);
+    char *joined = xmalloc(size_add(n1, n2 + 1));
+    memcpy(joined, s1, n1);
+    memcpy(joined + n1, s2, n2 + 1);
+    return joined;
 }
 
 #endif

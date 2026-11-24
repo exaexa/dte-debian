@@ -1,4 +1,4 @@
-.TH DTE 1 "February 2021"
+.TH DTE 1 "October 2022"
 .nh
 .ad l
 .
@@ -10,7 +10,7 @@ dte \- A small, configurable text editor
 [\fB\-c\fR \fIcommand\fR]
 [\fB\-t\fR \fIctag\fR]
 [\fB\-r\fR \fIrcfile\fR]
-[[\fB+\fRline] \fIfile\fR]...
+[[+\fIline\fR[,\fIcolumn\fR]] \fIfile\fR]...
 .br
 \fBdte\fR [\fB\-h\fR|\fB\-B\fR|\fB\-K\fR|\fB\-V\fR|\fB\-b\fR \fIrcname\fR|\fB\-s\fR \fIfile\fR]
 .P
@@ -68,10 +68,14 @@ Display the help summary and exit.
 \fB\-V\fR
 Display the version number and exit.
 .PP
++\fIline\fR,\fIcolumn\fR arguments can be used to specify the initial cursor
+position of the next \fIfile\fR argument. These can also be specified in
+the format +\fIline\fR:\fIcolumn\fR.
+.P
 .SH KEY BINDINGS
 There are 3 editor modes, each having a different set of key bindings.
-Normal mode bindings can be customized by using the \fBbind\fR command
-(see \fBdterc\fR(5)) or displayed using the \fBshow bind\fR command.
+Bindings can be customized using the \fBbind\fR command (see \fBdterc\fR(5))
+or displayed using the \fBshow bind\fR command.
 .P
 The key bindings listed below are in the same format as accepted by
 the \fBbind\fR command. In particular, key combinations are represented
@@ -79,7 +83,7 @@ as follows:
 .P
 \(bu \fBM\-x\fR is Alt+x
 .br
-\(bu \fBC\-V\fR (or \fB^V\fR) is Ctrl+v
+\(bu \fBC\-v\fR (or \fB^V\fR) is Ctrl+v
 .br
 \(bu \fBS\-left\fR is Shift+left
 .br
@@ -104,23 +108,23 @@ Move cursor and select whole words
 Move cursor and select whole lines
 .PP
 .TP
-\fB^C\fR
+\fBC\-c\fR
 Copy current line or selection
 .PP
 .TP
-\fB^X\fR
+\fBC\-x\fR
 Cut current line or selection
 .PP
 .TP
-\fB^V\fR
+\fBC\-v\fR
 Paste
 .PP
 .TP
-\fB^Z\fR
+\fBC\-z\fR
 Undo
 .PP
 .TP
-\fB^Y\fR
+\fBC\-y\fR
 Redo
 .PP
 .TP
@@ -128,7 +132,7 @@ Redo
 Enter command mode
 .PP
 .TP
-\fB^F\fR
+\fBC\-f\fR
 Enter search mode
 .PP
 .TP
@@ -140,7 +144,7 @@ Search next
 Search previous
 .PP
 .TP
-\fB^T\fR
+\fBC\-t\fR
 Open new buffer
 .PP
 .TP
@@ -148,15 +152,15 @@ Open new buffer
 Switch to buffer 1 (or 2, 3, 4, etc.)
 .PP
 .TP
-\fB^W\fR
+\fBC\-w\fR
 Close current buffer
 .PP
 .TP
-\fB^S\fR
+\fBC\-s\fR
 Save
 .PP
 .TP
-\fB^Q\fR
+\fBC\-q\fR
 Quit
 .PP
 .SS Command Mode
@@ -177,39 +181,39 @@ Browse previous command history.
 Auto\-complete current command or argument
 .PP
 .TP
-\fB^A\fR, \fBhome\fR
+\fBC\-a\fR, \fBhome\fR
 Go to beginning of command line
 .PP
 .TP
-\fB^B\fR, \fBleft\fR
+\fBC\-b\fR, \fBleft\fR
 Move left
 .PP
 .TP
-\fB^C\fR, \fB^G\fR, \fBEsc\fR
+\fBC\-c\fR, \fBC\-g\fR, \fBEsc\fR
 Exit command mode
 .PP
 .TP
-\fB^D\fR, \fBdelete\fR
+\fBC\-d\fR, \fBdelete\fR
 Delete
 .PP
 .TP
-\fB^E\fR, \fBend\fR
+\fBC\-e\fR, \fBend\fR
 Go to end of command line
 .PP
 .TP
-\fB^F\fR, \fBright\fR
+\fBC\-f\fR, \fBright\fR
 Move right
 .PP
 .TP
-\fB^K\fR, \fBM\-delete\fR
+\fBC\-k\fR, \fBM\-delete\fR
 Delete to end of command line
 .PP
 .TP
-\fB^U\fR
+\fBC\-u\fR
 Delete to beginning of command line
 .PP
 .TP
-\fB^W\fR, \fBM\-C\-?\fR (Alt+Backspace)
+\fBC\-w\fR, \fBM\-C\-?\fR (Alt+Backspace)
 Erase word
 .PP
 .SS Search Mode
@@ -258,7 +262,34 @@ supported.
 .PP
 .TP
 \fBCOLORTERM\fR
-Enables support for 24\-bit terminal colors, if set to \fBtruecolor\fR.
+Enables support for 24\-bit terminal colors, if set to \fBtruecolor\fR or
+\fB24bit\fR.
+.PP
+The following environment variables affect various library routines used
+by dte and are inspected on every use:
+.P
+.TP
+\fBPATH\fR
+Colon\-delimited list of directory prefixes, used by \fBexecvp\fR(3)
+to find executables.
+.PP
+The following environment variables are set by dte:
+.P
+.TP
+\fBDTE_VERSION\fR
+Editor version string. This is set at startup to the same version
+string as shown by \fBdte \-V\fR.
+.PP
+.TP
+\fBPWD\fR
+Absolute path of the current working directory; set when changing
+directory with the \fBcd\fR command.
+.PP
+.TP
+\fBOLDPWD\fR
+Absolute path of the previous working directory; set when changing
+directory with the \fBcd\fR command and also used to determine which
+directory \fBcd \-\fR switches to.
 .PP
 .SH FILES
 .TP
@@ -312,17 +343,21 @@ Operating system error.
 \fB74\fR
 Input/output error.
 .PP
+.TP
+\fB78\fR
+Configuration error.
+.PP
 Note: the above exit codes are set by the editor itself, with values in
 accordance with \fBsysexits\fR(3). The exit code may also be set to values
 in the range \fB0\fR..\fB125\fR by the \fBquit\fR command.
 .P
 .SH EXAMPLES
-Open \fB/etc/passwd\fR with cursor on line 3:
+Open \fB/etc/passwd\fR with cursor on line 3, column 8:
 .P
 .IP
 .nf
 \f[C]
-dte\ +3\ /etc/passwd
+dte\ +3:8\ /etc/passwd
 \f[]
 .fi
 .PP
@@ -360,7 +395,7 @@ programs that try to control the terminal. For example:
 .IP
 .nf
 \f[C]
-echo\ 'Don't\ run\ this\ example!!'\ |\ dte\ |\ less
+echo\ "Don't\ run\ this\ example!!"\ |\ dte\ |\ less
 \f[]
 .fi
 .PP
